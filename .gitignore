@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# harness 런타임 산출물(프로젝트별 생성, 이식 불필요)
+.harness/
+*.log
+
+# 임시/스크래치
+_extracted/
+*.tmp
