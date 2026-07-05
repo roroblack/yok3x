@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YOK3X — 오케스트레이션 콘솔 (예상도 v3.1.0)</title>
+<style>
+:root{
+  --cream:#f6efda; --panel:#fffdf3; --ink:#1f1e1a; --ink2:#54513f;
+  --red:#e0483b; --yellow:#f4c02e; --blue:#4a86c6; --green:#5aa46a; --purple:#9070b0;
+  --tint-ok:#f2faf0; --tint-warn:#fdf6df; --tint-stop:#fcefed; --dot:rgba(31,30,26,.06);
+  --shadow:5px 5px 0 var(--ink); --shadow-sm:3px 3px 0 var(--ink);
+  --font-display:"Comic Sans MS","Comic Neue","Chalkboard SE",system-ui,cursive;
+  --font-body:system-ui,"Segoe UI","Malgun Gothic","Apple SD Gothic Neo",Roboto,sans-serif;
+  --font-code:"D2Coding","Cascadia Code","Consolas","JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-body);color:var(--ink);line-height:1.5;font-size:14px;
+  background-color:var(--cream);background-image:radial-gradient(var(--dot) 1.3px,transparent 1.3px);background-size:16px 16px}
+.wrap{max-width:1200px;margin:0 auto;padding:18px 16px 50px}
+code,.mono{font-family:var(--font-code)}
+.badge{font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:2px 9px;box-shadow:2px 2px 0 var(--ink);white-space:nowrap}
+.badge.live{background:var(--blue);color:#fff}.badge.est{background:var(--yellow)}.badge.ledger{background:#e7e0cc}
+.badge.warnb{background:var(--red);color:#fff}
+
+/* 헤더 */
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--panel);border:3px solid var(--ink);
+  border-radius:18px;box-shadow:var(--shadow);padding:12px 20px;margin-bottom:8px}
+.logo b{font-family:var(--font-display);font-size:30px;text-shadow:2px 2px 0 var(--yellow),3px 3px 0 var(--ink)}
+.logo .sub{font-size:12.5px;color:var(--ink2);margin-left:8px}
+.spacer{flex:1}
+.pill{border:2.5px solid var(--ink);border-radius:999px;background:var(--cream);padding:5px 13px;font-size:12.5px;box-shadow:var(--shadow-sm)}
+.pill.tag{background:var(--purple);color:#fff}
+.zig{height:13px;margin:12px 0 16px;background:linear-gradient(135deg,var(--red) 25%,transparent 25%) 0 0/13px 13px,linear-gradient(-135deg,var(--red) 25%,transparent 25%) 0 0/13px 13px}
+
+.cols{display:grid;grid-template-columns:1.55fr 1fr;gap:16px}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:3px solid var(--ink);border-radius:18px;box-shadow:var(--shadow);padding:16px 18px}
+.panel h2{font-family:var(--font-display);margin:0 0 4px;font-size:18px;display:flex;align-items:center;gap:8px}
+.panel h2 .ic{width:14px;height:14px;background:var(--yellow);border:2.5px solid var(--ink);border-radius:5px;transform:rotate(-8deg)}
+.sub{color:var(--ink2);font-size:12px;margin:0 0 12px}
+
+/* ---- 채팅 콘솔 ---- */
+.chat{height:440px;overflow-y:auto;border:2.5px dashed var(--ink);border-radius:12px;background:var(--cream);padding:12px}
+.turn{margin-bottom:14px}
+.you{display:flex;justify-content:flex-end;margin-bottom:8px}
+.you .b{background:var(--blue);color:#fff;border:2.5px solid var(--ink);border-radius:14px 14px 3px 14px;
+  padding:9px 13px;max-width:80%;box-shadow:var(--shadow-sm);font-size:13.5px}
+.you .b .meta{font-family:var(--font-code);font-size:10.5px;opacity:.85;margin-top:3px}
+.step{display:flex;gap:8px;align-items:flex-start;margin:7px 0}
+.step .av{font-family:var(--font-display);font-size:11px;min-width:78px;border:2.5px solid var(--ink);border-radius:9px;
+  background:var(--panel);padding:4px 6px;text-align:center;box-shadow:2px 2px 0 var(--ink)}
+.av.claude{background:#e7f0fa}.av.codex{background:#fdeede}.av.gemini{background:#e9f6ec}.av.sys{background:#efe9f4}
+.step .body{flex:1;border:2.5px solid var(--ink);border-radius:12px;background:var(--panel);padding:8px 11px;box-shadow:2px 2px 0 var(--ink);font-size:13px}
+.step .body .hd{font-size:11px;color:var(--ink2);margin-bottom:2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.chip{font-family:var(--font-code);font-size:10px;border:2px solid var(--ink);border-radius:999px;padding:1px 7px;background:var(--cream)}
+.chip.ok{background:var(--green);color:#fff}.chip.warn{background:var(--yellow)}.chip.bad{background:var(--red);color:#fff}
+.chip.score{background:var(--yellow)}
+.mini{font-family:var(--font-code);font-size:11.5px;color:var(--ink2);background:var(--cream);border-radius:6px;padding:4px 7px;margin-top:4px}
+.sysline{text-align:center;font-size:11px;color:var(--ink2);margin:8px 0}
+.sysline span{background:var(--tint-warn);border:2px solid var(--ink);border-radius:999px;padding:2px 10px}
+
+/* 입력 */
+.input{margin-top:12px;border:3px solid var(--ink);border-radius:14px;background:var(--cream);padding:11px;box-shadow:var(--shadow-sm)}
+.input textarea{width:100%;font-family:var(--font-code);font-size:13px;border:2.5px solid var(--ink);border-radius:9px;padding:8px;min-height:52px;resize:vertical;background:var(--panel)}
+.ctrls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:9px}
+.seg{display:inline-flex;border:2.5px solid var(--ink);border-radius:10px;overflow:hidden;box-shadow:2px 2px 0 var(--ink)}
+.seg button{font-family:var(--font-display);font-size:12px;border:none;border-right:2.5px solid var(--ink);background:var(--panel);padding:6px 11px;cursor:pointer}
+.seg button:last-child{border-right:none}.seg button.on{background:var(--red);color:#fff}
+select{font-family:var(--font-body);font-size:12.5px;border:2.5px solid var(--ink);border-radius:9px;background:var(--panel);padding:6px 8px;box-shadow:2px 2px 0 var(--ink)}
+.tgl{font-size:12px;display:flex;align-items:center;gap:6px}
+.sw{width:50px;height:26px;border:2.5px solid var(--ink);border-radius:999px;background:#cfc8b4;position:relative;cursor:pointer;box-shadow:2px 2px 0 var(--ink)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border:2.5px solid var(--ink);border-radius:50%}
+.btn{font-family:var(--font-display);font-size:14px;cursor:pointer;border:3px solid var(--ink);border-radius:11px;background:var(--red);color:#fff;padding:8px 18px;box-shadow:var(--shadow-sm)}
+.btn.plain{background:var(--panel);color:var(--ink)}
+
+/* ---- 할당 보드 ---- */
+.cli{display:flex;gap:8px;margin-bottom:12px}
+.clicard{flex:1;border:2.5px solid var(--ink);border-radius:12px;padding:8px;box-shadow:2px 2px 0 var(--ink);text-align:center;font-size:12px}
+.clicard.claude{background:var(--tint-ok)}.clicard.codex{background:var(--tint-ok)}.clicard.gemini{background:var(--tint-ok)}
+.clicard .nm{font-family:var(--font-display);font-size:14px;display:block;margin-bottom:3px}
+.clicard .u{font-family:var(--font-code);font-size:10.5px;color:var(--ink2);margin-top:3px}
+.assign{border:2.5px solid var(--ink);border-radius:12px;background:var(--cream);padding:4px;box-shadow:2px 2px 0 var(--ink)}
+.arow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:2px dashed rgba(31,30,26,.18)}
+.arow:last-child{border-bottom:none}
+.arow .fn{flex:1;font-size:13px}.arow .fn small{color:var(--ink2);font-family:var(--font-code);font-size:10.5px}
+.arow select{min-width:104px}
+.changed{border-color:var(--red)!important;box-shadow:2px 2px 0 var(--red)!important}
+.dot{width:11px;height:11px;border-radius:50%;border:2px solid var(--ink);display:inline-block;vertical-align:-1px;margin-right:4px}
+.dot.claude{background:var(--blue)}.dot.codex{background:var(--yellow)}.dot.gemini{background:var(--green)}
+.save{display:flex;gap:9px;align-items:center;margin-top:12px}
+.hint{font-size:11.5px;color:var(--red)}
+.qbox{margin-top:12px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:9px 11px;font-size:12px}
+.qitem{font-family:var(--font-code);font-size:11.5px;padding:3px 0}
+.note{margin-top:12px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:8px 11px;font-size:11.5px;color:var(--ink2)}
+.foot{text-align:center;font-size:11px;color:var(--ink2);margin-top:22px;font-family:var(--font-code)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="logo"><b>YOK3X</b><span class="sub">오케스트레이션 콘솔</span></div>
+    <div class="spacer"></div>
+    <span class="pill tag">예상도 v3.1.0 (목업)</span>
+    <span class="pill">가드 ON</span>
+    <span class="pill mono">02:54:10</span>
+  </div>
+  <div class="zig"></div>
+
+  <div class="cols">
+    <!-- ===== 좌: 작업 채팅 콘솔 ===== -->
+    <div class="panel">
+      <h2><span class="ic"></span> 작업 콘솔</h2>
+      <p class="sub">수행할 작업을 입력하면 큐에 쌓여 순차 실행된다. 스텝이 실시간으로 대화에 흐른다.</p>
+
+      <div class="chat">
+        <!-- 턴 1 -->
+        <div class="turn">
+          <div class="you"><div class="b">문자열을 유효한 슬러그로 변환하는 함수 + 단위테스트 작성. 유니코드·연속공백·빈 입력 처리.
+            <div class="meta">producer-reviewer · producer=claude-main · reviewer=codex-critic · 자동</div></div></div>
+
+          <div class="step"><div class="av claude">claude-main<br>구현</div>
+            <div class="body"><div class="hd">#1 구현 <span class="chip ok">done</span></div>
+              slugify() 작성 + pytest 5케이스. 계획→구현→SELF-CHECK 순 진행.
+              <div class="mini">SELF-CHECK: 유니코드 NFKD·연속하이픈 축약 처리 / 빈 입력 미검증(리뷰 대기)</div></div></div>
+
+          <div class="step"><div class="av sys">verify<br>게이트</div>
+            <div class="body"><div class="hd">테스트/린트 게이트 <span class="chip ok">exit 0 · 통과</span></div>
+              <span class="mono">pytest -q → 5 passed</span> · 객관 검증 통과(주관 점수와 별개 하드 게이트)</div></div>
+
+          <div class="step"><div class="av codex">codex-critic<br>코드리뷰</div>
+            <div class="body"><div class="hd">#2 리뷰 <span class="chip score">SCORE 7</span> <span class="chip warn">기준 8 미달</span></div>
+              빈 입력 엣지케이스 미처리·타입힌트 누락 지적. 환각 없음. 수정 지시 2건.</div></div>
+
+          <div class="step"><div class="av claude">claude-main<br>수정</div>
+            <div class="body"><div class="hd">#3 수정 <span class="chip ok">done</span></div>빈 입력 가드 + 타입힌트 반영.</div></div>
+
+          <div class="step"><div class="av codex">codex-critic<br>코드리뷰</div>
+            <div class="body"><div class="hd">#4 리뷰 <span class="chip score">SCORE 9</span> <span class="chip ok">통과 + 검증 OK</span></div>
+              통과 기준 충족 → 종료. 최종 산출물 <span class="mono">final_output.md</span></div></div>
+
+          <div class="sysline"><span>💡 코치: codex 5시간 창 곧 리셋 · 지금 큰 배치 밀어붙이기 좋음</span></div>
+        </div>
+
+        <!-- 턴 2 (대기) -->
+        <div class="turn">
+          <div class="you"><div class="b">인메모리 LRU 캐시 구현 (설계→구현→리뷰)
+            <div class="meta">pipeline · 대기열 #1 · workdir=F:/my/repo · verify_cmd=pytest -q</div></div></div>
+          <div class="step"><div class="av sys">queue</div>
+            <div class="body"><div class="hd"><span class="chip">대기 중</span> 앞 작업 완료 후 자동 시작</div></div></div>
+        </div>
+      </div>
+
+      <!-- 입력 -->
+      <div class="input">
+        <textarea placeholder="수행할 작업을 입력…  (예: REST 엔드포인트 /health 추가하고 테스트까지)"></textarea>
+        <div class="ctrls">
+          <div class="seg"><button class="on">producer-reviewer</button><button>pipeline</button><button>fanout</button></div>
+          <label class="tgl">producer <select><option>claude-main</option><option>codex-main</option></select></label>
+          <label class="tgl">reviewer <select><option>codex-critic</option><option>gemini</option></select></label>
+          <label class="tgl">게이트<div class="sw"></div></label>
+          <div class="spacer"></div>
+          <button class="btn">전송 ▶</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 우: CLI-기능 할당 보드 ===== -->
+    <div class="panel">
+      <h2><span class="ic"></span> 에이전트 배치</h2>
+      <p class="sub">어떤 CLI에 어떤 기능을 맡길지 바꾼다. 실측 한도를 보고 여유 있는 쪽으로 재배치.</p>
+
+      <div class="cli">
+        <div class="clicard claude"><span class="nm">🔵 claude</span><span class="badge est">추정</span><div class="u">7일 30%</div></div>
+        <div class="clicard codex"><span class="nm">🟠 codex</span><span class="badge live">실측</span><div class="u">7일 24%</div></div>
+        <div class="clicard gemini"><span class="nm">🟢 gemini</span><span class="badge ledger">원장</span><div class="u">6%</div></div>
+      </div>
+
+      <div class="assign">
+        <div class="arow"><div class="fn">구현 <small>build</small></div>
+          <select><option>🔵 claude</option><option>codex</option><option>gemini</option></select></div>
+        <div class="arow"><div class="fn">리팩터 <small>refactor</small></div>
+          <select><option>🟠 codex</option><option>claude</option><option>gemini</option></select></div>
+        <div class="arow"><div class="fn">코드리뷰 <small>review</small></div>
+          <select class="changed"><option>🟢 gemini</option><option>codex</option><option>claude</option></select></div>
+        <div class="arow"><div class="fn">설계검토 <small>design_review</small></div>
+          <select><option>🟢 gemini</option><option>codex</option><option>claude</option></select></div>
+        <div class="arow"><div class="fn">테스트 <small>test</small></div>
+          <select><option>🔵 claude</option><option>codex</option><option>gemini</option></select></div>
+      </div>
+
+      <div class="save">
+        <button class="btn">저장</button>
+        <button class="btn plain">되돌리기</button>
+        <span class="hint">● 코드리뷰 codex→gemini 변경됨(미저장)</span>
+      </div>
+
+      <div style="margin-top:14px">
+        <label class="tgl" style="font-size:12.5px">오케스트레이터 flavor
+          <select><option>claude-orchestrator</option><option>codex-orchestrator</option><option>gemini-orchestrator</option></select></label>
+      </div>
+
+      <div class="qbox"><b>실행 큐</b> · 활성 1 / 대기 1
+        <div class="qitem">▶ 슬러그 함수 (실행 중, step 4/…)</div>
+        <div class="qitem">⏸ LRU 캐시 (대기 #1)</div>
+      </div>
+
+      <div class="note">⚠ 로컬 전용(127.0.0.1). 자동 실행은 요금·폭주 위험 → 기본 게이트, 자동은 명시 토글 + 가드 정지 시 큐 중단.</div>
+    </div>
+  </div>
+
+  <div class="foot">YOK3X 오케스트레이션 콘솔 · 예상도(정적 목업) · 실제 구현 시 /api/run·/api/config·/api/run/log 로 배선</div>
+</div>
+</body>
+</html>

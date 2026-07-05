@@ -4,6 +4,20 @@
 
 ---
 
+## v3.1.0 · 2026-07-05 — 오케스트레이션 콘솔 (태스크 탭 → 콘솔)
+
+- **정적 "태스크" 탭을 실동작 "콘솔" 탭으로 전환** (`gui/index.html`):
+  - **작업 채팅** — 목표 입력 → `POST /api/run` 인라인 spec 실행, 스텝이 채팅 카드로 흐름. 기존 편집기 기능 전부 포함(패턴·producer/reviewer·max_rounds·pass_score·반복·등록태스크 실행) + 코딩 게이트(workdir·verify_cmd).
+  - **실시간 사용량 스트립** — 입력창 아래, 도구별 5h/7d 게이지(작업 돌수록 증가, `/api/state`).
+  - **에이전트 배치 보드** — 역할↔CLI(backend) 드롭다운 + flavor, `POST /api/config`로 `yok3x.json` 저장(검증+`.bak` 백업). 실행 큐 표시.
+- **백엔드 확장** (`guiserver.py`): `/api/run` 인라인 spec + 실행 큐(단일 실행, 나머지 대기) + 반복(loop); `/api/config` 워커 backend·routing·flavor 편집(검증: 잘못된 backend/워커/flavor 거부); `build_state`에 workers/routing/flavors/queue 노출.
+- **버그 수정**: 완료 시 status.json이 작업 목표(task)를 덮어써 채팅에 run_id만 뜨던 문제 → `orchestrator._save_status`가 `task_desc` 항상 보존.
+- 전 기능 Windows 실서버 검증(작업 전송→스텝 스트리밍, 보드 저장→yok3x.json 반영, 큐).
+
+## v3.0.2 · 2026-07-05 — GUI 도움말(사용 설명서) 탭
+
+- GUI에 **도움말 탭** 추가(`gui/index.html`): 빠른시작·명령어표·워크플로우 패턴·한도&가드·코딩 태스크 옵션·워커/안전장치·GUI 사용법. 접이식(`<details>`) 7섹션, 코믹 스타일, 버전 자동 표시. 렌더 검증 완료.
+
 ## 유지보수 · 2026-07-05 — 버전 아카이브 보존
 
 - 이전 버전 zip을 삭제하지 않고 `backup/versions/`에 보존: v2.2.0(git 복원)·v2.3.0(폴더백업)·v3.0.1(현행). 각 내부 `__version__` 검증, 무결성 테스트 통과. 매니페스트 `backup/versions/VERSIONS.md`.

@@ -75,6 +75,7 @@ class Orchestrator:
         self.steps: list[StepLog] = []
         self._step_i = 0
         self.pattern = "-"
+        self.task_desc = ""   # 상태/채팅 표시용 작업 목표
         # 태스크 옵션(코딩 기능): run_task_file이 세팅
         self.workdir: str | None = None      # 워커/검증 실행 디렉터리
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
@@ -96,6 +97,7 @@ class Orchestrator:
             "run_id": self.run_id,
             "state": state,
             "pattern": self.pattern,
+            "task": self.task_desc,
             "flavor": self.cfg.yok3x["flavor"],
             "updated": datetime.now().isoformat(timespec="seconds"),
             "steps": [s.__dict__ for s in self.steps],
@@ -424,6 +426,7 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     orch.rubric = spec.get("rubric", "") or ""
     pattern = spec.get("pattern", "producer-reviewer")
     task = spec["task"]
+    orch.task_desc = task
     try:
         if pattern == "pipeline":
             orch.run_pipeline(task, spec["stages"])

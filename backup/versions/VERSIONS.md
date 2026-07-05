@@ -6,7 +6,8 @@
 |---|---|---|---|
 | `harness-multiagent-v2.2.zip` | 2.2.0 | 11 | git 초기커밋 스냅샷. 라이브 한도(codex app-server)·plan/calibrate까지 반영된 상태이나 `__version__`은 아직 2.2.0, **GUI(guiserver) 이전**. |
 | `harness-multiagent-v2.3.0.zip` | 2.3.0 | 15 | 리네임 전 완성판. GUI 프로토타입·guiserver·RULE·HISTORY 포함. `backup/harness-multiagent-v2.3.0-backup-*/` 폴더를 zip으로 만든 것. |
-| `yok3x-v3.0.1.zip` | 3.0.1 | 15 | 현재 정본(yok3x 리네임 + 코딩 게이트 + 폴백/하드코딩 감사). `release/`와 동일. |
+| `yok3x-v3.0.1.zip` | 3.0.1 | 15 | yok3x 리네임 + 코딩 게이트 + 폴백/하드코딩 감사. |
+| `yok3x-v3.1.0.zip` | 3.1.0 | 16 | **현재 정본.** 오케스트레이션 콘솔(작업 채팅+실시간 사용량+배치 보드, `/api/run`·`/api/config`) + 도움말 탭. `release/`와 동일. 폴더 스냅샷: `backup/yok3x-v3.1.0-*/`. |
 
 ## 복원 출처(정직 표기)
 

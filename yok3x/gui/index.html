@@ -25,9 +25,7 @@ body{margin:0;font-family:var(--font-body);color:var(--ink);line-height:1.5;
 code,.mono,.rid{font-family:var(--font-code)}
 
 /* 지그재그 띠 */
-.zig{height:14px;margin:14px 0;
-  background:linear-gradient(135deg,var(--red) 25%,transparent 25%) 0 0/14px 14px,
-             linear-gradient(-135deg,var(--red) 25%,transparent 25%) 0 0/14px 14px;}
+.zig{height:0;margin:16px 2px;border:none;border-top:3px dotted var(--red);}
 
 /* 헤더 */
 .top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--panel);
@@ -121,6 +119,58 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .seg button:last-child{border-right:none}.seg button.on{background:var(--red);color:#fff}
 .note{border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:9px 12px;font-size:12px;color:var(--ink2);margin-top:11px}
 .note code{font-size:11.5px}
+/* 도움말 탭 */
+.help details{border:2.5px solid var(--ink);border-radius:12px;background:var(--panel);box-shadow:var(--shadow-sm);margin-bottom:10px;overflow:hidden}
+.help summary{font-family:var(--font-display);font-size:15px;cursor:pointer;padding:10px 14px;background:var(--cream);list-style:none;display:flex;align-items:center;gap:8px}
+.help summary::-webkit-details-marker{display:none}
+.help summary::before{content:"▶";font-size:10px;color:var(--red);transition:transform .15s}
+.help details[open] summary::before{transform:rotate(90deg)}
+.help details[open] summary{border-bottom:2.5px solid var(--ink)}
+.help .bd{padding:12px 15px;font-size:13.5px}
+.help .bd p{margin:0 0 8px}
+.help .bd ul{margin:6px 0;padding-left:20px}.help .bd li{margin:3px 0}
+.help table{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0}
+.help th,.help td{border:2px solid var(--ink);padding:5px 8px;text-align:left}
+.help th{background:var(--yellow);font-family:var(--font-display)}
+.help td:first-child{font-family:var(--font-code);white-space:nowrap;background:var(--cream)}
+.help pre{font-family:var(--font-code);font-size:12px;background:var(--cream);border:2px solid var(--ink);border-radius:8px;padding:9px 11px;overflow-x:auto;margin:6px 0}
+.help .k{font-family:var(--font-code);background:var(--cream);border:2px solid var(--ink);border-radius:6px;padding:0 6px;font-size:12px}
+.help .tip{border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:9px 12px;font-size:12.5px;color:var(--ink2);margin:8px 0}
+/* 콘솔 */
+.cols{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+.chat{height:360px;overflow-y:auto;border:2.5px dashed var(--ink);border-radius:12px;background:var(--cream);padding:11px}
+.you{display:flex;justify-content:flex-end;margin-bottom:7px}
+.you .b{background:var(--blue);color:#fff;border:2.5px solid var(--ink);border-radius:14px 14px 3px 14px;padding:8px 12px;max-width:82%;box-shadow:var(--shadow-sm);font-size:13px}
+.you .b .meta{font-family:var(--font-code);font-size:10px;opacity:.85;margin-top:3px}
+.cstep{display:flex;gap:7px;align-items:flex-start;margin:6px 0}
+.cstep .av{font-family:var(--font-code);font-size:10px;min-width:88px;border:2.5px solid var(--ink);border-radius:9px;background:var(--panel);padding:4px 5px;text-align:center;box-shadow:2px 2px 0 var(--ink)}
+.cstep .cb{flex:1;border:2.5px solid var(--ink);border-radius:12px;background:var(--panel);padding:7px 10px;box-shadow:2px 2px 0 var(--ink);font-size:12.5px}
+.cstep .hd{font-size:10.5px;color:var(--ink2);margin-bottom:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sysline{text-align:center;font-size:10.5px;margin:6px 0}.sysline span{background:var(--tint-warn);border:2px solid var(--ink);border-radius:999px;padding:2px 10px}
+.cinput{margin-top:11px;border:3px solid var(--ink);border-radius:14px;background:var(--cream);padding:10px;box-shadow:var(--shadow-sm)}
+.cinput textarea{width:100%;font-family:var(--font-code);font-size:12.5px;border:2.5px solid var(--ink);border-radius:9px;padding:7px;min-height:46px;resize:vertical;background:var(--panel)}
+.ci-row{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.ci-row label{font-size:11.5px;display:flex;align-items:center;gap:4px}
+.ci-row input{width:56px;font-family:var(--font-code);border:2.5px solid var(--ink);border-radius:8px;padding:4px 6px;box-shadow:2px 2px 0 var(--ink)}
+.ci-row input.wide{width:150px}
+.tgl2{display:flex;align-items:center;gap:5px;font-size:11.5px}
+.usagestrip{margin-top:11px;border:3px solid var(--ink);border-radius:14px;background:var(--tint-ok);padding:9px 11px;box-shadow:var(--shadow-sm)}
+.usagestrip .t{font-size:11px;color:var(--ink2);margin-bottom:6px}
+.us-row{display:flex;gap:8px;flex-wrap:wrap}
+.us-tool{flex:1;min-width:145px;border:2.5px solid var(--ink);border-radius:10px;background:var(--panel);padding:6px 8px;box-shadow:2px 2px 0 var(--ink)}
+.us-tool .nm{font-family:var(--font-display);font-size:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:2px}
+.us-win{display:flex;align-items:center;gap:5px;font-family:var(--font-code);font-size:10px;margin:2px 0}
+.us-win .g{flex:1;height:9px;border:2px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden}
+.us-win .g i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--green) 0 6px,#71b47f 6px 12px)}
+.us-win.warn .g i{background:repeating-linear-gradient(45deg,var(--yellow) 0 6px,#f6cf55 6px 12px)}
+.us-win.stop .g i{background:repeating-linear-gradient(45deg,var(--red) 0 6px,#ea6459 6px 12px)}
+.assign{border:2.5px solid var(--ink);border-radius:12px;background:var(--cream);padding:3px;box-shadow:2px 2px 0 var(--ink)}
+.arow{display:flex;align-items:center;gap:7px;padding:6px 8px;border-bottom:2px dashed rgba(31,30,26,.18)}
+.arow:last-child{border-bottom:none}.arow .fn{flex:1;font-size:12.5px}.arow .fn small{color:var(--ink2);font-family:var(--font-code);font-size:10px}
+.arow select{min-width:96px}
+.qbox{margin-top:11px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:8px 10px;font-size:11.5px}
+.qitem{font-family:var(--font-code);font-size:11px;padding:2px 0}
 .foot{text-align:center;font-size:11px;color:var(--ink2);margin-top:24px;font-family:var(--font-code)}
 </style>
 </head>
@@ -139,9 +189,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 
   <div class="tabs">
     <div class="tab active" data-v="dash">대시보드</div>
-    <div class="tab" data-v="tasks">태스크</div>
+    <div class="tab" data-v="tasks">콘솔</div>
     <div class="tab" data-v="settings">설정 · 한도</div>
     <div class="tab" data-v="knot">knot</div>
+    <div class="tab" data-v="help">도움말</div>
   </div>
 
   <!-- 대시보드 (실데이터) -->
@@ -161,31 +212,68 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
     </div>
   </section>
 
-  <!-- 태스크 -->
+  <!-- 콘솔 (작업 실행 + 에이전트 배치) -->
   <section id="tasks" class="view">
-    <div class="panel">
-      <h2><span class="ic"></span> 태스크 실행 <span id="runstatus" class="mono" style="font-size:12px;color:var(--ink2)"></span></h2>
-      <p class="sub">등록된 태스크를 실행(승인 자동, 가드 적용). 진행은 대시보드 · 아래 목록에 반영된다.</p>
-      <div id="runbar"><span class="sub">태스크 로딩…</span></div>
-    </div>
-    <div class="panel">
-      <h2><span class="ic"></span> 태스크 편집기</h2>
-      <p class="sub">패턴을 고르고 목표·워커를 정한 뒤 실행(<code>yok3x run/loop</code>). yok3x 기법(계획→구현→자가검증)이 자동 주입된다.</p>
-      <div class="seg"><button class="on">producer-reviewer</button><button>pipeline</button><button>fanout-fanin</button></div>
-      <label class="f">목표(task)</label>
-      <textarea>문자열을 유효한 슬러그로 변환하는 함수 작성. 유니코드·연속 공백·빈 입력 엣지케이스 처리 + 단위 테스트 포함.</textarea>
-      <div class="row">
-        <div><label class="f">producer</label><select><option>claude-main</option><option>codex-main</option></select></div>
-        <div><label class="f">reviewer</label><select><option>codex-critic</option><option>gemini</option></select></div>
-        <div><label class="f">max_rounds</label><input value="3"></div>
-        <div><label class="f">pass_score</label><input value="8.0"></div>
+    <div class="cols">
+      <!-- 좌: 작업 콘솔 -->
+      <div class="panel">
+        <h2><span class="ic"></span> 작업 콘솔 <span id="runstatus" class="mono" style="font-size:11px;color:var(--ink2)"></span></h2>
+        <p class="sub">작업을 입력하면 큐에 쌓여 순차 실행. yok3x 기법·할루시네이션 방지·가드 자동 적용.</p>
+        <div class="chat" id="console-log"><span class="sub">불러오는 중…</span></div>
+
+        <div class="cinput">
+          <textarea id="c-task" placeholder="수행할 작업(목표)을 입력…  예: 문자열→슬러그 함수 + 단위테스트, 엣지케이스 처리"></textarea>
+          <div class="ci-row">
+            <div class="seg" id="c-pattern">
+              <button class="on" data-p="producer-reviewer">producer-reviewer</button>
+              <button data-p="pipeline">pipeline</button>
+              <button data-p="fanout-fanin">fanout</button>
+            </div>
+            <label>producer <select id="c-producer"></select></label>
+            <label>reviewer <select id="c-reviewer"></select></label>
+          </div>
+          <div class="ci-row">
+            <label>max_rounds <input id="c-rounds" value="3"></label>
+            <label>pass_score <input id="c-score" value="8.0"></label>
+            <label>반복 <input id="c-iters" value="1"></label>
+            <div class="spacer"></div>
+            <button class="btn" style="background:var(--red);color:#fff" onclick="sendTask()">전송 ▶</button>
+          </div>
+          <details style="margin-top:8px"><summary style="font-size:11.5px;cursor:pointer">고급: 코딩 게이트 옵션</summary>
+            <div class="ci-row" style="margin-top:7px">
+              <label>workdir <input id="c-workdir" class="wide" placeholder="F:/my/repo"></label>
+              <label>verify_cmd <input id="c-verify" class="wide" placeholder="pytest -q"></label>
+            </div>
+            <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · context_globs/rubric은 task.json 편집.</div>
+          </details>
+          <div class="ci-row" style="margin-top:9px;border-top:2px dashed rgba(31,30,26,.18);padding-top:9px">
+            <label>등록 태스크 <select id="c-regtask"></select></label>
+            <button class="btn" onclick="runRegistered()">실행</button>
+            <span class="sub" id="c-runmsg" style="margin:0"></span>
+          </div>
+        </div>
+
+        <div class="usagestrip">
+          <div class="t">📊 실시간 사용량 — 작업 돌수록 증가 · 한도 도달 시 큐 자동 정지</div>
+          <div class="us-row" id="c-usage"></div>
+        </div>
       </div>
-      <div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
-        <button class="btn" style="background:var(--red);color:#fff">▶ Run</button>
-        <button class="btn" style="background:var(--blue);color:#fff">↻ Loop -n 5</button>
-        <button class="btn">💾 저장</button>
+
+      <!-- 우: 에이전트 배치 -->
+      <div class="panel">
+        <h2><span class="ic"></span> 에이전트 배치</h2>
+        <p class="sub">어떤 CLI가 어떤 역할을 맡을지 바꾼다. 한도는 ← 좌측 실시간 스트립 참고.</p>
+        <div class="assign" id="board"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:11px;flex-wrap:wrap">
+          <button class="btn" style="background:var(--red);color:#fff" onclick="saveConfig()">저장</button>
+          <button class="btn plain" onclick="load()">되돌리기</button>
+          <span class="sub" id="board-msg" style="margin:0"></span>
+        </div>
+        <div style="margin-top:12px"><label class="tgl2">오케스트레이터 flavor
+          <select id="c-flavor"></select></label></div>
+        <div class="qbox" id="c-queue"></div>
+        <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
       </div>
-      <div class="note">승인 게이트: 스텝마다 <code>y</code> 승인 / <code>N</code> 건너뜀 / <code>q</code> 중단.</div>
     </div>
   </section>
 
@@ -223,6 +311,89 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
     </div>
   </section>
 
+  <!-- 도움말(사용 설명서) -->
+  <section id="help" class="view">
+    <div class="panel help">
+      <h2><span class="ic"></span> yok3x 사용 설명서 <span id="helpver" class="mono" style="font-size:12px;color:var(--ink2)"></span></h2>
+      <p class="sub">Claude·Codex·Gemini CLI를 묶어 <b>구독 한도를 지키며</b> 코딩 루프(구현→리뷰→수정)를 돌리는 도구. 한 모델이 만들고 다른 모델이 리뷰·채점한다. 의존성 0.</p>
+
+      <details open><summary>1. 빠른 시작</summary><div class="bd">
+        <pre>python yok3x.py init          # 설정·디렉터리 생성 (드라이런은 init --mock)
+python yok3x.py setup         # 샘플 태스크 3종 생성
+python yok3x.py gui           # 이 브라우저 콘솔 실행
+python yok3x.py run task-producer-reviewer.json --auto</pre>
+        <p><span class="k">--mock</span> 은 실제 CLI 없이 전체 흐름을 검증하는 드라이런이다.</p>
+      </div></details>
+
+      <details><summary>2. 명령어</summary><div class="bd">
+        <table>
+          <tr><th>명령</th><th>기능</th></tr>
+          <tr><td>init [--mock]</td><td>yok3x.json/backends.json/디렉터리 생성</td></tr>
+          <tr><td>setup</td><td>샘플 태스크 3종 + 초기화</td></tr>
+          <tr><td>run &lt;task&gt; [--auto]</td><td>태스크 1회 실행. --auto 없으면 스텝마다 승인 게이트</td></tr>
+          <tr><td>loop &lt;task&gt; -n N</td><td>에이전트 루프. 가드가 stop이면 스스로 정지</td></tr>
+          <tr><td>gui [--port N]</td><td>브라우저 콘솔(실데이터)</td></tr>
+          <tr><td>mat</td><td>사용량·코칭·최근 런 한 화면(터미널)</td></tr>
+          <tr><td>coach / coach guard on|off</td><td>사용량 코칭 / 가드 토글</td></tr>
+          <tr><td>limits</td><td>실제 한도 probe 원본 확인(진단)</td></tr>
+          <tr><td>plan [tool] [name]</td><td>요금제 프리셋(claude: pro/max5x/max20x)</td></tr>
+          <tr><td>calibrate claude 5h|7d &lt;%&gt;</td><td>실사용 기반 claude 한도 정확 보정</td></tr>
+          <tr><td>knot save|query|lint</td><td>지식그물(공유 기억)</td></tr>
+          <tr><td>flavor [이름]</td><td>오케스트레이터 전환</td></tr>
+        </table>
+      </div></details>
+
+      <details><summary>3. 워크플로우 패턴 3종</summary><div class="bd">
+        <ul>
+          <li><b>producer-reviewer</b> — 한 워커가 만들고 다른 워커가 <span class="k">SCORE</span>로 채점, 기준 미달 시 재작업. (구현↔코드리뷰)</li>
+          <li><b>pipeline</b> — 이전 단계 출력이 다음 입력. (설계→구현→리뷰)</li>
+          <li><b>fanout-fanin</b> — 여러 워커가 각자 제안 → 하나로 통합.</li>
+        </ul>
+      </div></details>
+
+      <details><summary>4. 구독 한도 & 가드 — 한도는 무조건 지킨다</summary><div class="bd">
+        <p>매 워커 호출 전 한도를 점검하고, <span class="k">hard_ratio</span>(기본 100%) 도달 시 루프가 스스로 멈춘다. 소스 배지:</p>
+        <table>
+          <tr><th>배지</th><th>도구</th><th>의미</th></tr>
+          <tr><td>실측</td><td>codex</td><td>app-server가 지금 값을 직접 보고(가장 정확)</td></tr>
+          <tr><td>추정</td><td>claude</td><td>transcript 롤링 합산 vs 설정 상한(근사)</td></tr>
+          <tr><td>원장</td><td>gemini</td><td>자체 일일 예산(라이브 소스 없음)</td></tr>
+        </table>
+        <div class="tip">claude는 요금제를 넣거나(<span class="k">plan claude max20x</span>), 앱 <b>/usage</b>의 실제 %를 <span class="k">calibrate claude 7d 30</span>으로 넣으면 정확해진다. codex는 자동.</div>
+      </div></details>
+
+      <details><summary>5. 코딩 태스크 옵션</summary><div class="bd">
+        <p>task.json에 아래를 넣으면 실제 코드를 짜고 <b>돌려서 검증</b>한다:</p>
+        <pre>{ "workdir": "F:/my/repo",
+  "verify_cmd": "pytest -q",      // 테스트/린트 게이트: 실패면 높은 SCORE여도 통과 불가
+  "verify_timeout_sec": 300,
+  "context_globs": ["src/**/*.py"],// 레포 파일을 프롬프트에 주입
+  "rubric": "rubric.md" }          // 채점표를 검수에 주입</pre>
+        <p>스톨 감지: 점수·이슈가 2회 연속 같으면 수렴 실패로 조기 종료.</p>
+      </div></details>
+
+      <details><summary>6. 워커 · 안전장치</summary><div class="bd">
+        <ul>
+          <li><b>워커</b>: claude-main(구현) · codex-main(리팩터) · codex-critic(코드리뷰) · gemini(설계검토). 각 워커는 CLI(backend)에 바인딩.</li>
+          <li><b>승인 게이트</b>: 스텝마다 <span class="k">y</span>승인/<span class="k">N</span>건너뜀/<span class="k">q</span>중단. <span class="k">--auto</span>는 신뢰된 루프에서만.</li>
+          <li><b>yok3x 기법</b>: 코딩 워커에 계획→구현→자가검증 구조 주입.</li>
+          <li><b>할루시네이션 방지</b>: 날조 금지·근거 제시 지침 + 검수 시 환각 지적 + 과잉확신 자동 표시.</li>
+          <li>폭주 방지 4중 브레이크: 단계분할 · 승인 · 검증 · 예산(가드).</li>
+        </ul>
+      </div></details>
+
+      <details><summary>7. 이 GUI 사용법</summary><div class="bd">
+        <ul>
+          <li><b>대시보드</b>: 도구별 5h/7d 한도·코치·최근 런(실데이터, 7초 갱신).</li>
+          <li><b>콘솔</b>: 작업을 입력해 실행(채팅형) + CLI-역할 배치 + 실시간 사용량.</li>
+          <li><b>설정·한도</b>: 가드 임계·요금제·calibrate.</li>
+          <li><b>knot</b>: 공유 기억 검색/저장/lint.</li>
+        </ul>
+        <div class="tip">상단 <b>● LIVE</b>면 실데이터 연동, <b>○ MOCK</b>이면 파일을 직접 연 것 — <span class="k">yok3x gui</span>로 실행하면 실데이터가 뜬다.</div>
+      </div></details>
+    </div>
+  </section>
+
   <div class="foot" id="foot">yok3x gui prototype · <span id="src2"></span></div>
 </div>
 
@@ -235,8 +406,13 @@ const MOCK = {version:"3.0(mock)",flavor:"claude-orchestrator",guard:{enabled:tr
  coach:["[여유·추정] claude 5시간 31% · 7일 30%. build/test 등 큰 작업 지금 돌리기 좋다.",
         "[여유·실측] codex 5시간 1% · 7일 24%. 5시간 창이 곧 리셋되고 사용률도 낮다 — 지금 큰 배치를 밀어붙여라.",
         "[여유·원장] gemini 6% (60 calls). 지금 돌려도 무방."],
- runs:[{run_id:"run_1329(mock)",pattern:"producer-reviewer",state:"done",steps:2,done:2,last:"codex-critic",score:8,
-        stepdetail:[{index:1,worker:"claude-main",status:"done",score:null,issues:[]},{index:2,worker:"codex-critic",status:"done",score:8,issues:[]}]}]};
+ runs:[{run_id:"run_1329(mock)",pattern:"producer-reviewer",state:"done",task:"슬러그 변환 함수 + 단위테스트",steps:2,done:2,last:"codex-critic",score:8,
+        stepdetail:[{index:1,worker:"claude-main",kind:"build",status:"done",score:null,summary:"slugify() + pytest 5케이스",issues:[]},{index:2,worker:"codex-critic",kind:"critic",status:"done",score:8,summary:"통과",issues:[]}]}],
+ flavors:["claude-orchestrator","codex-orchestrator","gemini-orchestrator"],
+ workers:{"claude-main":{backend:"claude"},"codex-main":{backend:"codex"},"codex-critic":{backend:"codex"},"gemini":{backend:"gemini"}},
+ routing:{build:"claude",refactor:"codex",review:"codex",test:"claude",design_review:"gemini"},
+ queue:["task-pipeline.json"], running:{active:false,task:null,last:"task-producer-reviewer.json → done"},
+ tasks:["task-producer-reviewer.json","task-pipeline.json","task-fanout.json"]};
 
 const EMOJI={claude:"🔵",codex:"🟠",gemini:"🟢"};
 function badge(t){ if(t.real) return '<span class="badge live">실측</span>';
@@ -247,6 +423,7 @@ function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0
 
 function render(s){
   document.getElementById("ver").textContent="v"+(s.version||"");
+  var hv=document.getElementById("helpver"); if(hv) hv.textContent="v"+(s.version||"");
   document.getElementById("flavor").textContent="flavor: "+s.flavor;
   const on=s.guard.enabled; const sw=document.getElementById("sw");
   sw.classList.toggle("off",!on); document.getElementById("gtext").textContent=on?"ON":"OFF";
@@ -282,16 +459,93 @@ function render(s){
   const rs=document.getElementById("runstatus");
   if(rs) rs.textContent = rn.active ? `● 실행 중: ${rn.task} (${rn.since||""})`
                         : (rn.last ? `직전: ${rn.last}` : "");
-  const rb=document.getElementById("runbar");
-  if(rb){
-    const tasks=s.tasks||[];
-    rb.innerHTML = tasks.length ? tasks.map(t=>`
-      <div class="run" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
-        <span class="rid">${t}</span>
-        <button class="btn" ${rn.active?"disabled style=opacity:.5":""} onclick="runTask('${t}')">▶ 실행</button>
-      </div>`).join("")
-      : '<div class="note">태스크가 없다. <code>yok3x setup</code>으로 샘플 생성.</div>';
+  renderConsole(s, rn);
+}
+
+// ---- 콘솔 렌더 ----
+const ROLE={"claude-main":"구현","codex-main":"리팩터","codex-critic":"코드리뷰","gemini":"설계검토"};
+function opts(list,sel){return list.map(v=>`<option ${v===sel?"selected":""}>${v}</option>`).join("")}
+function fillSel(id,list,sel){const el=document.getElementById(id);if(el&&el.dataset.filled!=="1"+list.join()){el.innerHTML=opts(list,sel);el.dataset.filled="1"+list.join();}}
+function renderConsole(s,rn){
+  const workers=Object.keys(s.workers||{});
+  // producer/reviewer/regtask/flavor 드롭다운
+  fillSel("c-producer",workers,workers[0]);
+  fillSel("c-reviewer",workers.filter(w=>w!=="claude-main").concat(workers),undefined);
+  const rt=document.getElementById("c-regtask"); if(rt) rt.innerHTML=(s.tasks||[]).map(t=>`<option>${t}</option>`).join("")||"<option>(없음)</option>";
+  const fl=document.getElementById("c-flavor"); if(fl) fl.innerHTML=opts(s.flavors||[],s.flavor);
+  // 실시간 사용량 스트립
+  const us=document.getElementById("c-usage");
+  if(us) us.innerHTML=(s.tools||[]).map(t=>{
+    const wins=(t.windows||[]).map(w=>`<div class="us-win ${t.level==='stop'?'stop':t.level==='warn'?'warn':''}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i></div><b>${w.used_percent}%</b></div>`).join("")
+      || `<div class="us-win"><span>use</span><div class="g"><i style="width:${Math.round(t.ratio*100)}%"></i></div><b>${Math.round(t.ratio*100)}%</b></div>`;
+    return `<div class="us-tool"><div class="nm"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}</span>${badge(t)}</div>${wins}</div>`;
+  }).join("");
+  // 에이전트 배치 보드(워커→backend)
+  const bd=document.getElementById("board");
+  if(bd && !bd.dataset.dirty) bd.innerHTML=workers.map(w=>{
+    const be=s.workers[w].backend;
+    const list=["claude","codex","gemini","mock"];
+    return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
+      <select data-w="${w}" onchange="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'">${opts(list,be)}</select></div>`;
+  }).join("");
+  // 큐
+  const q=document.getElementById("c-queue");
+  if(q){const items=[]; if(rn.active)items.push(`▶ ${rn.task} (실행 중, ${rn.since||""})`);
+    (s.queue||[]).forEach((t,i)=>items.push(`⏸ ${t} (대기 #${i+1})`));
+    q.innerHTML=`<b>실행 큐</b> · 활성 ${rn.active?1:0} / 대기 ${(s.queue||[]).length}`+items.map(x=>`<div class="qitem">${x}</div>`).join("")
+      + (rn.last?`<div class="qitem" style="color:var(--ink2)">직전: ${rn.last}</div>`:"");}
+  // 채팅 트랜스크립트(최근 런 → 오래된 것 위)
+  const log=document.getElementById("console-log");
+  if(log){const runs=(s.runs||[]).slice(0,5).reverse();
+    log.innerHTML = runs.length ? runs.map(r=>`
+      <div class="you"><div class="b">${(r.task||r.run_id||"").slice(0,140)}
+        <div class="meta">${r.pattern||""} · ${r.run_id} · <span class="chip ${r.state}">${r.state}</span></div></div></div>
+      ${(r.stepdetail||[]).map(st=>`<div class="cstep"><div class="av">${st.worker}<br>${st.kind||""}</div>
+        <div class="cb"><div class="hd">#${st.index} <span class="chip ${st.status}">${st.status}</span>
+          ${st.score!=null?`<span class="score">SCORE ${st.score}</span>`:""}
+          ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,50)}</span>`:""}</div>
+          ${(st.summary||"").slice(0,120)}</div></div>`).join("")}`).join("")
+      : '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>';
+    if(rn.active) log.scrollTop=log.scrollHeight;
   }
+}
+function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
+async function sendTask(){
+  const task=document.getElementById("c-task").value.trim();
+  if(!task){document.getElementById("c-runmsg").textContent="목표를 입력하라";return;}
+  const pat=activePattern(), prod=document.getElementById("c-producer").value, rev=document.getElementById("c-reviewer").value;
+  const rounds=parseInt(document.getElementById("c-rounds").value)||2, score=parseFloat(document.getElementById("c-score").value)||8.0;
+  const iters=Math.max(1,parseInt(document.getElementById("c-iters").value)||1);
+  const wd=document.getElementById("c-workdir").value.trim(), vf=document.getElementById("c-verify").value.trim();
+  let spec;
+  if(pat==="pipeline") spec={pattern:"pipeline",task,stages:[{worker:prod,kind:"build",task},{worker:rev,kind:"review",task:"앞 단계 산출물을 리뷰하고 SCORE와 수정안을 제시하라."}]};
+  else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
+  else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
+  if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
+  await postRun({spec,iterations:iters},"c-runmsg");
+  document.getElementById("c-task").value="";
+}
+async function runRegistered(){
+  const t=document.getElementById("c-regtask").value;
+  if(!t||t==="(없음)"){document.getElementById("c-runmsg").textContent="등록 태스크 없음";return;}
+  await postRun({task:t},"c-runmsg");
+}
+async function postRun(payload,msgId){
+  try{const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const j=await r.json();
+    document.getElementById(msgId).textContent=r.ok?(j.queued?`큐 추가(#${j.position})`:"실행 시작"):("실패: "+(j.error||r.status));
+    load();
+  }catch(e){document.getElementById(msgId).textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
+}
+async function saveConfig(){
+  const bd=document.getElementById("board");
+  const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
+  const flavor=document.getElementById("c-flavor").value;
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor})});
+    const j=await r.json();
+    document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
+    if(r.ok){bd.dataset.dirty="";} load();
+  }catch(e){document.getElementById("board-msg").textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
 }
 async function runTask(name){
   try{

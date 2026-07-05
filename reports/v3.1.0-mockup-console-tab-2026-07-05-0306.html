@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YOK3X — 콘솔 탭 통합 예상도 (v3.1.0)</title>
+<style>
+:root{
+  --cream:#f6efda; --panel:#fffdf3; --ink:#1f1e1a; --ink2:#54513f;
+  --red:#e0483b; --yellow:#f4c02e; --blue:#4a86c6; --green:#5aa46a; --purple:#9070b0;
+  --tint-ok:#f2faf0; --tint-warn:#fdf6df; --tint-stop:#fcefed; --dot:rgba(31,30,26,.06);
+  --shadow:5px 5px 0 var(--ink); --shadow-sm:3px 3px 0 var(--ink);
+  --font-display:"Comic Sans MS","Comic Neue","Chalkboard SE",system-ui,cursive;
+  --font-body:system-ui,"Segoe UI","Malgun Gothic","Apple SD Gothic Neo",Roboto,sans-serif;
+  --font-code:"D2Coding","Cascadia Code","Consolas",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-body);color:var(--ink);line-height:1.5;font-size:14px;
+  background-color:var(--cream);background-image:radial-gradient(var(--dot) 1.3px,transparent 1.3px);background-size:16px 16px}
+.wrap{max-width:1200px;margin:0 auto;padding:18px 16px 50px}
+code,.mono{font-family:var(--font-code)}
+.badge{font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:2px 9px;box-shadow:2px 2px 0 var(--ink);white-space:nowrap}
+.badge.live{background:var(--blue);color:#fff}.badge.est{background:var(--yellow)}.badge.ledger{background:#e7e0cc}
+
+/* 헤더 */
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--panel);border:3px solid var(--ink);
+  border-radius:18px;box-shadow:var(--shadow);padding:12px 20px}
+.logo b{font-family:var(--font-display);font-size:30px;text-shadow:2px 2px 0 var(--yellow),3px 3px 0 var(--ink)}
+.logo .sub{font-size:12.5px;color:var(--ink2);margin-left:8px}
+.spacer{flex:1}
+.pill{border:2.5px solid var(--ink);border-radius:999px;background:var(--cream);padding:5px 13px;font-size:12.5px;box-shadow:var(--shadow-sm)}
+.pill.flavor{background:var(--yellow)}.pill.live{background:var(--green);color:#fff}
+.guard{display:flex;align-items:center;gap:7px;font-size:12.5px}
+.sw{width:52px;height:26px;border:2.5px solid var(--ink);border-radius:999px;background:var(--green);position:relative;box-shadow:var(--shadow-sm)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;background:#fff;border:2.5px solid var(--ink);border-radius:50%}
+.clock{font-family:var(--font-code);font-size:12.5px;color:var(--ink2)}
+.zig{height:13px;margin:12px 0 14px;background:linear-gradient(135deg,var(--red) 25%,transparent 25%) 0 0/13px 13px,linear-gradient(-135deg,var(--red) 25%,transparent 25%) 0 0/13px 13px}
+
+/* 탭바 */
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.tab{font-family:var(--font-display);font-size:15px;cursor:pointer;border:3px solid var(--ink);border-radius:12px;
+  background:var(--panel);padding:8px 17px;box-shadow:var(--shadow-sm);position:relative}
+.tab.active{background:var(--red);color:#fff;box-shadow:var(--shadow)}
+.tab .new{position:absolute;top:-9px;right:-8px;background:var(--green);color:#fff;font-family:var(--font-body);
+  font-size:9px;border:2px solid var(--ink);border-radius:999px;padding:0 5px}
+.view{display:none}.view.active{display:block}
+
+.panel{background:var(--panel);border:3px solid var(--ink);border-radius:18px;box-shadow:var(--shadow);padding:16px 18px;margin-bottom:14px}
+.panel h2{font-family:var(--font-display);margin:0 0 4px;font-size:18px;display:flex;align-items:center;gap:8px}
+.panel h2 .ic{width:14px;height:14px;background:var(--yellow);border:2.5px solid var(--ink);border-radius:5px;transform:rotate(-8deg)}
+.sub{color:var(--ink2);font-size:12px;margin:0 0 12px}
+
+/* 대시보드(간략) */
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:820px){.grid3{grid-template-columns:1fr}}
+.tool{border:3px solid var(--ink);border-radius:14px;padding:12px;box-shadow:var(--shadow-sm);background:var(--tint-ok)}
+.tool .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.tool .nm{font-family:var(--font-display);font-size:15px}
+.gauge{height:14px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden;margin:5px 0}
+.gauge i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--green) 0 7px,#71b47f 7px 14px)}
+.g2 i{background:repeating-linear-gradient(45deg,var(--yellow) 0 7px,#f6cf55 7px 14px)}
+.tool .st{font-family:var(--font-code);font-size:11px;color:var(--ink2)}
+
+/* ===== 콘솔 ===== */
+.cols{display:grid;grid-template-columns:1.55fr 1fr;gap:14px}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+.chat{height:400px;overflow-y:auto;border:2.5px dashed var(--ink);border-radius:12px;background:var(--cream);padding:11px}
+.you{display:flex;justify-content:flex-end;margin-bottom:7px}
+.you .b{background:var(--blue);color:#fff;border:2.5px solid var(--ink);border-radius:14px 14px 3px 14px;padding:8px 12px;max-width:82%;box-shadow:var(--shadow-sm);font-size:13px}
+.you .b .meta{font-family:var(--font-code);font-size:10px;opacity:.85;margin-top:3px}
+.step{display:flex;gap:7px;align-items:flex-start;margin:6px 0}
+.step .av{font-family:var(--font-display);font-size:10.5px;min-width:74px;border:2.5px solid var(--ink);border-radius:9px;background:var(--panel);padding:4px 5px;text-align:center;box-shadow:2px 2px 0 var(--ink)}
+.av.claude{background:#e7f0fa}.av.codex{background:#fdeede}.av.gemini{background:#e9f6ec}.av.sys{background:#efe9f4}
+.step .body{flex:1;border:2.5px solid var(--ink);border-radius:12px;background:var(--panel);padding:7px 10px;box-shadow:2px 2px 0 var(--ink);font-size:12.5px}
+.step .hd{font-size:10.5px;color:var(--ink2);margin-bottom:2px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.chip{font-family:var(--font-code);font-size:9.5px;border:2px solid var(--ink);border-radius:999px;padding:1px 7px;background:var(--cream)}
+.chip.ok{background:var(--green);color:#fff}.chip.warn{background:var(--yellow)}.chip.score{background:var(--yellow)}
+.mini{font-family:var(--font-code);font-size:11px;color:var(--ink2);background:var(--cream);border-radius:6px;padding:3px 6px;margin-top:3px}
+.sysline{text-align:center;font-size:10.5px;margin:7px 0}.sysline span{background:var(--tint-warn);border:2px solid var(--ink);border-radius:999px;padding:2px 10px}
+.input{margin-top:11px;border:3px solid var(--ink);border-radius:14px;background:var(--cream);padding:10px;box-shadow:var(--shadow-sm)}
+.input textarea{width:100%;font-family:var(--font-code);font-size:12.5px;border:2.5px solid var(--ink);border-radius:9px;padding:7px;min-height:46px;resize:vertical;background:var(--panel)}
+.ctrls{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.seg{display:inline-flex;border:2.5px solid var(--ink);border-radius:10px;overflow:hidden;box-shadow:2px 2px 0 var(--ink)}
+.seg button{font-family:var(--font-display);font-size:11.5px;border:none;border-right:2.5px solid var(--ink);background:var(--panel);padding:6px 10px;cursor:pointer}
+.seg button:last-child{border-right:none}.seg button.on{background:var(--red);color:#fff}
+select{font-family:var(--font-body);font-size:12px;border:2.5px solid var(--ink);border-radius:9px;background:var(--panel);padding:5px 7px;box-shadow:2px 2px 0 var(--ink)}
+.tgl{font-size:11.5px;display:flex;align-items:center;gap:5px}
+.sw2{width:44px;height:23px;border:2.5px solid var(--ink);border-radius:999px;background:#cfc8b4;position:relative;box-shadow:2px 2px 0 var(--ink)}
+.sw2::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;background:#fff;border:2.5px solid var(--ink);border-radius:50%}
+.btn{font-family:var(--font-display);font-size:13px;cursor:pointer;border:3px solid var(--ink);border-radius:11px;background:var(--red);color:#fff;padding:7px 16px;box-shadow:var(--shadow-sm)}
+.btn.plain{background:var(--panel);color:var(--ink)}
+/* 할당 보드 */
+.cli{display:flex;gap:7px;margin-bottom:11px}
+.clicard{flex:1;border:2.5px solid var(--ink);border-radius:12px;padding:7px;box-shadow:2px 2px 0 var(--ink);text-align:center;font-size:11.5px;background:var(--tint-ok)}
+.clicard .nm{font-family:var(--font-display);font-size:13px;display:block;margin-bottom:2px}
+.clicard .u{font-family:var(--font-code);font-size:10px;color:var(--ink2);margin-top:2px}
+.assign{border:2.5px solid var(--ink);border-radius:12px;background:var(--cream);padding:3px;box-shadow:2px 2px 0 var(--ink)}
+.arow{display:flex;align-items:center;gap:7px;padding:6px 8px;border-bottom:2px dashed rgba(31,30,26,.18)}
+.arow:last-child{border-bottom:none}.arow .fn{flex:1;font-size:12.5px}.arow .fn small{color:var(--ink2);font-family:var(--font-code);font-size:10px}
+.arow select{min-width:98px}.changed{border-color:var(--red)!important;box-shadow:2px 2px 0 var(--red)!important}
+.save{display:flex;gap:8px;align-items:center;margin-top:11px}.hint{font-size:11px;color:var(--red)}
+.qbox{margin-top:11px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:8px 10px;font-size:11.5px}
+.qitem{font-family:var(--font-code);font-size:11px;padding:2px 0}
+.note{margin-top:11px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:7px 10px;font-size:11px;color:var(--ink2)}
+.callout{border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:10px 13px;font-size:12.5px;color:var(--ink2)}
+/* 실시간 사용량 스트립(입력창 바로 아래) */
+.usagestrip{margin-top:11px;border:3px solid var(--ink);border-radius:14px;background:var(--tint-ok);padding:9px 11px;box-shadow:var(--shadow-sm)}
+.usagestrip .t{font-size:11px;color:var(--ink2);margin-bottom:6px}
+.us-row{display:flex;gap:9px;flex-wrap:wrap}
+.us-tool{flex:1;min-width:150px;border:2.5px solid var(--ink);border-radius:10px;background:var(--panel);padding:6px 9px;box-shadow:2px 2px 0 var(--ink)}
+.us-tool .nm{font-family:var(--font-display);font-size:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.us-win{display:flex;align-items:center;gap:5px;font-family:var(--font-code);font-size:10px;margin:2px 0}
+.us-win .g{flex:1;height:9px;border:2px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden}
+.us-win .g i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--green) 0 6px,#71b47f 6px 12px)}
+.us-win.warn .g i{background:repeating-linear-gradient(45deg,var(--yellow) 0 6px,#f6cf55 6px 12px)}
+.us-win.tick b{color:var(--red)}
+.foot{text-align:center;font-size:11px;color:var(--ink2);margin-top:20px;font-family:var(--font-code)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="logo"><b>YOK3X</b><span class="sub">멀티 에이전트 코딩 콘솔 v3.1</span></div>
+    <div class="spacer"></div>
+    <span class="pill flavor">flavor: claude-orchestrator</span>
+    <span class="pill live">● LIVE</span>
+    <div class="guard">가드 <div class="sw"></div><b>ON</b></div>
+    <span class="clock">03:06:12</span>
+  </div>
+  <div class="zig"></div>
+
+  <!-- 탭바: 기존 + 콘솔(신규, 태스크 흡수) -->
+  <div class="tabs">
+    <div class="tab" data-v="dash">대시보드</div>
+    <div class="tab active" data-v="console">콘솔<span class="new">NEW</span></div>
+    <div class="tab" data-v="settings">설정 · 한도</div>
+    <div class="tab" data-v="knot">knot</div>
+  </div>
+
+  <!-- 대시보드 -->
+  <section id="dash" class="view">
+    <div class="panel">
+      <h2><span class="ic"></span> 오늘 사용량 — 구독 한도 대비</h2>
+      <div class="grid3">
+        <div class="tool"><div class="h"><span class="nm">🔵 claude</span><span class="badge est">추정</span></div>
+          <div class="gauge g2"><i style="width:30%"></i></div><div class="st">7일 30% · 5h 31%</div></div>
+        <div class="tool"><div class="h"><span class="nm">🟠 codex</span><span class="badge live">실측</span></div>
+          <div class="gauge"><i style="width:24%"></i></div><div class="st">7일 24% · live</div></div>
+        <div class="tool"><div class="h"><span class="nm">🟢 gemini</span><span class="badge ledger">원장</span></div>
+          <div class="gauge"><i style="width:6%"></i></div><div class="st">6% · 60 calls</div></div>
+      </div>
+      <p class="sub" style="margin-top:12px">↑ 기존 대시보드 탭(실데이터). 코치·최근 런은 생략(예상도).</p>
+    </div>
+  </section>
+
+  <!-- 콘솔(활성) -->
+  <section id="console" class="view active">
+    <div class="callout" style="margin-bottom:14px">💡 <b>이 "콘솔" 탭이 신규.</b> 기존 정적 "태스크" 탭을 흡수했다 — 작업 입력(좌)과 CLI-기능 배치(우)를 한 화면에서. 실물은 <code>/api/run · /api/config · /api/run/log</code>에 배선.</div>
+    <div class="cols">
+      <!-- 좌: 채팅 -->
+      <div class="panel">
+        <h2><span class="ic"></span> 작업 콘솔</h2>
+        <p class="sub">작업을 입력하면 큐에 쌓여 순차 실행. 스텝이 실시간 카드로 흐른다.</p>
+        <div class="chat">
+          <div class="you"><div class="b">슬러그 변환 함수 + 단위테스트 작성. 유니코드·연속공백·빈 입력 처리.
+            <div class="meta">producer-reviewer · claude-main → codex-critic · 자동</div></div></div>
+          <div class="step"><div class="av claude">claude-main<br>구현</div>
+            <div class="body"><div class="hd">#1 구현 <span class="chip ok">done</span></div>slugify()+pytest 5케이스. 계획→구현→SELF-CHECK.
+              <div class="mini">SELF-CHECK: 빈 입력 미검증(리뷰 대기)</div></div></div>
+          <div class="step"><div class="av sys">verify</div>
+            <div class="body"><div class="hd">테스트 게이트 <span class="chip ok">exit 0 · 통과</span></div><span class="mono">pytest -q → 5 passed</span></div></div>
+          <div class="step"><div class="av codex">codex-critic<br>리뷰</div>
+            <div class="body"><div class="hd">#2 리뷰 <span class="chip score">SCORE 7</span> <span class="chip warn">기준 미달</span></div>빈 입력 엣지케이스·타입힌트 지적.</div></div>
+          <div class="step"><div class="av codex">codex-critic<br>리뷰</div>
+            <div class="body"><div class="hd">#4 리뷰 <span class="chip score">SCORE 9</span> <span class="chip ok">통과</span></div>수정 반영 확인 → 종료. <span class="mono">final_output.md</span></div></div>
+          <div class="sysline"><span>💡 코치: codex 5시간 창 곧 리셋 — 지금 밀어붙이기 좋음</span></div>
+        </div>
+        <div class="input">
+          <textarea placeholder="수행할 작업을 입력…  (예: /health 엔드포인트 추가 + 테스트)"></textarea>
+          <div class="ctrls">
+            <div class="seg"><button class="on">producer-reviewer</button><button>pipeline</button><button>fanout</button></div>
+            <label class="tgl">게이트<div class="sw2"></div></label>
+            <div class="spacer"></div>
+            <button class="btn">전송 ▶</button>
+          </div>
+        </div>
+        <!-- 실시간 사용량 스트립 — 채팅 입력 바로 아래, 작업 돌수록 실시간 증가 -->
+        <div class="usagestrip">
+          <div class="t">📊 실시간 사용량 — 작업이 돌수록 게이지가 오른다 · 한도 도달 시 큐 자동 정지</div>
+          <div class="us-row">
+            <div class="us-tool"><div class="nm"><span>🔵 claude</span><span class="badge est">추정</span></div>
+              <div class="us-win warn tick"><span>5h</span><div class="g"><i style="width:31%"></i></div><b>31%▲</b></div>
+              <div class="us-win"><span>7d</span><div class="g"><i style="width:30%"></i></div><b>30%</b></div></div>
+            <div class="us-tool"><div class="nm"><span>🟠 codex</span><span class="badge live">실측</span></div>
+              <div class="us-win"><span>5h</span><div class="g"><i style="width:1%"></i></div><b>1%</b></div>
+              <div class="us-win"><span>7d</span><div class="g"><i style="width:24%"></i></div><b>24%</b></div></div>
+            <div class="us-tool"><div class="nm"><span>🟢 gemini</span><span class="badge ledger">원장</span></div>
+              <div class="us-win"><span>일</span><div class="g"><i style="width:6%"></i></div><b>6%</b></div>
+              <div class="us-win"><span>&nbsp;</span><div class="g" style="visibility:hidden"><i></i></div><b>&nbsp;</b></div></div>
+          </div>
+        </div>
+      </div>
+      <!-- 우: 배치 -->
+      <div class="panel">
+        <h2><span class="ic"></span> 에이전트 배치</h2>
+        <p class="sub">어떤 CLI에 어떤 기능을 맡길지. 한도는 ← 좌측 실시간 스트립 참고해 재배치.</p>
+        <div class="assign">
+          <div class="arow"><div class="fn">구현 <small>build</small></div><select><option>🔵 claude</option><option>codex</option></select></div>
+          <div class="arow"><div class="fn">리팩터 <small>refactor</small></div><select><option>🟠 codex</option><option>claude</option></select></div>
+          <div class="arow"><div class="fn">코드리뷰 <small>review</small></div><select class="changed"><option>🟢 gemini</option><option>codex</option></select></div>
+          <div class="arow"><div class="fn">설계검토 <small>design_review</small></div><select><option>🟢 gemini</option><option>codex</option></select></div>
+          <div class="arow"><div class="fn">테스트 <small>test</small></div><select><option>🔵 claude</option><option>codex</option></select></div>
+        </div>
+        <div class="save"><button class="btn">저장</button><button class="btn plain">되돌리기</button><span class="hint">● 리뷰 codex→gemini(미저장)</span></div>
+        <div class="qbox"><b>실행 큐</b> · 활성 1 / 대기 1
+          <div class="qitem">▶ 슬러그 함수 (step 4/…)</div><div class="qitem">⏸ LRU 캐시 (대기 #1)</div></div>
+        <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 실행은 게이트 기본 · 가드 stop 시 큐 중단</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 설정 -->
+  <section id="settings" class="view">
+    <div class="panel"><h2><span class="ic"></span> 설정 · 한도</h2>
+      <p class="sub">가드 임계·요금제·calibrate·backends. (기존 탭 유지, 예상도에선 생략)</p>
+      <div class="callout">배치 보드가 콘솔로 이동했으므로, 이 탭은 임계 슬라이더·요금제·calibrate 등 "값 설정"에 집중.</div></div>
+  </section>
+  <section id="knot" class="view">
+    <div class="panel"><h2><span class="ic"></span> knot</h2><p class="sub">지식그물(기존 유지).</p></div>
+  </section>
+
+  <div class="foot">YOK3X · 콘솔 탭 통합 예상도(정적 목업) · 탭을 눌러 전환해보세요</div>
+</div>
+<script>
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");document.getElementById(t.dataset.v).classList.add("active");
+});
+</script>
+</body>
+</html>

@@ -13,7 +13,7 @@ from typing import Any
 YOK3X_DIR_NAME = ".yok3x"
 
 DEFAULT_YOK3X = {
-    "version": "3.0",
+    "version": "3.1",
     "flavor": "claude-orchestrator",
     "auto_approve": False,          # 승인 게이트 기본값: 사람이 y/n
     "context_max_chars": 8000,      # context.md 글자 제한
