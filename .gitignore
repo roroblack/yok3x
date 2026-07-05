@@ -4,10 +4,19 @@ __pycache__/
 .venv/
 venv/
 
-# harness 런타임 산출물(프로젝트별 생성, 이식 불필요)
-.harness/
+# yok3x 런타임 산출물(프로젝트별 생성, 이식 불필요)
+.yok3x/
 *.log
+
+# 로컬 백업 스냅샷(버전관리가 이력을 보존하므로 커밋 불필요)
+backup/
+
+# JS 샘플 의존성 / 브라우저 스냅샷(대용량, 소스 아님)
+node_modules/
+*.mhtml
+*.mht
 
 # 임시/스크래치
 _extracted/
+_protorun*/
 *.tmp

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YOK3X — 멀티 에이전트 콘솔</title>
+<style>
+:root{
+  --cream:#f6efda; --panel:#fffdf3; --ink:#1f1e1a; --ink2:#54513f;
+  --red:#e0483b; --yellow:#f4c02e; --blue:#4a86c6; --green:#5aa46a; --purple:#9070b0;
+  --tint-ok:#f2faf0; --tint-warn:#fdf6df; --tint-stop:#fcefed;
+  --dot:rgba(31,30,26,.06);
+  --shadow:5px 5px 0 var(--ink); --shadow-sm:3px 3px 0 var(--ink);
+  /* 폰트: 제목=코믹 / 본문·데이터=가독성 산세리프 / 코드·로그=코딩 폰트 (모두 CDN 0, 시스템 폰트) */
+  --font-display:"Comic Sans MS","Comic Neue","Chalkboard SE",system-ui,cursive;
+  --font-body:system-ui,"Segoe UI Variable","Segoe UI","Malgun Gothic","Apple SD Gothic Neo",Roboto,sans-serif;
+  --font-code:"D2Coding","Cascadia Code","Cascadia Mono","Consolas","JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-body);color:var(--ink);line-height:1.5;
+  background-color:var(--cream);
+  background-image:radial-gradient(var(--dot) 1.3px,transparent 1.3px);background-size:16px 16px;
+  -webkit-font-smoothing:antialiased;font-size:14px}
+.wrap{max-width:1160px;margin:0 auto;padding:20px 18px 60px}
+code,.mono,.rid{font-family:var(--font-code)}
+
+/* 지그재그 띠 */
+.zig{height:14px;margin:14px 0;
+  background:linear-gradient(135deg,var(--red) 25%,transparent 25%) 0 0/14px 14px,
+             linear-gradient(-135deg,var(--red) 25%,transparent 25%) 0 0/14px 14px;}
+
+/* 헤더 */
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:var(--panel);
+  border:3px solid var(--ink);border-radius:18px;box-shadow:var(--shadow);padding:14px 20px}
+.logo{display:flex;align-items:baseline;gap:10px}
+.logo b{font-family:var(--font-display);font-size:32px;letter-spacing:.5px;
+  text-shadow:2px 2px 0 var(--yellow),3px 3px 0 var(--ink)}
+.logo .sub{font-size:12.5px;color:var(--ink2)}
+.spacer{flex:1}
+.pill{border:2.5px solid var(--ink);border-radius:999px;background:var(--cream);
+  padding:5px 13px;font-size:12.5px;box-shadow:var(--shadow-sm);white-space:nowrap}
+.pill.flavor{background:var(--yellow)}
+.pill.live{background:var(--green);color:#fff}.pill.mock{background:#ded7c4}
+.clock{font-family:var(--font-code);font-size:12.5px;color:var(--ink2)}
+.guard{display:flex;align-items:center;gap:7px;font-size:12.5px}
+.switch{width:56px;height:28px;border:2.5px solid var(--ink);border-radius:999px;background:var(--green);
+  position:relative;cursor:pointer;box-shadow:var(--shadow-sm)}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;background:#fff;
+  border:2.5px solid var(--ink);border-radius:50%;transition:left .15s}
+.switch.off{background:#cfc8b4}.switch.off::after{left:29px}
+.btn{font-family:var(--font-body);font-weight:600;font-size:13px;cursor:pointer;border:2.5px solid var(--ink);
+  border-radius:11px;background:var(--panel);padding:8px 14px;box-shadow:var(--shadow-sm)}
+.btn:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink)}
+
+/* 탭 */
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.tab{font-family:var(--font-display);font-size:15px;cursor:pointer;border:3px solid var(--ink);
+  border-radius:12px;background:var(--panel);padding:8px 16px;box-shadow:var(--shadow-sm)}
+.tab.active{background:var(--red);color:#fff;box-shadow:var(--shadow)}
+.view{display:none}.view.active{display:block}
+
+/* 패널 */
+.panel{background:var(--panel);border:3px solid var(--ink);border-radius:18px;box-shadow:var(--shadow);
+  padding:18px 20px;margin:16px 0}
+.panel h2{font-family:var(--font-display);margin:0 0 3px;font-size:19px;display:flex;align-items:center;gap:8px}
+.panel h2 .ic{width:15px;height:15px;background:var(--yellow);border:2.5px solid var(--ink);border-radius:5px;transform:rotate(-8deg)}
+.sub{color:var(--ink2);font-size:12px;margin:0 0 14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:840px){.grid3{grid-template-columns:1fr}}
+
+/* 도구 카드 (lovable식 둥근 파스텔 + 상태색) */
+.tool{border:3px solid var(--ink);border-radius:16px;padding:14px 15px;box-shadow:var(--shadow-sm);background:var(--tint-ok)}
+.tool.warn{background:var(--tint-warn)}.tool.stop{background:var(--tint-stop)}
+.tool .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.tool .nm{font-family:var(--font-display);font-size:17px;display:flex;align-items:center;gap:7px}
+.emoji{font-size:18px}
+.badge{font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:2px 9px;box-shadow:2px 2px 0 var(--ink);white-space:nowrap}
+.badge.live{background:var(--blue);color:#fff}.badge.est{background:var(--yellow)}.badge.ledger{background:#e7e0cc}
+.plan{font-size:11.5px;color:var(--ink2);margin-bottom:8px}
+.win{margin:9px 0}
+.win .l{display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px}
+.win .l .rst{color:var(--ink2);font-family:var(--font-code);font-size:10.5px}
+.win .l b{font-family:var(--font-code)}
+.gauge{height:16px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden}
+.gauge i{display:block;height:100%;border-right:2.5px solid var(--ink)}
+.f-ok{background:repeating-linear-gradient(45deg,var(--green) 0 7px,#71b47f 7px 14px)}
+.f-warn{background:repeating-linear-gradient(45deg,var(--yellow) 0 7px,#f6cf55 7px 14px)}
+.f-stop{background:repeating-linear-gradient(45deg,var(--red) 0 7px,#ea6459 7px 14px)}
+.stat{font-family:var(--font-code);font-size:11px;color:var(--ink2);margin-top:8px;display:flex;gap:11px;flex-wrap:wrap}
+.stat b{color:var(--ink)}
+
+/* 코치 말풍선 */
+.bub{position:relative;background:var(--panel);border:3px solid var(--ink);border-radius:15px;
+  padding:11px 14px;margin:14px 0 18px;box-shadow:var(--shadow-sm);font-size:13.5px}
+.bub::after,.bub::before{content:"";position:absolute;bottom:-16px;left:30px;border:9px solid transparent;border-top-color:var(--ink)}
+.bub::before{bottom:-12px;border-top-color:var(--panel);z-index:2}
+.bub .tg{font-family:var(--font-body);font-weight:700;border:2px solid var(--ink);border-radius:8px;padding:1px 8px;font-size:11.5px;margin-right:8px;white-space:nowrap}
+.tg.ok{background:var(--green);color:#fff}.tg.warn{background:var(--yellow)}.tg.stop{background:var(--red);color:#fff}
+
+/* 런 */
+.run{border:3px solid var(--ink);border-radius:14px;background:var(--cream);padding:11px 15px;margin:11px 0;box-shadow:var(--shadow-sm)}
+.run .rh{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px;margin-bottom:6px}
+.run .rid{font-family:var(--font-code);font-weight:700}
+.chip{font-family:var(--font-code);font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:1px 8px;background:var(--panel)}
+.chip.pat{background:var(--purple);color:#fff}.chip.done{background:var(--green);color:#fff}
+.chip.running{background:var(--blue);color:#fff}.chip.stopped_by_guard,.chip.aborted{background:var(--red);color:#fff}
+.step{display:flex;align-items:center;gap:8px;font-size:12px;padding:3px 0;border-top:2px dashed rgba(31,30,26,.2)}
+.step .n{font-family:var(--font-code);min-width:26px;height:22px;border:2px solid var(--ink);border-radius:6px;background:var(--panel);display:grid;place-items:center;font-size:10.5px}
+.step .wk{font-family:var(--font-code)}
+.score{margin-left:auto;font-family:var(--font-code);font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:1px 8px;background:var(--yellow)}
+.iss{color:var(--red);font-size:10.5px}
+
+/* 폼(정적 뷰) */
+label.f{display:block;font-size:12.5px;margin:11px 0 4px;font-weight:600}
+input,select,textarea{font-family:var(--font-body);font-size:13px;width:100%;border:2.5px solid var(--ink);
+  border-radius:9px;background:var(--panel);padding:7px 10px;box-shadow:var(--shadow-sm)}
+textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
+.row{display:flex;gap:11px;flex-wrap:wrap}.row>*{flex:1;min-width:150px}
+.seg{display:inline-flex;border:3px solid var(--ink);border-radius:11px;overflow:hidden;box-shadow:var(--shadow-sm);flex-wrap:wrap}
+.seg button{font-family:var(--font-display);font-size:13px;border:none;border-right:2.5px solid var(--ink);background:var(--panel);padding:8px 14px;cursor:pointer}
+.seg button:last-child{border-right:none}.seg button.on{background:var(--red);color:#fff}
+.note{border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:9px 12px;font-size:12px;color:var(--ink2);margin-top:11px}
+.note code{font-size:11.5px}
+.foot{text-align:center;font-size:11px;color:var(--ink2);margin-top:24px;font-family:var(--font-code)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="logo"><b>YOK3X</b><span class="sub">멀티 에이전트 · 코딩 콘솔 <span id="ver" class="mono"></span></span></div>
+    <div class="spacer"></div>
+    <span class="pill flavor" id="flavor">flavor: …</span>
+    <span class="pill" id="livebadge">…</span>
+    <div class="guard">가드 <div id="sw" class="switch"></div><b id="gtext">…</b></div>
+    <button class="btn" onclick="load()">↻ 새로고침</button>
+    <span class="clock" id="clock"></span>
+  </div>
+  <div class="zig"></div>
+
+  <div class="tabs">
+    <div class="tab active" data-v="dash">대시보드</div>
+    <div class="tab" data-v="tasks">태스크</div>
+    <div class="tab" data-v="settings">설정 · 한도</div>
+    <div class="tab" data-v="knot">knot</div>
+  </div>
+
+  <!-- 대시보드 (실데이터) -->
+  <section id="dash" class="view active">
+    <div class="panel">
+      <h2><span class="ic"></span> 오늘 사용량 — 구독 한도 대비</h2>
+      <p class="sub">소스 배지 = <b>실측</b>(codex 라이브) / <b>추정</b>(claude 롤링) / <b>원장</b>(자체예산). 가드 도달 시 루프 자동 정지.</p>
+      <div class="grid3" id="tools"></div>
+    </div>
+    <div class="panel">
+      <h2><span class="ic"></span> 코치 — 어느 작업을 · 왜 · 언제</h2>
+      <div id="coach"></div>
+    </div>
+    <div class="panel">
+      <h2><span class="ic"></span> 최근 런 — 워커 진행 상태</h2>
+      <div id="runs"></div>
+    </div>
+  </section>
+
+  <!-- 태스크 -->
+  <section id="tasks" class="view">
+    <div class="panel">
+      <h2><span class="ic"></span> 태스크 실행 <span id="runstatus" class="mono" style="font-size:12px;color:var(--ink2)"></span></h2>
+      <p class="sub">등록된 태스크를 실행(승인 자동, 가드 적용). 진행은 대시보드 · 아래 목록에 반영된다.</p>
+      <div id="runbar"><span class="sub">태스크 로딩…</span></div>
+    </div>
+    <div class="panel">
+      <h2><span class="ic"></span> 태스크 편집기</h2>
+      <p class="sub">패턴을 고르고 목표·워커를 정한 뒤 실행(<code>yok3x run/loop</code>). yok3x 기법(계획→구현→자가검증)이 자동 주입된다.</p>
+      <div class="seg"><button class="on">producer-reviewer</button><button>pipeline</button><button>fanout-fanin</button></div>
+      <label class="f">목표(task)</label>
+      <textarea>문자열을 유효한 슬러그로 변환하는 함수 작성. 유니코드·연속 공백·빈 입력 엣지케이스 처리 + 단위 테스트 포함.</textarea>
+      <div class="row">
+        <div><label class="f">producer</label><select><option>claude-main</option><option>codex-main</option></select></div>
+        <div><label class="f">reviewer</label><select><option>codex-critic</option><option>gemini</option></select></div>
+        <div><label class="f">max_rounds</label><input value="3"></div>
+        <div><label class="f">pass_score</label><input value="8.0"></div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
+        <button class="btn" style="background:var(--red);color:#fff">▶ Run</button>
+        <button class="btn" style="background:var(--blue);color:#fff">↻ Loop -n 5</button>
+        <button class="btn">💾 저장</button>
+      </div>
+      <div class="note">승인 게이트: 스텝마다 <code>y</code> 승인 / <code>N</code> 건너뜀 / <code>q</code> 중단.</div>
+    </div>
+  </section>
+
+  <!-- 설정(정적 UI) -->
+  <section id="settings" class="view">
+    <div class="panel">
+      <h2><span class="ic"></span> 가드 · 한도</h2>
+      <div class="row">
+        <div><label class="f">경고(soft) 80%</label><input type="range" value="80"></div>
+        <div><label class="f">정지(hard) 100%</label><input type="range" value="100"></div>
+      </div>
+      <label class="f">claude 요금제 (또는 <code>yok3x calibrate claude 7d &lt;실제%&gt;</code>로 정확 보정)</label>
+      <div class="seg"><button>pro</button><button class="on">max20x</button><button>max5x</button></div>
+      <div class="note">codex는 app-server가 plan 자동 감지 · gemini는 원장 예산.</div>
+    </div>
+    <div class="panel">
+      <h2><span class="ic"></span> 워커</h2>
+      <div class="row">
+        <div class="tool" style="background:var(--panel)"><b>claude-main</b><div class="sub" style="margin:2px 0 0">구현 · <span class="mono">claude</span></div></div>
+        <div class="tool" style="background:var(--panel)"><b>codex-main</b><div class="sub" style="margin:2px 0 0">리팩터 · <span class="mono">codex</span></div></div>
+        <div class="tool" style="background:var(--panel)"><b>codex-critic</b><div class="sub" style="margin:2px 0 0">코드 리뷰 · <span class="mono">codex</span></div></div>
+        <div class="tool" style="background:var(--panel)"><b>gemini</b><div class="sub" style="margin:2px 0 0">설계 검토 · <span class="mono">gemini</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- knot(정적 UI) -->
+  <section id="knot" class="view">
+    <div class="panel">
+      <h2><span class="ic"></span> knot 지식그물</h2>
+      <p class="sub">에이전트 공유 기억(평문 md). 위키링크 <code>[[...]]</code> 지원 · <code>yok3x knot save/query/lint</code>.</p>
+      <div class="row" style="margin-bottom:12px"><input placeholder="🔍 검색 (예: LRU cache)" style="flex:3"><button class="btn">검색</button><button class="btn">＋save</button></div>
+      <div class="tool" style="background:var(--panel);margin-bottom:9px"><b class="rid">lru-cache-design</b><div class="sub" style="margin:3px 0 0">get/put O(1), 용량 초과 시 LRU 제거. 이중연결리스트+해시맵.</div></div>
+      <div class="tool" style="background:var(--panel)"><b class="rid" style="color:var(--red)">⚠ lint</b><div class="sub" style="margin:3px 0 0">run-085912.md → 깨진 링크 <code>[[csv-stream]]</code></div></div>
+    </div>
+  </section>
+
+  <div class="foot" id="foot">yok3x gui prototype · <span id="src2"></span></div>
+</div>
+
+<script>
+const MOCK = {version:"3.0(mock)",flavor:"claude-orchestrator",guard:{enabled:true,soft:.8,hard:1},
+ tools:[
+  {backend:"claude",level:"ok",ratio:.31,source:"claude_transcripts",real:false,windows:[{name:"5h",used_percent:31,reset:"5시간 롤링"},{name:"7d",used_percent:30,reset:"캘리브레이트됨"}],calls:12,tokens:50400000,usd:0},
+  {backend:"codex",level:"ok",ratio:.24,source:"codex_appserver",real:true,windows:[{name:"5h",used_percent:1,reset:"4시간 59분 후"},{name:"7d",used_percent:24,reset:"2일 13시간 후"}],calls:8,tokens:0,usd:0},
+  {backend:"gemini",level:"ok",ratio:.06,source:"ledger",real:false,windows:[],calls:60,tokens:120000,usd:0}],
+ coach:["[여유·추정] claude 5시간 31% · 7일 30%. build/test 등 큰 작업 지금 돌리기 좋다.",
+        "[여유·실측] codex 5시간 1% · 7일 24%. 5시간 창이 곧 리셋되고 사용률도 낮다 — 지금 큰 배치를 밀어붙여라.",
+        "[여유·원장] gemini 6% (60 calls). 지금 돌려도 무방."],
+ runs:[{run_id:"run_1329(mock)",pattern:"producer-reviewer",state:"done",steps:2,done:2,last:"codex-critic",score:8,
+        stepdetail:[{index:1,worker:"claude-main",status:"done",score:null,issues:[]},{index:2,worker:"codex-critic",status:"done",score:8,issues:[]}]}]};
+
+const EMOJI={claude:"🔵",codex:"🟠",gemini:"🟢"};
+function badge(t){ if(t.real) return '<span class="badge live">실측</span>';
+  if(t.source==="claude_transcripts") return '<span class="badge est">추정</span>';
+  return '<span class="badge ledger">원장</span>'; }
+function fcls(l){return l==="stop"?"f-stop":l==="warn"?"f-warn":"f-ok"}
+function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":n}
+
+function render(s){
+  document.getElementById("ver").textContent="v"+(s.version||"");
+  document.getElementById("flavor").textContent="flavor: "+s.flavor;
+  const on=s.guard.enabled; const sw=document.getElementById("sw");
+  sw.classList.toggle("off",!on); document.getElementById("gtext").textContent=on?"ON":"OFF";
+  // tools
+  document.getElementById("tools").innerHTML=s.tools.map(t=>{
+    const wins=t.windows.length?t.windows.map(w=>`
+      <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":w.name==="7d"?"7일":w.name}</span><span class="rst">리셋 ${w.reset}</span></div>
+      <div class="gauge"><i class="${fcls(t.level)}" style="width:${Math.min(100,w.used_percent)}%"></i></div>
+      <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`).join("")
+      : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fcls(t.level)}" style="width:${Math.round(t.ratio*100)}%"></i></div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
+    const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
+    return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
+      <div class="plan mono">${(t.detail||"").slice(0,42)}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
+  }).join("");
+  // coach
+  document.getElementById("coach").innerHTML=s.coach.map(m=>{
+    const cls=m.includes("[정지")?"stop":m.includes("[경고")?"warn":"ok";
+    const mm=m.replace(/^\[([^\]]+)\]\s*/,'<span class="tg '+cls+'">$1</span>');
+    return `<div class="bub">${mm}</div>`;}).join("");
+  // runs
+  document.getElementById("runs").innerHTML=s.runs.length? s.runs.map(r=>`
+    <div class="run"><div class="rh"><span class="rid">${r.run_id}</span>
+      <span class="chip pat">${r.pattern||"-"}</span><span class="chip ${r.state}">${r.state}</span>
+      <span class="mono" style="font-size:11px">step ${r.done}/${r.steps}</span>
+      ${r.score!=null?`<span class="score">SCORE ${r.score}</span>`:""}</div>
+      ${(r.stepdetail||[]).map(st=>`<div class="step"><span class="n">#${st.index}</span><span class="wk">${st.worker}</span>
+        <span class="chip ${st.status}">${st.status}</span>
+        ${st.score!=null?`<span class="score">${st.score}</span>`:""}
+        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,60)}</span>`:""}</div>`).join("")}
+    </div>`).join("") : '<div class="note">아직 런 기록이 없다. <code>yok3x run task-producer-reviewer.json --auto</code> 실행.</div>';
+  // 태스크 실행 목록 + 진행 상태
+  const rn=s.running||{active:false};
+  const rs=document.getElementById("runstatus");
+  if(rs) rs.textContent = rn.active ? `● 실행 중: ${rn.task} (${rn.since||""})`
+                        : (rn.last ? `직전: ${rn.last}` : "");
+  const rb=document.getElementById("runbar");
+  if(rb){
+    const tasks=s.tasks||[];
+    rb.innerHTML = tasks.length ? tasks.map(t=>`
+      <div class="run" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+        <span class="rid">${t}</span>
+        <button class="btn" ${rn.active?"disabled style=opacity:.5":""} onclick="runTask('${t}')">▶ 실행</button>
+      </div>`).join("")
+      : '<div class="note">태스크가 없다. <code>yok3x setup</code>으로 샘플 생성.</div>';
+  }
+}
+async function runTask(name){
+  try{
+    const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task:name})});
+    const j=await r.json();
+    if(!r.ok){alert("실행 실패: "+(j.error||r.status));return;}
+    load();
+  }catch(e){alert("실행 요청 실패(파일 직접 열림 상태면 `yok3x gui`로 실행): "+e);}
+}
+function setLive(on){const b=document.getElementById("livebadge");
+  b.className="pill "+(on?"live":"mock"); b.textContent=on?"● LIVE":"○ MOCK(파일 직접 열림)";
+  document.getElementById("src2").textContent=on?"실데이터 연동(/api/state)":"mock 데이터 — `yok3x gui`로 실행하면 실데이터";}
+async function load(){
+  try{const r=await fetch("/api/state",{cache:"no-store"});if(!r.ok)throw 0;
+    const s=await r.json();setLive(true);render(s);}
+  catch(e){setLive(false);render(MOCK);}
+}
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");document.getElementById(t.dataset.v).classList.add("active");});
+document.querySelectorAll(".seg").forEach(sg=>sg.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+  sg.querySelectorAll("button").forEach(x=>x.classList.remove("on"));b.classList.add("on");}));
+function clk(){document.getElementById("clock").textContent=new Date().toLocaleTimeString("ko-KR");}
+setInterval(clk,1000);clk();
+load();setInterval(load,7000);
+</script>
+</body>
+</html>

@@ -1,0 +1,239 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Snoopy Comic Panel Aesthetic */
+@import url('https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap');
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  /* Snoopy Comic Palette */
+  --primary: #1a1a1a; /* Black ink */
+  --primary-foreground: #faf8f3; /* Cream */
+  --secondary: #457b9d; /* Charlie Brown blue */
+  --secondary-foreground: #faf8f3;
+  --accent: #e63946; /* Snoopy's red doghouse */
+  --accent-foreground: #faf8f3;
+  --muted: #f4d35e; /* Woodstock yellow */
+  --muted-foreground: #1a1a1a;
+  --destructive: #e63946; /* Red for errors */
+  --destructive-foreground: #faf8f3;
+  --border: #1a1a1a; /* Black borders */
+  --input: #faf8f3;
+  --ring: #e63946;
+  --sidebar: #faf8f3;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #e63946;
+  --sidebar-primary-foreground: #faf8f3;
+  --sidebar-accent: #457b9d;
+  --sidebar-accent-foreground: #faf8f3;
+  --sidebar-border: #1a1a1a;
+  --sidebar-ring: #e63946;
+  --chart-1: #e63946;
+  --chart-2: #457b9d;
+  --chart-3: #f4d35e;
+  --chart-4: #6c757d;
+  --chart-5: #1a1a1a;
+  
+  /* Comic Panel Styling */
+  --radius: 0.25rem; /* Minimal rounding for comic feel */
+  --background: #faf8f3;
+  --foreground: #1a1a1a;
+  --card: #faf8f3;
+  --card-foreground: #1a1a1a;
+  --popover: #faf8f3;
+  --popover-foreground: #1a1a1a;
+}
+
+.dark {
+  /* Dark mode not used for comic aesthetic - keeping light theme */
+  --primary: #1a1a1a;
+  --primary-foreground: #faf8f3;
+  --background: #faf8f3;
+  --foreground: #1a1a1a;
+  --card: #faf8f3;
+  --card-foreground: #1a1a1a;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Courier Prime', monospace;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Courier Prime', monospace;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  /* Comic Panel Styling */
+  .comic-panel {
+    @apply border-2 border-foreground bg-background;
+    box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.1);
+    position: relative;
+  }
+  
+  .comic-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: 
+      radial-gradient(circle, rgba(0, 0, 0, 0.02) 1px, transparent 1px);
+    background-size: 4px 4px;
+    pointer-events: none;
+    border-radius: inherit;
+  }
+  
+  /* Speech Bubble */
+  .speech-bubble {
+    @apply border-2 border-foreground bg-background p-3;
+    position: relative;
+    border-radius: 0.5rem;
+  }
+  
+  .speech-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 12px;
+    width: 0;
+    height: 0;
+    border-left: 8px solid transparent;
+    border-right: 0 solid transparent;
+    border-top: 8px solid var(--foreground);
+  }
+  
+  .speech-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -6px;
+    left: 13px;
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 0 solid transparent;
+    border-top: 6px solid var(--background);
+  }
+  
+  /* Thought Bubble */
+  .thought-bubble {
+    @apply border-2 border-foreground bg-background p-3;
+    border-radius: 50%;
+    position: relative;
+  }
+  
+  .thought-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -12px;
+    left: 8px;
+    width: 8px;
+    height: 8px;
+    background: var(--foreground);
+    border-radius: 50%;
+    border: 2px solid var(--foreground);
+  }
+  
+  .thought-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -20px;
+    left: 2px;
+    width: 4px;
+    height: 4px;
+    background: var(--foreground);
+    border-radius: 50%;
+  }
+  
+  /* Hand-drawn line effect */
+  .hand-drawn {
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
+    stroke: var(--foreground);
+    stroke-width: 2;
+  }
+  
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem;
+      padding-right: 2rem;
+      max-width: 1280px;
+    }
+  }
+}

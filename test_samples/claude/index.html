@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HARNESS — 멀티 에이전트 콘솔</title>
+<style>
+:root{
+  --cream:#f6efda; --panel:#fffdf3; --ink:#1c1b18; --ink2:#3a382f;
+  --red:#e23b2e; --yellow:#ffce33; --blue:#3f80c2; --green:#5fa468; --purple:#8f6bb0;
+  --dot:rgba(28,27,24,.07);
+  --shadow:6px 6px 0 var(--ink);
+  --shadow-sm:4px 4px 0 var(--ink);
+  --comic:"Comic Sans MS","Comic Neue","Chalkboard SE","Segoe Print",cursive;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:var(--comic);
+  color:var(--ink);
+  background-color:var(--cream);
+  background-image:radial-gradient(var(--dot) 1.3px, transparent 1.3px);
+  background-size:15px 15px;
+  line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:20px 18px 60px}
+
+/* ---------- 지그재그 띠 (스웨터 스트라이프 모티프) ---------- */
+.zig{
+  height:16px;margin:14px 0;
+  background:
+    linear-gradient(135deg, var(--red) 25%, transparent 25%) 0 0/16px 16px,
+    linear-gradient(-135deg, var(--red) 25%, transparent 25%) 0 0/16px 16px;
+  filter:drop-shadow(0 2px 0 rgba(0,0,0,.15));
+}
+
+/* ---------- 헤더 ---------- */
+.top{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  background:var(--panel);border:3.5px solid var(--ink);border-radius:14px;
+  box-shadow:var(--shadow);padding:16px 20px;
+}
+.logo{display:flex;align-items:baseline;gap:10px}
+.logo b{font-size:34px;letter-spacing:1px;transform:rotate(-2deg);display:inline-block;
+  text-shadow:2px 2px 0 var(--yellow),3px 3px 0 var(--ink)}
+.logo span{font-size:13px;color:var(--ink2)}
+.spacer{flex:1}
+.pill{
+  border:2.5px solid var(--ink);border-radius:999px;background:var(--cream);
+  padding:5px 13px;font-size:13px;box-shadow:var(--shadow-sm);white-space:nowrap;
+}
+.pill.flavor{background:var(--yellow)}
+.clock{font-size:13px;color:var(--ink2)}
+
+/* 가드 토글 */
+.guard{display:flex;align-items:center;gap:8px;font-size:13px}
+.switch{
+  width:60px;height:30px;border:2.5px solid var(--ink);border-radius:999px;
+  background:var(--green);position:relative;cursor:pointer;box-shadow:var(--shadow-sm);
+  transition:background .15s;
+}
+.switch::after{content:"";position:absolute;top:2.5px;left:2.5px;width:20px;height:20px;
+  background:var(--panel);border:2.5px solid var(--ink);border-radius:50%;transition:left .15s}
+.switch.off{background:#cfc8b4}
+.switch.off::after{left:30px}
+
+/* ---------- 탭 ---------- */
+.tabs{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0}
+.tab{
+  font-family:var(--comic);font-size:15px;cursor:pointer;
+  border:3px solid var(--ink);border-radius:11px;background:var(--panel);
+  padding:9px 16px;box-shadow:var(--shadow-sm);transition:transform .07s;
+}
+.tab:hover{transform:translate(-1px,-1px)}
+.tab.active{background:var(--red);color:#fff;transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--ink)}
+
+/* ---------- 패널 공통 ---------- */
+.view{display:none;animation:pop .18s ease-out}
+.view.active{display:block}
+@keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.panel{
+  background:var(--panel);border:3px solid var(--ink);border-radius:14px;
+  box-shadow:var(--shadow);padding:18px 20px;margin:16px 0;
+}
+.panel h2{margin:0 0 4px;font-size:20px;display:flex;align-items:center;gap:9px}
+.panel h2 .tick{width:16px;height:16px;background:var(--yellow);border:2.5px solid var(--ink);
+  border-radius:4px;transform:rotate(-8deg);display:inline-block}
+.sub{color:var(--ink2);font-size:12.5px;margin:0 0 14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid3{grid-template-columns:1fr}.logo b{font-size:28px}}
+
+/* ---------- 도구 카드 + 게이지 ---------- */
+.tool{border:3px solid var(--ink);border-radius:12px;background:var(--cream);
+  padding:14px;box-shadow:var(--shadow-sm)}
+.tool.rot1{transform:rotate(-.6deg)} .tool.rot2{transform:rotate(.5deg)}
+.tool .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.tool .name{font-size:18px}
+.dot{width:14px;height:14px;border-radius:50%;border:2.5px solid var(--ink);display:inline-block;margin-right:6px;vertical-align:-1px}
+.dot.ok{background:var(--green)} .dot.warn{background:var(--yellow)} .dot.stop{background:var(--red)}
+.badge{font-size:11px;border:2px solid var(--ink);border-radius:999px;padding:2px 9px;box-shadow:2px 2px 0 var(--ink)}
+.badge.live{background:var(--blue);color:#fff}
+.badge.est{background:var(--yellow)}
+.badge.ledger{background:#e7e0cc}
+.win{margin:11px 0}
+.win .lab{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px}
+.win .lab .rst{color:var(--ink2);font-size:11px}
+.gauge{height:20px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden;position:relative}
+.gauge .fill{height:100%;border-right:2.5px solid var(--ink)}
+.fill.ok{background:repeating-linear-gradient(45deg,var(--green) 0 8px,#6fb478 8px 16px)}
+.fill.warn{background:repeating-linear-gradient(45deg,var(--yellow) 0 8px,#ffd94d 8px 16px)}
+.fill.stop{background:repeating-linear-gradient(45deg,var(--red) 0 8px,#f0574a 8px 16px)}
+.meta{display:flex;gap:12px;font-size:11.5px;color:var(--ink2);margin-top:9px;flex-wrap:wrap}
+.meta b{color:var(--ink)}
+
+/* ---------- 코치 말풍선 ---------- */
+.bubble{position:relative;background:var(--panel);border:3px solid var(--ink);border-radius:16px;
+  padding:12px 15px;margin:16px 0 20px;box-shadow:var(--shadow-sm);font-size:14px}
+.bubble::after,.bubble::before{content:"";position:absolute;bottom:-17px;left:34px;
+  border:9px solid transparent;border-top-color:var(--ink)}
+.bubble::before{bottom:-13px;border-top-color:var(--panel);z-index:2}
+.bubble .tg{font-weight:bold;border:2px solid var(--ink);border-radius:8px;padding:1px 8px;font-size:12px;margin-right:8px}
+.tg.easy{background:var(--green);color:#fff}.tg.warn{background:var(--yellow)}.tg.stop{background:var(--red);color:#fff}
+
+/* ---------- 런 타임라인 ---------- */
+.run{border:3px solid var(--ink);border-radius:12px;background:var(--cream);padding:12px 15px;margin:12px 0;box-shadow:var(--shadow-sm)}
+.run .rh{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13.5px;margin-bottom:8px}
+.chip{font-size:11px;border:2px solid var(--ink);border-radius:999px;padding:1px 9px;background:var(--panel)}
+.chip.pat{background:var(--purple);color:#fff}
+.chip.done{background:var(--green);color:#fff}
+.chip.run{background:var(--blue);color:#fff}
+.chip.stop{background:var(--red);color:#fff}
+.step{display:flex;align-items:center;gap:9px;font-size:12.5px;padding:3px 0;border-top:2px dashed rgba(28,27,24,.25)}
+.step .n{width:26px;height:24px;border:2.5px solid var(--ink);border-radius:6px;background:var(--panel);
+  display:grid;place-items:center;font-size:11px;flex-shrink:0}
+.score{margin-left:auto;font-size:11px;border:2px solid var(--ink);border-radius:999px;padding:1px 8px;background:var(--yellow)}
+.warnitem{color:var(--red);font-size:11px}
+
+/* ---------- 폼/버튼 ---------- */
+label.f{display:block;font-size:13px;margin:12px 0 4px}
+input,select,textarea{font-family:var(--comic);font-size:14px;width:100%;
+  border:2.5px solid var(--ink);border-radius:9px;background:var(--panel);padding:8px 11px;box-shadow:var(--shadow-sm)}
+textarea{min-height:70px;resize:vertical}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1;min-width:160px}
+.btn{font-family:var(--comic);font-size:15px;cursor:pointer;border:3px solid var(--ink);border-radius:11px;
+  background:var(--yellow);padding:9px 18px;box-shadow:var(--shadow-sm);transition:transform .07s}
+.btn:hover{transform:translate(-1px,-1px)}
+.btn:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink)}
+.btn.red{background:var(--red);color:#fff}.btn.blue{background:var(--blue);color:#fff}.btn.plain{background:var(--panel)}
+.seg{display:inline-flex;border:3px solid var(--ink);border-radius:11px;overflow:hidden;box-shadow:var(--shadow-sm);flex-wrap:wrap}
+.seg button{font-family:var(--comic);font-size:14px;border:none;border-right:2.5px solid var(--ink);background:var(--panel);padding:9px 15px;cursor:pointer}
+.seg button:last-child{border-right:none}
+.seg button.on{background:var(--red);color:#fff}
+.note{border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:10px 13px;font-size:12.5px;color:var(--ink2);margin-top:12px}
+.gate{display:inline-flex;gap:8px;margin-top:6px}
+.kbd{border:2px solid var(--ink);border-radius:6px;background:var(--panel);padding:1px 8px;font-size:12px;box-shadow:2px 2px 0 var(--ink)}
+
+/* knot */
+.knots{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(max-width:820px){.knots{grid-template-columns:1fr}}
+.knot{border:3px solid var(--ink);border-radius:12px;background:var(--panel);padding:12px 14px;box-shadow:var(--shadow-sm)}
+.knot .kt{font-size:15px;margin-bottom:3px}
+.knot .tags span{font-size:10.5px;border:2px solid var(--ink);border-radius:999px;padding:0 7px;margin-right:5px;background:var(--cream)}
+.link{color:var(--blue);text-decoration:underline dotted}
+.foot{text-align:center;font-size:11.5px;color:var(--ink2);margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 헤더 -->
+  <div class="top">
+    <div class="logo"><b>HARNESS</b><span>멀티 에이전트 · 코딩 콘솔</span></div>
+    <div class="spacer"></div>
+    <span class="pill flavor">flavor: claude-orchestrator</span>
+    <div class="guard">가드 <div id="sw" class="switch" onclick="this.classList.toggle('off');document.getElementById('gtext').textContent=this.classList.contains('off')?'OFF':'ON'"></div><b id="gtext">ON</b></div>
+    <button class="btn plain" onclick="tick(true)">↻ 한도</button>
+    <span class="clock" id="clock"></span>
+  </div>
+
+  <div class="zig"></div>
+
+  <!-- 탭 -->
+  <div class="tabs">
+    <div class="tab active" data-v="dash">대시보드</div>
+    <div class="tab" data-v="tasks">태스크 편집기</div>
+    <div class="tab" data-v="settings">설정 · 한도</div>
+    <div class="tab" data-v="knot">knot 지식그물</div>
+  </div>
+
+  <!-- ============ 대시보드 ============ -->
+  <section id="dash" class="view active">
+
+    <div class="panel">
+      <h2><span class="tick"></span> 오늘 사용량 — 구독 한도 대비</h2>
+      <p class="sub">가드 기준: 경고 80% · 정지 100%. 소스 배지 = 실측(라이브) / 추정(롤링) / 원장(자체예산)</p>
+      <div class="grid3">
+
+        <div class="tool rot1">
+          <div class="head"><div class="name"><span class="dot ok"></span>claude</div><span class="badge est">추정</span></div>
+          <div class="win"><div class="lab"><span>5시간</span><span class="rst">리셋 5시간 롤링</span></div>
+            <div class="gauge"><div class="fill ok" style="width:31%"></div></div><div class="lab"><span></span><b>31%</b></div></div>
+          <div class="win"><div class="lab"><span>7일</span><span class="rst">캘리브레이트됨</span></div>
+            <div class="gauge"><div class="fill ok" style="width:30%"></div></div><div class="lab"><span></span><b>30%</b></div></div>
+          <div class="meta"><span>plan <b>max20x</b></span><span>calls <b>12</b></span><span>tok <b>50.4M</b></span></div>
+        </div>
+
+        <div class="tool rot2">
+          <div class="head"><div class="name"><span class="dot ok"></span>codex</div><span class="badge live">실측 · live</span></div>
+          <div class="win"><div class="lab"><span>5시간</span><span class="rst">리셋 4시간 59분 후</span></div>
+            <div class="gauge"><div class="fill ok" style="width:4%"></div></div><div class="lab"><span></span><b>1%</b></div></div>
+          <div class="win"><div class="lab"><span>7일</span><span class="rst">리셋 2일 13시간 후</span></div>
+            <div class="gauge"><div class="fill ok" style="width:24%"></div></div><div class="lab"><span></span><b>24%</b></div></div>
+          <div class="meta"><span>plan <b>plus</b></span><span>calls <b>8</b></span><span>app-server RPC</span></div>
+        </div>
+
+        <div class="tool rot1">
+          <div class="head"><div class="name"><span class="dot ok"></span>gemini</div><span class="badge ledger">원장</span></div>
+          <div class="win"><div class="lab"><span>일일 호출</span><span class="rst">자정 리셋</span></div>
+            <div class="gauge"><div class="fill ok" style="width:6%"></div></div><div class="lab"><span></span><b>6%</b></div></div>
+          <div class="win"><div class="lab"><span>일일 토큰</span><span class="rst">자정 리셋</span></div>
+            <div class="gauge"><div class="fill ok" style="width:3%"></div></div><div class="lab"><span></span><b>3%</b></div></div>
+          <div class="meta"><span>plan <b>free</b></span><span>calls <b>60/1000</b></span><span>라이브 미지원</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="tick"></span> 코치 — 어느 작업을 · 왜 · 언제</h2>
+      <div class="bubble"><span class="tg easy">여유·추정</span>claude 5시간 31% · 7일 30%. build/test 등 큰 작업 지금 돌리기 좋다.</div>
+      <div class="bubble"><span class="tg easy">여유·실측</span>codex 5시간 1% · 7일 24%. 5시간 창이 곧 리셋되고 사용률도 낮다 — 지금 큰 배치를 밀어붙여라.</div>
+      <div class="bubble"><span class="tg easy">여유·원장</span>gemini 6% (60/1000 calls). design_review 등 지금 돌려도 무방.</div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="tick"></span> 최근 런 — 워커 진행 상태</h2>
+      <div class="run">
+        <div class="rh"><b>run_090538</b><span class="chip pat">producer-reviewer</span><span class="chip done">done</span><span>step 2/2 · 통과(≥8.0)</span></div>
+        <div class="step"><span class="n">#1</span> claude-main · 구현 <span class="chip done">done</span></div>
+        <div class="step"><span class="n">#2</span> codex-critic · 코드리뷰 <span class="chip done">done</span><span class="score">SCORE 8</span></div>
+      </div>
+      <div class="run">
+        <div class="rh"><b>run_090334</b><span class="chip pat">pipeline</span><span class="chip run">running</span><span>step 2/3</span></div>
+        <div class="step"><span class="n">#1</span> claude-main · 설계 <span class="chip done">done</span></div>
+        <div class="step"><span class="n">#2</span> codex-main · 구현 <span class="chip run">running…</span></div>
+        <div class="step" style="opacity:.5"><span class="n">#3</span> codex-critic · 리뷰 <span class="chip">대기</span></div>
+      </div>
+      <div class="run">
+        <div class="rh"><b>run_085912</b><span class="chip pat">fanout-fanin</span><span class="chip stop">stopped · guard</span><span>codex 7일 한도 도달</span></div>
+        <div class="step"><span class="n">#1</span> claude-main <span class="chip done">done</span><span class="score">SCORE 7</span></div>
+        <div class="step"><span class="n">#2</span> codex-main <span class="chip stop">blocked</span><span class="warnitem">⚠ 가드 정지</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 태스크 편집기 ============ -->
+  <section id="tasks" class="view">
+    <div class="panel">
+      <h2><span class="tick"></span> 태스크 편집기</h2>
+      <p class="sub">패턴을 고르고 목표·워커를 정한 뒤 실행한다.</p>
+      <div class="seg" id="pat">
+        <button class="on" onclick="pat(this,'pr')">producer-reviewer</button>
+        <button onclick="pat(this,'pl')">pipeline</button>
+        <button onclick="pat(this,'fo')">fanout-fanin</button>
+      </div>
+
+      <div id="pr">
+        <label class="f">목표(task)</label>
+        <textarea>문자열을 유효한 슬러그로 변환하는 함수를 작성하라. 유니코드·연속 공백·빈 입력 엣지케이스 처리 + 단위 테스트 포함.</textarea>
+        <div class="row">
+          <div><label class="f">producer</label><select><option>claude-main</option><option>codex-main</option></select></div>
+          <div><label class="f">reviewer</label><select><option>codex-critic</option><option>gemini</option></select></div>
+          <div><label class="f">max_rounds</label><input value="3"></div>
+          <div><label class="f">pass_score</label><input value="8.0"></div>
+        </div>
+      </div>
+      <div id="pl" style="display:none">
+        <label class="f">목표</label><textarea>인메모리 LRU 캐시 구현</textarea>
+        <div class="note">stage 1 claude-main(설계) → stage 2 codex-main(구현) → stage 3 codex-critic(리뷰). 이전 단계 출력이 다음 입력.</div>
+      </div>
+      <div id="fo" style="display:none">
+        <label class="f">목표</label><textarea>대용량 CSV 스트리밍 파싱 접근법을 각자 관점(메모리/속도/단순성)에서 제안하라.</textarea>
+        <div class="note">workers: claude-main · codex-main · gemini → join_worker: claude-main 이 하나로 통합.</div>
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn red">▶ Run (1회)</button>
+        <button class="btn blue">↻ Loop (-n 5)</button>
+        <button class="btn plain">💾 저장</button>
+      </div>
+      <div class="note">승인 게이트: 각 스텝 실행 전 확인 —
+        <span class="gate"><span class="kbd">y 승인</span><span class="kbd">N 건너뜀</span><span class="kbd">q 중단</span></span></div>
+    </div>
+  </section>
+
+  <!-- ============ 설정 · 한도 ============ -->
+  <section id="settings" class="view">
+    <div class="panel">
+      <h2><span class="tick"></span> 요금 가드</h2>
+      <div class="row">
+        <div><label class="f">경고 임계 (soft) — 80%</label><input type="range" min="0" max="100" value="80"></div>
+        <div><label class="f">정지 임계 (hard) — 100%</label><input type="range" min="0" max="100" value="100"></div>
+      </div>
+      <div class="row">
+        <div><label class="f">실측 한도 우선</label><select><option>켬 (use_real_limits)</option><option>끔</option></select></div>
+        <div><label class="f">실측 실패 시</label><select><option>ledger (원장 폴백)</option><option>block (차단)</option><option>allow</option></select></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="tick"></span> 요금제 · 한도 보정</h2>
+      <p class="sub">codex는 app-server가 plan 자동 감지. claude는 프리셋 또는 캘리브레이트로 설정.</p>
+      <div class="row">
+        <div><label class="f">claude 요금제</label><select><option>max20x</option><option>max5x</option><option>pro</option></select></div>
+        <div><label class="f">gemini 요금제</label><select><option>free</option><option>paid</option></select></div>
+        <div><label class="f">codex</label><input value="plus (자동감지)" disabled></div>
+      </div>
+      <div class="note"><b>정확 보정(권장):</b> claude 앱 <b>/usage</b>에서 실제 사용률을 확인해 입력하면 상한을 역산한다.
+        <div class="row" style="margin-top:8px">
+          <div><label class="f">창</label><select><option>7d</option><option>5h</option></select></div>
+          <div><label class="f">실제 사용률(%)</label><input value="30"></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn">calibrate 실행</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2><span class="tick"></span> 워커 · flavor</h2>
+      <div class="row">
+        <div class="tool"><b>claude-main</b><div class="sub">구현 담당 · backend claude</div></div>
+        <div class="tool"><b>codex-main</b><div class="sub">리팩터 담당 · backend codex</div></div>
+        <div class="tool"><b>codex-critic</b><div class="sub">코드 리뷰어 · backend codex</div></div>
+        <div class="tool"><b>gemini</b><div class="sub">설계 검토 · backend gemini</div></div>
+      </div>
+      <label class="f">오케스트레이터 flavor</label>
+      <div class="seg"><button class="on">claude</button><button>codex</button><button>gemini</button></div>
+    </div>
+  </section>
+
+  <!-- ============ knot ============ -->
+  <section id="knot" class="view">
+    <div class="panel">
+      <h2><span class="tick"></span> knot 지식그물</h2>
+      <p class="sub">에이전트끼리 공유하는 평문 마크다운 기억. 위키링크 <span class="link">[[...]]</span> 지원.</p>
+      <div class="row" style="margin-bottom:14px">
+        <input placeholder="🔍 검색어 (예: LRU cache)" style="flex:3">
+        <button class="btn plain">검색</button>
+        <button class="btn">＋ save</button>
+        <button class="btn plain">lint</button>
+      </div>
+      <div class="knots">
+        <div class="knot"><div class="kt">run-090538</div><div class="tags"><span>run</span><span>claude-orchestrator</span></div>
+          <p class="sub" style="margin:6px 0 0">슬러그 변환 함수 구현 + 리뷰 통과(8점). 관련 <span class="link">[[slug-edgecases]]</span></p></div>
+        <div class="knot"><div class="kt">lru-cache-design</div><div class="tags"><span>design</span><span>cache</span></div>
+          <p class="sub" style="margin:6px 0 0">get/put O(1), 용량 초과 시 LRU 제거. 이중연결리스트+해시맵.</p></div>
+        <div class="knot"><div class="kt">slug-edgecases</div><div class="tags"><span>note</span></div>
+          <p class="sub" style="margin:6px 0 0">유니코드 정규화, 연속 하이픈 축약, 앞뒤 구분자 제거.</p></div>
+        <div class="knot" style="border-style:dashed"><div class="kt" style="color:var(--red)">⚠ lint: 깨진 링크</div>
+          <p class="sub" style="margin:6px 0 0">run-085912.md → <span class="link">[[csv-stream]]</span> 대상 노트 없음</p></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">HARNESS 콘솔 목업 · 자체 완결 HTML · 백엔드 harness CLI + .harness/ 파일 연동용</div>
+</div>
+
+<script>
+// 탭 전환
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById(t.dataset.v).classList.add('active');
+});
+// 태스크 패턴 전환
+function pat(btn,id){
+  document.querySelectorAll('#pat button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  ['pr','pl','fo'].forEach(x=>document.getElementById(x).style.display=x===id?'block':'none');
+}
+// 시계
+function clk(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('ko-KR');}
+setInterval(clk,1000);clk();
+// 한도 새로고침 애니메이션(목업)
+function tick(){document.querySelectorAll('.gauge .fill').forEach(f=>{f.style.transition='width .5s';});}
+</script>
+</body>
+</html>

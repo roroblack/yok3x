@@ -1,0 +1,153 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-paper-dark: var(--paper-dark);
+  --color-snoopy-red: var(--snoopy-red);
+  --color-snoopy-yellow: var(--snoopy-yellow);
+  --color-snoopy-blue: var(--snoopy-blue);
+  --color-snoopy-green: var(--snoopy-green);
+  --color-snoopy-pink: var(--snoopy-pink);
+  --font-hand: "Patrick Hand", "Kalam", cursive;
+  --font-display: "Fraunces", "Georgia", serif;
+  --font-body: "Nunito", system-ui, sans-serif;
+  --shadow-comic: 4px 4px 0 0 var(--ink);
+  --shadow-comic-sm: 2px 2px 0 0 var(--ink);
+  --shadow-comic-lg: 6px 6px 0 0 var(--ink);
+}
+
+:root {
+  --radius: 1rem;
+
+  /* Peanuts / Snoopy palette */
+  --ink: oklch(0.15 0.02 60);
+  --paper: oklch(0.965 0.025 85);
+  --paper-dark: oklch(0.92 0.03 85);
+
+  --snoopy-red: oklch(0.62 0.22 27);
+  --snoopy-yellow: oklch(0.85 0.17 90);
+  --snoopy-blue: oklch(0.72 0.14 235);
+  --snoopy-green: oklch(0.72 0.16 145);
+  --snoopy-pink: oklch(0.83 0.09 15);
+
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: oklch(0.99 0.01 85);
+  --card-foreground: var(--ink);
+  --popover: oklch(0.99 0.01 85);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--paper);
+  --secondary: var(--paper-dark);
+  --secondary-foreground: var(--ink);
+  --muted: var(--paper-dark);
+  --muted-foreground: oklch(0.45 0.02 60);
+  --accent: var(--snoopy-yellow);
+  --accent-foreground: var(--ink);
+  --destructive: var(--snoopy-red);
+  --destructive-foreground: oklch(0.99 0.01 85);
+  --border: var(--ink);
+  --input: var(--ink);
+  --ring: var(--snoopy-red);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html, body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-body);
+    background-image:
+      radial-gradient(circle at 1px 1px, oklch(0.15 0.02 60 / 0.06) 1px, transparent 0);
+    background-size: 22px 22px;
+  }
+  h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.01em; }
+}
+
+@utility comic-border {
+  border: 2.5px solid var(--ink);
+}
+@utility comic-shadow {
+  box-shadow: var(--shadow-comic);
+}
+@utility comic-shadow-sm {
+  box-shadow: var(--shadow-comic-sm);
+}
+@utility comic-shadow-lg {
+  box-shadow: var(--shadow-comic-lg);
+}
+@utility hand {
+  font-family: var(--font-hand);
+}
+@utility sticker {
+  border: 2.5px solid var(--ink);
+  box-shadow: var(--shadow-comic);
+  background: var(--card);
+  border-radius: 1rem;
+}
+
+/* Cloud speech bubble tail */
+.bubble-tail {
+  position: relative;
+}
+.bubble-tail::after {
+  content: "";
+  position: absolute;
+  left: 32px;
+  bottom: -14px;
+  width: 22px;
+  height: 22px;
+  background: inherit;
+  border-right: 2.5px solid var(--ink);
+  border-bottom: 2.5px solid var(--ink);
+  transform: rotate(45deg);
+}
+
+/* Wiggle animation */
+@keyframes wiggle {
+  0%, 100% { transform: rotate(-1deg); }
+  50% { transform: rotate(1deg); }
+}
+@utility wiggle {
+  animation: wiggle 2.4s ease-in-out infinite;
+}
+
+@keyframes bounce-soft {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@utility bounce-soft {
+  animation: bounce-soft 1.8s ease-in-out infinite;
+}
