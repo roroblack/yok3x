@@ -8,8 +8,9 @@ venv/
 .yok3x/
 *.log
 
-# 로컬 백업 스냅샷(버전관리가 이력을 보존하므로 커밋 불필요)
-backup/
+# 로컬 백업: 큰 폴더 스냅샷은 제외, 버전 아카이브(zip+매니페스트)는 추적해 GitHub에도 보존
+backup/*
+!backup/versions/
 
 # JS 샘플 의존성 / 브라우저 스냅샷(대용량, 소스 아님)
 node_modules/

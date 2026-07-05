@@ -64,8 +64,9 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
 - 코드·기능·문서를 바꾸면 **매번 [HISTORY.md](HISTORY.md)에 한 줄 이상 기록**한다: 버전, 날짜/시간, 변경 요약.
 - 릴리스(zip)를 만들 때 버전을 올리고 HISTORY에 릴리스 항목을 남긴다.
 
-## 8. 릴리스
+## 8. 릴리스 · 버전 보존
 
 - 정본 소스: `yok3x/`. 배포물: `release/yok3x-vX.Y.Z.zip`.
 - zip 만들기 전 `__pycache__`·런타임 산출물(`.yok3x/`·생성된 `yok3x.json` 등) 제거.
 - Windows 스모크 테스트(`init/setup/run/gui/limits`) 통과 후 패키징.
+- **이전 버전 zip을 삭제하지 않는다.** 새 릴리스를 만들면 이전 릴리스 zip을 `backup/versions/`로 옮기고 `backup/versions/VERSIONS.md`에 항목을 추가한다(내부 `__version__`으로 검증). 리브랜딩 등 대규모 변경 전에는 정본 폴더 전체를 `backup/`에 스냅샷한다.
