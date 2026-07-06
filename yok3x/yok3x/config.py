@@ -20,6 +20,10 @@ DEFAULT_YOK3X = {
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
     "repo_context_max_chars": 6000, # context_globs 레포 컨텍스트 주입 글자 제한
+    # 산출물 검증 게이트(객관): producer-reviewer가 통과 판정 전에 실제로 돌린다.
+    # 예: "pytest -q" · "npm test". 비면 게이트 없음. task 파일의 verify_cmd가 우선.
+    "verify_cmd": "",
+    "verify_timeout_sec": 300,
     # yok3x 기법: 코딩 작업에 '계획→구현→자가검증' 구조를 워커 프롬프트에 주입.
     # 폭주 방지 4중 브레이크(단계분할·승인·검증·예산)를 프롬프트 수준에서도 강제한다.
     "yok3x_technique": {

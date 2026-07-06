@@ -436,8 +436,10 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         print(f"[error] {msg}")
         orch._save_status("aborted", {"reason": msg})
         return f"aborted: {msg}"
-    orch.verify_cmd = spec.get("verify_cmd", "") or ""
-    orch.verify_timeout = int(spec.get("verify_timeout_sec", 300))
+    # task가 지정하면 우선, 없으면 yok3x.json 전역 기본값을 상속(프로젝트 전체 게이트).
+    orch.verify_cmd = spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
+    orch.verify_timeout = int(spec.get("verify_timeout_sec")
+                              or cfg.yok3x.get("verify_timeout_sec", 300))
     orch.context_globs = spec.get("context_globs", []) or []
     orch.rubric = spec.get("rubric", "") or ""
     pattern = spec.get("pattern", "producer-reviewer")

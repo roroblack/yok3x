@@ -109,6 +109,40 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     assert cfg.yok3x["context_max_chars"] == 1234
 
 
+# ------------------------------------------------ verify_cmd 전역 상속/재정의
+def _pr_spec(workdir, verify_cmd=None):
+    s = {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",
+         "reviewer": "codex-critic", "max_rounds": 1, "pass_score": 8.0,
+         "workdir": str(workdir)}
+    if verify_cmd is not None:
+        s["verify_cmd"] = verify_cmd
+    return s
+
+
+def test_verify_cmd_inherited_from_config_and_runs(mock_root, tmp_path):
+    # 전역 verify_cmd가 task에 없을 때 상속되어 '실제로' 실행되는지 센티넬로 확인.
+    (tmp_path / "mk.py").write_text("open('ran.txt','w').close()", encoding="utf-8")
+    cfg = Config.load(mock_root)
+    cfg.yok3x["verify_cmd"] = 'python "mk.py"'
+    tf = mock_root / "task.json"
+    tf.write_text(json.dumps(_pr_spec(tmp_path), ensure_ascii=False), encoding="utf-8")
+    run_task_file(cfg, tf, auto=True)
+    assert (tmp_path / "ran.txt").exists()          # 전역 게이트가 돌았다
+
+
+def test_task_verify_cmd_overrides_config(mock_root, tmp_path):
+    # task의 verify_cmd가 전역보다 우선(전역 것은 안 돌아야 한다).
+    (tmp_path / "cfg.py").write_text("open('cfg.txt','w').close()", encoding="utf-8")
+    (tmp_path / "task.py").write_text("open('task.txt','w').close()", encoding="utf-8")
+    cfg = Config.load(mock_root)
+    cfg.yok3x["verify_cmd"] = 'python "cfg.py"'
+    tf = mock_root / "task.json"
+    tf.write_text(json.dumps(_pr_spec(tmp_path, 'python "task.py"'), ensure_ascii=False),
+                  encoding="utf-8")
+    run_task_file(cfg, tf, auto=True)
+    assert (tmp_path / "task.txt").exists() and not (tmp_path / "cfg.txt").exists()
+
+
 def test_task_file_with_bom_runs(mock_root):
     cfg = Config.load(mock_root)
     spec = {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",
