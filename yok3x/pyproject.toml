@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yok3x"
+description = "Claude Code · Codex · Gemini CLI 멀티 에이전트 오케스트레이터 (라이브 한도 가드 · 교차검증)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []                 # 의존성 0 — 표준 라이브러리만 사용
+dynamic = ["version"]             # 버전은 yok3x/__init__.py __version__ 단일 출처
+
+[project.scripts]
+yok3x = "yok3x.cli:entry"         # `pip install -e .` 후 `yok3x <cmd>` 콘솔 스크립트
+
+[tool.setuptools]
+packages = ["yok3x"]              # 런처 yok3x.py(플랫레이아웃)와의 이름 충돌 방지: 패키지만 명시
+
+[tool.setuptools.dynamic]
+# _version.py를 정적 파싱(임포트 X) — 런처 yok3x.py와의 이름 충돌 회피
+version = { attr = "yok3x._version.__version__" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]                # `pytest`를 프로젝트 루트에서 바로 실행 가능하게
+testpaths = ["tests"]

@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
 
 # yok3x 런타임 산출물(프로젝트별 생성, 이식 불필요)
 .yok3x/

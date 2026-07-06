@@ -1,0 +1,14 @@
+# 저장소는 LF로 정규화한다. Windows 체크아웃의 CRLF/LF 혼선(가짜 diff)을 제거.
+* text=auto eol=lf
+
+# 바이너리는 건드리지 않는다.
+*.zip   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.pdf   binary
