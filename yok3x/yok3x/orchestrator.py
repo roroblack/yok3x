@@ -202,6 +202,26 @@ class Orchestrator:
                     break
         return issues
 
+    @staticmethod
+    def _defect_sig(text: str) -> tuple[str, ...]:
+        """리뷰어가 '실제로 지적한 결함'만 뽑아 정규화한 서명.
+
+        스톨 판정의 근거. 응답의 메타 품질(빈 응답 등, _checklist)이 아니라 리뷰어가
+        산출물에 대해 나열한 지적사항을 본다. SCORE 줄·글머리표·번호·구두점을 제거하고
+        소문자·공백정규화한 뒤 정렬된 집합으로 만든다 → 같은 결함이 반복되면(수렴 실패)
+        라운드 간 서명이 같아진다. 순서 바뀜과 가벼운 재서술에 견디도록 집합으로 비교.
+        """
+        issues = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.upper().startswith("SCORE"):
+                continue
+            line = re.sub(r"^[\-\*•·\d\.\)\(]+\s*", "", line)  # 글머리표/번호 제거
+            line = re.sub(r"\s+", " ", line).strip().lower().strip(".,;:!?·")
+            if len(line) >= 4:  # 짧은 잡음 조각 제외
+                issues.append(line)
+        return tuple(sorted(set(issues)))
+
     # ------------------------------------------------------------ worker call
 
     def call_worker(self, worker: str, task: str, task_kind: str = "general",
@@ -335,7 +355,6 @@ class Orchestrator:
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
         prev_sig = None
-        stall = 0
         for rnd in range(1, max_rounds + 1):
             t = task if rnd == 1 else f"{task}\n\n검수 지적을 반영해 수정하라."
             blocks = []
@@ -365,7 +384,7 @@ class Orchestrator:
                 "테스트/검증 결과가 실패면 통과시키지 마라.",
                 "critic", extra_context="\n\n".join(rev_blocks))
             score = self.steps[-1].score
-            issues_sig = tuple(sorted(self.steps[-1].checklist))
+            issues_sig = self._defect_sig(rev.text)
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
 
             passed = (score is not None and score >= pass_score) and verify_ok
@@ -373,19 +392,16 @@ class Orchestrator:
                 self._log(f"[review] 통과 기준({pass_score}) + 검증 충족 — 종료")
                 break
 
-            # 스톨 감지: 점수·이슈가 2회 연속 동일하면 조기 종료(수렴 실패)
+            # 스톨 감지: 점수 + 리뷰어가 지적한 결함이 직전 라운드와 동일하면
+            # 수렴 실패로 조기 종료(리뷰어가 같은 결함을 되풀이 = 생산자가 못 고침).
             sig = (score, issues_sig)
-            if sig == prev_sig:
-                stall += 1
-                if stall >= 1:  # 직전과 동일이 반복 → 조기 종료
-                    self._log("[stall] 같은 점수·이슈 반복 — 수렴 실패로 조기 종료")
-                    knot.save(self.cfg, f"stall-{self.run_id}",
-                              f"작업: {task}\n스톨 조기종료(round {rnd}, score {score}).\n"
-                              f"반복 이슈: {list(issues_sig)}",
-                              tags=["stall", "run"], source="orchestrator")
-                    break
-            else:
-                stall = 0
+            if prev_sig is not None and sig == prev_sig:
+                self._log("[stall] 같은 점수·결함 반복 — 수렴 실패로 조기 종료")
+                knot.save(self.cfg, f"stall-{self.run_id}",
+                          f"작업: {task}\n스톨 조기종료(round {rnd}, score {score}).\n"
+                          f"반복 결함: {list(issues_sig)}",
+                          tags=["stall", "run"], source="orchestrator")
+                break
             prev_sig = sig
             artifact += f"\n\n<!-- 검수 r{rnd} -->\n{rev.text}" if rev.ok else ""
         self._finish(task, artifact)

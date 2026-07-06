@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import knot, matview, usage
+from . import __version__, knot, matview, usage
 from .config import Config, scaffold
 from .orchestrator import run_loop, run_task_file
 
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
     p = argparse.ArgumentParser(prog="yok3x",
-                                description="yok3x 멀티 에이전트 v2.2 — Claude Code · Codex · Gemini CLI 오케스트레이터")
+                                description=f"yok3x 멀티 에이전트 v{__version__} — Claude Code · Codex · Gemini CLI 오케스트레이터")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("init", help="초기화: yok3x.json/backends.json/디렉터리 생성")

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass, field
@@ -196,8 +197,10 @@ class Config:
     @classmethod
     def load(cls, root: str | Path = ".") -> "Config":
         p = Paths.at(root)
-        yok3x = dict(DEFAULT_YOK3X)
-        backends = dict(DEFAULT_BACKENDS)
+        # deepcopy: 얕은 복사면 중첩 dict(workers 등)가 모듈 전역 DEFAULT_*를 그대로
+        # 가리켜, 이후 변형(scaffold의 backend=mock, 부분 yok3x.json 로드)이 전역을 오염시킨다.
+        yok3x = copy.deepcopy(DEFAULT_YOK3X)
+        backends = copy.deepcopy(DEFAULT_BACKENDS)
         # utf-8-sig: 윈도우 메모장·PowerShell(Out-File utf8)이 붙이는 BOM을 투명 제거.
         # BOM이 있든 없든 정상 파싱된다(쓰기는 BOM 없는 utf-8 유지).
         if p.yok3x_json.exists():

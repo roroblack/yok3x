@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from . import usage
+from . import __version__, usage
 from .config import Config
 
 BAR_W = 18
@@ -54,7 +54,7 @@ def _recent_runs(cfg: Config, n: int = 5) -> list[dict[str, Any]]:
 def render(cfg: Config) -> str:
     g = cfg.yok3x["guard"]
     lines = []
-    lines.append("╭─ mat · yok3x 멀티 에이전트 v2.2 ─ "
+    lines.append(f"╭─ mat · yok3x 멀티 에이전트 v{__version__} ─ "
                  + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " ─╮")
     lines.append(f"  flavor: {cfg.yok3x['flavor']}"
                  f"   guard: {'ON' if g.get('enabled', True) else 'OFF'}"
