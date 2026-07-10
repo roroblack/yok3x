@@ -79,11 +79,15 @@ code,.mono,.rid{font-family:var(--font-code)}
 .win .l{display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px}
 .win .l .rst{color:var(--ink2);font-family:var(--font-code);font-size:10.5px}
 .win .l b{font-family:var(--font-code)}
-.gauge{height:16px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden}
+.gauge{height:16px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden;position:relative}
 .gauge i{display:block;height:100%;border-right:2.5px solid var(--ink)}
 .f-ok{background:repeating-linear-gradient(45deg,var(--green) 0 7px,#71b47f 7px 14px)}
 .f-warn{background:repeating-linear-gradient(45deg,var(--yellow) 0 7px,#f6cf55 7px 14px)}
 .f-stop{background:repeating-linear-gradient(45deg,var(--red) 0 7px,#ea6459 7px 14px)}
+/* 한도 임계선 마커: 설정한 warn(soft)·stop(hard) % 위치에 세로선 */
+.mk{position:absolute;top:0;bottom:0;width:0;z-index:2;pointer-events:none;transform:translateX(-1px)}
+.mk.soft{border-left:2px dashed #b9832b}
+.mk.hard{border-left:2px solid var(--red)}
 .stat{font-family:var(--font-code);font-size:11px;color:var(--ink2);margin-top:8px;display:flex;gap:11px;flex-wrap:wrap}
 .stat b{color:var(--ink)}
 
@@ -161,7 +165,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .us-tool{flex:1;min-width:145px;border:2.5px solid var(--ink);border-radius:10px;background:var(--panel);padding:6px 8px;box-shadow:2px 2px 0 var(--ink)}
 .us-tool .nm{font-family:var(--font-display);font-size:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:2px}
 .us-win{display:flex;align-items:center;gap:5px;font-family:var(--font-code);font-size:10px;margin:2px 0}
-.us-win .g{flex:1;height:9px;border:2px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden}
+.us-win .g{flex:1;height:9px;border:2px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden;position:relative}
 .us-win .g i{display:block;height:100%;background:repeating-linear-gradient(45deg,var(--green) 0 6px,#71b47f 6px 12px)}
 .us-win.warn .g i{background:repeating-linear-gradient(45deg,var(--yellow) 0 6px,#f6cf55 6px 12px)}
 .us-win.stop .g i{background:repeating-linear-gradient(45deg,var(--red) 0 6px,#ea6459 6px 12px)}
@@ -419,6 +423,13 @@ function badge(t){ if(t.real) return '<span class="badge live">실측</span>';
   if(t.source==="claude_transcripts") return '<span class="badge est">추정</span>';
   return '<span class="badge ledger">원장</span>'; }
 function fcls(l){return l==="stop"?"f-stop":l==="warn"?"f-warn":"f-ok"}
+// 창별 사용률 기준 색: soft(경고)·hard(정지) 임계 도달 시 색 전환 (Lovable식)
+function fclsPct(p,g){const h=((g&&g.hard)||1)*100,s=((g&&g.soft)||.8)*100;return p>=h?"f-stop":p>=s?"f-warn":"f-ok"}
+// 설정한 warn(soft)·stop(hard) % 위치에 세로 임계선. hard=100%면 테두리와 겹쳐 생략
+function marks(g){if(!g)return"";const s=Math.round(((g.soft)||.8)*100),h=Math.round(((g.hard)||1)*100);
+  let m=`<span class="mk soft" style="left:${s}%" title="warn ${s}%"></span>`;
+  if(h<100)m+=`<span class="mk hard" style="left:${h}%" title="stop ${h}%"></span>`;
+  return m;}
 function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":n}
 
 function render(s){
@@ -431,9 +442,9 @@ function render(s){
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
     const wins=t.windows.length?t.windows.map(w=>`
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":w.name==="7d"?"7일":w.name}</span><span class="rst">리셋 ${w.reset}</span></div>
-      <div class="gauge"><i class="${fcls(t.level)}" style="width:${Math.min(100,w.used_percent)}%"></i></div>
+      <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}</div>
       <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`).join("")
-      : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fcls(t.level)}" style="width:${Math.round(t.ratio*100)}%"></i></div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
+      : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fclsPct(t.ratio*100,s.guard)}" style="width:${Math.round(t.ratio*100)}%"></i>${marks(s.guard)}</div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
     const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
     return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
       <div class="plan mono">${(t.detail||"").slice(0,42)}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
@@ -476,7 +487,7 @@ function renderConsole(s,rn){
   // 실시간 사용량 스트립
   const us=document.getElementById("c-usage");
   if(us) us.innerHTML=(s.tools||[]).map(t=>{
-    const wins=(t.windows||[]).map(w=>`<div class="us-win ${t.level==='stop'?'stop':t.level==='warn'?'warn':''}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i></div><b>${w.used_percent}%</b></div>`).join("")
+    const wins=(t.windows||[]).map(w=>`<div class="us-win ${t.level==='stop'?'stop':t.level==='warn'?'warn':''}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}</div><b>${w.used_percent}%</b></div>`).join("")
       || `<div class="us-win"><span>use</span><div class="g"><i style="width:${Math.round(t.ratio*100)}%"></i></div><b>${Math.round(t.ratio*100)}%</b></div>`;
     return `<div class="us-tool"><div class="nm"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}</span>${badge(t)}</div>${wins}</div>`;
   }).join("");
