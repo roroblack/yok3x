@@ -111,6 +111,21 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     assert cfg.yok3x["context_max_chars"] == 1234
 
 
+# ------------------------------------ codex JSONL 파서(신형 스키마 호환)
+def test_parse_codex_new_item_completed_schema():
+    # codex 0.144: agent 메시지가 item.completed 이벤트의 item.type=="agent_message".
+    out = "\n".join([
+        '{"type":"thread.started","thread_id":"t"}',
+        '{"type":"turn.started"}',
+        '{"type":"item.completed","item":{"id":"i1","type":"agent_message",'
+        '"text":"SCORE: 9\\n- 엣지케이스 처리 양호"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":13281,"output_tokens":29}}',
+    ])
+    res = backends._parse_codex(out)
+    assert res.ok and res.text.startswith("SCORE: 9")     # 어시스턴트 텍스트 추출
+    assert res.total_tokens == 13281 + 29                 # turn.completed 사용량 집계
+
+
 # ------------------------------------ claude 라이브 실측(OAuth usage 엔드포인트)
 class _Resp:
     def __init__(self, payload): self._p = payload

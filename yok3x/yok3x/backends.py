@@ -132,7 +132,10 @@ def _parse_codex(out: str) -> BackendResult:
         except json.JSONDecodeError:
             continue
         item = ev.get("item") or {}
-        if item.get("item_type") in ("agent_message", "assistant_message") and item.get("text"):
+        # codex 0.144: item.completed 이벤트의 item.type=="agent_message"·item.text.
+        # 구형은 item.item_type 이었다 — 둘 다 인식(호환).
+        itype = item.get("type") or item.get("item_type")
+        if itype in ("agent_message", "assistant_message") and item.get("text"):
             text = item["text"]  # 마지막 agent 메시지 채택
         for holder in (ev, ev.get("usage") or {}, item.get("usage") or {}):
             if isinstance(holder, dict) and "input_tokens" in holder:
