@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 
+import subprocess
+
 import pytest
 
-from yok3x import __version__, matview, usage
-from yok3x.backends import BackendResult
+from yok3x import __version__, backends, matview, usage
+from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_YOK3X, Config, scaffold
 from yok3x.orchestrator import Orchestrator, run_task_file
 
@@ -107,6 +109,30 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     (tmp_path / "yok3x.json").write_text("﻿" + payload, encoding="utf-8")  # BOM 부착
     cfg = Config.load(tmp_path)
     assert cfg.yok3x["context_max_chars"] == 1234
+
+
+# -------------------------------------- CLI 백엔드 stdin 데드락 방지(회귀 잠금)
+def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
+    # headless 실행 중 CLI가 대화형 입력을 기다려 데드락하지 않도록 stdin=DEVNULL,
+    # 프롬프트는 argv({prompt})로 치환, Windows에서 UTF-8 디코딩이 되어야 한다.
+    seen = {}
+
+    class _Proc:
+        stdout, stderr, returncode = "결과 OK", "", 0
+
+    def _fake_run(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return _Proc()
+
+    monkeypatch.setattr(backends.subprocess, "run", _fake_run)
+    spec = {"type": "cli", "command": ["claude", "-p", "{prompt}"],
+            "parser": "raw", "timeout_sec": 5}
+    res = run_backend("claude", spec, "안녕 프롬프트")
+
+    assert seen["kw"].get("stdin") is subprocess.DEVNULL   # 데드락 방지 핵심
+    assert "안녕 프롬프트" in seen["cmd"]                    # {prompt} argv 치환
+    assert seen["kw"].get("encoding") == "utf-8"            # cp949 깨짐 방지
+    assert res.ok and res.text == "결과 OK"
 
 
 # ------------------------------------------------ verify_cmd 전역 상속/재정의

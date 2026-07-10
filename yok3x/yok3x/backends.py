@@ -70,8 +70,13 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
         cmd[0] = resolved
     timeout = int(spec.get("timeout_sec", 600))
     try:
+        # stdin=DEVNULL: 프롬프트는 argv({prompt})로 넘기므로 stdin 불필요. 이를 막지 않으면
+        # 헤드리스 실행 중 CLI가 인증·온보딩 등으로 대화형 입력을 기다릴 때 상속된 stdin에서
+        # 데드락(→ timeout까지 멈춤)한다. DEVNULL로 즉시 EOF → 대화형이면 빠르게 실패한다.
+        # encoding=utf-8: Windows 기본(cp949) 디코딩이 CLI의 UTF-8 JSON을 깨뜨리지 않게.
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              cwd=cwd or None)
+                              cwd=cwd or None, stdin=subprocess.DEVNULL,
+                              encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return BackendResult(backend=name, ok=False,
                              error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
