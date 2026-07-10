@@ -137,6 +137,30 @@ def test_claude_oauth_parses_live_5h_7d(monkeypatch, tmp_path):
     assert got["5h"][1] and got["7d"][1]                        # 리셋 시각 파싱됨
 
 
+def test_claude_oauth_surfaces_per_model_and_credits(monkeypatch, tmp_path):
+    creds = tmp_path / ".credentials.json"
+    creds.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "t", "expiresAt": 99999999999000}}), encoding="utf-8")
+    payload = json.dumps({
+        "five_hour": {"utilization": 20.0, "resets_at": "2026-07-10T11:39:59+00:00"},
+        "seven_day": {"utilization": 4.0, "resets_at": "2026-07-12T08:59:59+00:00"},
+        "seven_day_opus": {"utilization": 31.0, "resets_at": "2026-07-12T08:59:59+00:00"},
+        "seven_day_sonnet": None,   # null이면 생략돼야 함
+        "extra_usage": {"is_enabled": True, "used_credits": 12.5,
+                        "monthly_limit": 50, "utilization": 25.0, "currency": "USD"},
+    }).encode()
+    monkeypatch.setattr(limits.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(payload))
+    conf = {"type": "claude_oauth", "credentials_path": str(creds), "min_interval_sec": 0}
+    r = limits._probe_claude_oauth("claude", conf)
+    names = {w.name for w in r.windows}
+    assert "7d·opus" in names            # 모델별(값 있을 때) 표시
+    assert "7d·sonnet" not in names      # null이면 생략
+    assert "크레딧 12.5/50" in r.detail   # 추가크레딧(활성 시) 표시
+    # 크레딧은 guard 창이 아니다 — ratio는 창 최대(31%)여야지 크레딧에 오염되면 안 됨
+    assert abs(r.ratio() - 0.31) < 1e-6
+
+
 def test_claude_oauth_falls_back_when_no_credentials(tmp_path):
     # 토큰 없고 추정 캡도 없으면 ok=False로 내려가 원장 폴백에 맡긴다(명시적 열화).
     conf = {"type": "claude_oauth", "min_interval_sec": 0,

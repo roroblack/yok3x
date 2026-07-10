@@ -25,8 +25,9 @@ def _bar(ratio: float) -> str:
 def _fmt_budget_line(cfg: Config, backend: str) -> str:
     v = usage.check_backend(cfg, backend)
     mark = {"ok": " ", "warn": "!", "stop": "X"}[v.level]
-    src = {"codex_appserver": "실측", "codex_sessions": "실측", "claude_transcripts": "추정",
-           "command": "실측", "ledger": "원장", "disabled": "원장"}.get(v.source, v.source)
+    src = {"codex_appserver": "실측", "codex_sessions": "실측", "claude_oauth": "실측",
+           "claude_transcripts": "추정", "command": "실측",
+           "ledger": "원장", "disabled": "원장"}.get(v.source, v.source)
     head = f" {mark} {backend:<7} {_bar(v.ratio)} {v.ratio:>4.0%}  [{src}]"
     # 실측 윈도우가 있으면 5h/7d 를 함께 표시
     if v.reading and v.reading.windows:

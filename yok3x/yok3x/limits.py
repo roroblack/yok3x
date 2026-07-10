@@ -332,16 +332,25 @@ def _fetch_claude_oauth_usage(backend: str, conf: dict[str, Any]) -> LimitReadin
         return LimitReading(backend, "claude_oauth", ok=False, real=True,
                             error=f"{type(e).__name__}: {e}")
     windows: list[Window] = []
-    for nm, key in (("5h", "five_hour"), ("7d", "seven_day")):
-        seg = data.get(key) or {}
-        up = seg.get("utilization")     # 이미 퍼센트(예: 17.0)
-        if up is None:
+    # 5h/7d 집계 + 모델별 7d(계정이 내려줄 때만; 대부분 집계만·null). utilization은 이미 퍼센트.
+    # 모델별도 windows에 넣어 guard의 '가장 빡빡한 창' 원칙에 포함시키고 mat에 함께 표시한다.
+    for nm, key in (("5h", "five_hour"), ("7d", "seven_day"),
+                    ("7d·opus", "seven_day_opus"), ("7d·sonnet", "seven_day_sonnet")):
+        seg = data.get(key)
+        if not isinstance(seg, dict) or seg.get("utilization") is None:
             continue
-        windows.append(Window(nm, float(up), resets_at=_parse_iso(seg.get("resets_at"))))
+        windows.append(Window(nm, float(seg["utilization"]),
+                              resets_at=_parse_iso(seg.get("resets_at"))))
     if not windows:
         return LimitReading(backend, "claude_oauth", ok=False, real=True,
                             error="usage 응답에 five_hour/seven_day 없음")
     det = " · ".join(f"{w.name} {w.used_percent:.0f}%" for w in windows)
+    # 추가 크레딧: 플랜 초과분 버퍼(정보성). 활성일 때만 표시하고 guard 창엔 넣지 않는다
+    # — 크레딧은 한도 '초과 후 사용'하는 버퍼라 사용률을 정지 신호로 쓰면 안 되기 때문.
+    xu = data.get("extra_usage") or {}
+    if xu.get("is_enabled"):
+        det += (f" · 크레딧 {xu.get('used_credits', 0)}/{xu.get('monthly_limit', 0)}"
+                f"{xu.get('currency', 'USD')}({float(xu.get('utilization', 0) or 0):.0f}%)")
     return LimitReading(backend, "claude_oauth", ok=True, real=True,
                         windows=windows, detail=f"{det} (live)")
 
