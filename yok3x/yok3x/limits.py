@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +106,8 @@ def _probe_uncached(cfg: Config, backend: str) -> LimitReading:
             return _probe_codex_appserver(backend, conf)
         if typ == "codex_sessions":
             return _probe_codex_sessions(backend, conf)
+        if typ == "claude_oauth":
+            return _probe_claude_oauth(backend, conf)
         if typ == "claude_transcripts":
             return _probe_claude_transcripts(backend, conf)
         if typ == "command":
@@ -274,6 +278,89 @@ def _latest_rate_limits(f: Path) -> dict | None:
         if isinstance(rl, dict) and (rl.get("primary") or rl.get("secondary")):
             return rl
     return None
+
+
+# ------------------------------------------ claude (라이브 실측: OAuth usage 엔드포인트)
+# codex의 app-server RPC에 대응하는 claude 실측 경로. Max/Pro 구독 OAuth 토큰으로
+# GET /api/oauth/usage 를 호출하면 5h/7d used_percent + 리셋 시각을 준다(메시지 소비 0).
+# 비공식·미문서 엔드포인트라 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화한다.
+_CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+_OAUTH_LIVE_CACHE: dict[str, tuple[float, LimitReading]] = {}
+
+
+def _claude_oauth_token(conf: dict[str, Any]) -> tuple[str | None, str]:
+    """~/.claude/.credentials.json 의 구독 OAuth 액세스 토큰. (토큰, 오류사유)."""
+    p = Path(conf.get("credentials_path")
+             or (Path.home() / ".claude" / ".credentials.json")).expanduser()
+    if not p.exists():
+        return None, f"OAuth credentials 없음: {p}"
+    try:
+        oauth = (json.loads(p.read_text(encoding="utf-8-sig")) or {}).get("claudeAiOauth") or {}
+    except (OSError, json.JSONDecodeError) as e:
+        return None, f"credentials 읽기 실패: {type(e).__name__}"
+    tok = oauth.get("accessToken")
+    if not tok:
+        return None, "accessToken 없음(구독 로그인 필요)"
+    exp = oauth.get("expiresAt")   # ms epoch
+    if exp and float(exp) / 1000.0 < time.time():
+        return None, "OAuth 토큰 만료(claude로 한 번 요청하면 자동 갱신)"
+    return tok, ""
+
+
+def _fetch_claude_oauth_usage(backend: str, conf: dict[str, Any]) -> LimitReading:
+    token, err = _claude_oauth_token(conf)
+    if not token:
+        return LimitReading(backend, "claude_oauth", ok=False, real=True, error=err)
+    # User-Agent(claude-code 식별)가 없으면 엔드포인트가 공격적으로 429를 낸다.
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": conf.get("oauth_beta", "oauth-2025-04-20"),
+        "User-Agent": conf.get("user_agent", "claude-cli/2.1 (external, cli)"),
+    }
+    url = conf.get("usage_url", _CLAUDE_USAGE_URL)
+    timeout = int(conf.get("timeout_sec", 15))
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        hint = ("토큰 만료/미인증" if e.code in (401, 403)
+                else "호출 과다(min_interval_sec↑)" if e.code == 429 else "")
+        return LimitReading(backend, "claude_oauth", ok=False, real=True,
+                            error=f"HTTP {e.code} {hint}".strip())
+    except Exception as e:
+        return LimitReading(backend, "claude_oauth", ok=False, real=True,
+                            error=f"{type(e).__name__}: {e}")
+    windows: list[Window] = []
+    for nm, key in (("5h", "five_hour"), ("7d", "seven_day")):
+        seg = data.get(key) or {}
+        up = seg.get("utilization")     # 이미 퍼센트(예: 17.0)
+        if up is None:
+            continue
+        windows.append(Window(nm, float(up), resets_at=_parse_iso(seg.get("resets_at"))))
+    if not windows:
+        return LimitReading(backend, "claude_oauth", ok=False, real=True,
+                            error="usage 응답에 five_hour/seven_day 없음")
+    det = " · ".join(f"{w.name} {w.used_percent:.0f}%" for w in windows)
+    return LimitReading(backend, "claude_oauth", ok=True, real=True,
+                        windows=windows, detail=f"{det} (live)")
+
+
+def _probe_claude_oauth(backend: str, conf: dict[str, Any]) -> LimitReading:
+    """라이브 실측 → (실패 시) 트랜스크립트 추정 → 원장. min_interval_sec로 호출 제한."""
+    interval = float(conf.get("min_interval_sec", 60))
+    hit = _OAUTH_LIVE_CACHE.get(backend)
+    if hit and (time.time() - hit[0]) < interval:
+        return hit[1]
+    live = _fetch_claude_oauth_usage(backend, conf)
+    if live.ok:
+        _OAUTH_LIVE_CACHE[backend] = (time.time(), live)
+        return live
+    est = _probe_claude_transcripts(backend, conf)   # 추정 폴백(plan/cap 있을 때만 ok)
+    if est.ok:
+        est.detail += f" · live실패({live.error})"
+        return est
+    return live
 
 
 # ---------------------------------------------------------------- claude (롤링 추정)

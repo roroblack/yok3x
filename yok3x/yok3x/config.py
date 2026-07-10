@@ -52,10 +52,13 @@ DEFAULT_YOK3X = {
     # gemini: CLI가 잔여 한도를 노출 안 함 → 원장(자체 일일 예산)으로 준수. command 로 외부도구 연결 가능.
     "limits": {
         "claude": {
-            "type": "claude_transcripts",
-            "plan": "",                 # pro | max5x | max20x → 프리셋 상한 자동 적용(아래 PLAN_PRESETS)
-            "limit_5h_tokens": 0,       # 직접 상한(0이고 plan도 없으면 원장 폴백). plan보다 우선
-            "limit_7d_tokens": 0        # `yok3x calibrate`로 실사용 기반 정확 보정 권장
+            # 라이브 실측: Max/Pro 구독 OAuth 토큰으로 /api/oauth/usage 조회(5h/7d used% + 리셋).
+            # codex의 app-server 실측에 대응. 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화.
+            "type": "claude_oauth",     # 추정만 원하면 "claude_transcripts", 끄려면 "ledger"
+            "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
+            "plan": "",                 # 추정 폴백용 상한 프리셋: pro | max5x | max20x
+            "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
+            "limit_7d_tokens": 0
         },
         "codex": {
             "type": "codex_appserver",  # 라이브 실측. codex_bin/app_server_args/timeout_sec 조정 가능

@@ -127,14 +127,15 @@ pytest -q                   # 격리·버전 일관성·스톨·3패턴 E2E·가
 |---|---|---|---|
 | **codex** | `codex_appserver` | `codex app-server` JSON-RPC `account/rateLimits/read` → **지금 이 순간** 5h/7d `usedPercent`·리셋시각 | ✅ **라이브 실측** |
 | codex(폴백) | `codex_sessions` | `~/.codex/sessions/**/rollout-*.jsonl`의 마지막 `rate_limits` | 파일값(오래되면 stale) |
-| claude | `claude_transcripts` | `~/.claude/projects/**/*.jsonl`의 `usage`를 5h/7d 롤링 합산 → `limit_*_tokens` 대비 | 롤링 **추정** |
+| **claude** | `claude_oauth` | 구독 OAuth 토큰으로 `GET /api/oauth/usage` → **지금 이 순간** 5h/7d `utilization`·리셋시각(메시지 소비 0) | ✅ **라이브 실측** |
+| claude(폴백) | `claude_transcripts` | `~/.claude/projects/**/*.jsonl`의 `usage`를 5h/7d 롤링 합산 → `limit_*_tokens` 대비 | 롤링 **추정** |
 | gemini | `ledger` | 자체 일일 예산(호출/토큰) | 자체 준수 |
 | 기타 | `command` | 외부 도구(ccusage·tokscale 등) JSON 매핑 | 도구에 따름 |
 
 정확도 현실(2026-07 기준, 실측 검증):
 
 - **codex만 진짜 실시간 %가 나온다.** `codex app-server`가 서버에 물어 지금 값을 준다(CodexBar와 같은 경로). `codex exec --json`은 `rate_limits: null` 버그가 있어 못 쓴다. 라이브 조회 실패 시 세션 파일(stale)→원장 순으로 자동 폴백한다.
-- **claude는 라이브 %가 불가능하다.** Anthropic이 CLI로 잔여 한도를 노출하지 않는다(CodexBar도 결국 transcript 스캔으로 폴백). 본인 플랜의 5h/7d 토큰 상한을 `limit_5h_tokens`·`limit_7d_tokens`에 넣으면 롤링 사용량 대비 추정치가 나온다(0이면 원장 폴백).
+- **claude도 라이브 실측이 된다.** Max/Pro 구독 OAuth 토큰(`~/.claude/.credentials.json`)으로 `GET /api/oauth/usage`를 호출하면 지금 이 순간의 5h/7d `utilization`·리셋시각을 준다(메시지 소비 0, codex app-server와 동급). 비공식·미문서 엔드포인트라 `User-Agent`(claude-code 식별)가 필수이고 `min_interval_sec`(기본 60초)로 호출을 제한한다. 실패(토큰 만료·미인증·엔드포인트 변경) 시 **트랜스크립트 추정(`claude_transcripts`, 플랜 상한 대비) → 원장** 순으로 명시적 열화한다. 추정만 쓰려면 `type`을 `claude_transcripts`로 두면 된다.
 - **gemini도 라이브 %가 불가능하다.** 헤드리스 JSON은 호출당 토큰만 주고 잔여 한도가 없다. 자체 일일 예산(원장)으로 지킨다. `command` probe로 외부 도구를 붙일 수 있다.
 - `command` probe는 범용 어댑터: `windows:[{name,percent_path,resets_at_path}]`로 임의 JSON 필드를 매핑하거나 `parse:"ccusage_active"` + `limit_5h_usd`로 ccusage를 붙인다.
 - `yok3x limits`로 각 probe의 라이브/stale/추정 원본을 확인한다.

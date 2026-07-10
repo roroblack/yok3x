@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from yok3x import __version__, backends, matview, usage
+from yok3x import __version__, backends, limits, matview, usage
 from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_YOK3X, Config, scaffold
 from yok3x.orchestrator import Orchestrator, run_task_file
@@ -109,6 +109,40 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     (tmp_path / "yok3x.json").write_text("﻿" + payload, encoding="utf-8")  # BOM 부착
     cfg = Config.load(tmp_path)
     assert cfg.yok3x["context_max_chars"] == 1234
+
+
+# ------------------------------------ claude 라이브 실측(OAuth usage 엔드포인트)
+class _Resp:
+    def __init__(self, payload): self._p = payload
+    def read(self): return self._p
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+def test_claude_oauth_parses_live_5h_7d(monkeypatch, tmp_path):
+    creds = tmp_path / ".credentials.json"
+    creds.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "tok", "expiresAt": 99999999999000}}), encoding="utf-8")
+    payload = json.dumps({
+        "five_hour": {"utilization": 17.0, "resets_at": "2026-07-10T11:39:59+00:00"},
+        "seven_day": {"utilization": 3.0, "resets_at": "2026-07-12T08:59:59+00:00"},
+    }).encode()
+    monkeypatch.setattr(limits.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(payload))
+    conf = {"type": "claude_oauth", "credentials_path": str(creds), "min_interval_sec": 0}
+    r = limits._probe_claude_oauth("claude", conf)
+    assert r.ok and r.real and r.source == "claude_oauth"      # 실측(추정 아님)
+    got = {w.name: (w.used_percent, w.resets_at) for w in r.windows}
+    assert got["5h"][0] == 17.0 and got["7d"][0] == 3.0
+    assert got["5h"][1] and got["7d"][1]                        # 리셋 시각 파싱됨
+
+
+def test_claude_oauth_falls_back_when_no_credentials(tmp_path):
+    # 토큰 없고 추정 캡도 없으면 ok=False로 내려가 원장 폴백에 맡긴다(명시적 열화).
+    conf = {"type": "claude_oauth", "min_interval_sec": 0,
+            "credentials_path": str(tmp_path / "nope.json")}
+    r = limits._probe_claude_oauth("claude", conf)
+    assert not r.ok and "credentials" in r.error
 
 
 # -------------------------------------- CLI 백엔드 stdin 데드락 방지(회귀 잠금)
