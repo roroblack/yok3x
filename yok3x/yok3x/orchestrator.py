@@ -70,7 +70,9 @@ class Orchestrator:
         self.cfg = cfg
         self.auto = cfg.yok3x.get("auto_approve", False) if auto is None else auto
         self.ask = ask or (lambda msg: input(msg))
-        self.run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        # 마이크로초까지 포함 — 같은 초에 시작한 동시 런이 같은 run_dir를 공유해
+        # 서로의 step 파일을 덮어써 손상시키던 충돌을 방지한다.
+        self.run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S_%f")
         self.run_dir = cfg.paths.runs / self.run_id
         self.steps: list[StepLog] = []
         self._step_i = 0

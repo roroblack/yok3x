@@ -208,6 +208,14 @@ def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     assert res.ok and res.text == "결과 OK"
 
 
+# -------------------------------------- run_id 충돌 방지(마이크로초)
+def test_run_id_includes_microseconds(mock_root):
+    import re
+    from yok3x.orchestrator import Orchestrator
+    o = Orchestrator(Config.load(mock_root))
+    assert re.match(r"run_\d{8}_\d{6}_\d{6}$", o.run_id)   # 초 단위 충돌 방지
+
+
 # -------------------------------------- 적응형 열화 P1: 모델 다운그레이드
 def _verdict(ratio, level="warn", backend="claude"):
     return usage.GuardVerdict(backend, ratio, "5h", level, "detail")
