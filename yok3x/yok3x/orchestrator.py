@@ -257,6 +257,11 @@ class Orchestrator:
                 parts.append(REVIEW_GUARD)
             else:
                 parts.append(YOK3X_TECHNIQUE)
+        # workdir가 없으면 편집할 레포가 없다 → 파일 생성 대신 완성 코드를 본문에 직접.
+        # (workdir가 있으면 실제 파일을 편집하고 변경점을 보고하는 기존 코딩 워크플로우 유지)
+        if not self.workdir and task_kind in ("build", "revise", "general"):
+            parts.append("[출력 형식] 작업 디렉터리가 없다. 파일을 생성/수정하려 하지 말고 "
+                         "완성된 코드를 코드블록으로 응답 본문에 직접 제시하라.")
         brief = knot.read_brief(cfg).strip()
         if brief:
             parts.append(f"[brief.md]\n{knot.clip(brief, cfg.yok3x['brief_max_chars'])}")
@@ -271,10 +276,15 @@ class Orchestrator:
         parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
+        # 3.5) 적응형 열화: 한도 인근이면 모델 다운그레이드(P1). 모든 열화는 명시 로깅.
+        action, model_override = usage.degrade_plan(cfg, worker, verdict)
+        if action == "downgrade" and model_override:
+            self._log(f"[degrade] {worker} 사용률 {verdict.ratio:.0%} → 모델 다운그레이드: {model_override}")
+
         # 4) 실행 + 사용량 기록 (workdir가 있으면 그 디렉터리에서 실행)
         self._log(f"[run] step {idx} → {worker} ({w['backend']})")
         res = run_backend(w["backend"], cfg.backends[w["backend"]], prompt,
-                          cwd=cwd or self.workdir)
+                          cwd=cwd or self.workdir, model=model_override)
         usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그

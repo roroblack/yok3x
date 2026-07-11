@@ -188,6 +188,26 @@ def guard_allows(cfg: Config, worker: str) -> tuple[bool, GuardVerdict]:
     return v.level != "stop", v
 
 
+def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict") -> tuple[str, str | None]:
+    """한도 인근 적응형 열화 결정(P1: 모델 다운그레이드). 반환 (action, model|None).
+
+    action='downgrade'면 이번 호출에 lite 모델을 주입한다. 순수 함수(부수효과 없음)라
+    결정적으로 테스트된다. opt-in(guard.degrade.enabled)이며, 리뷰어 등 품질 게이트
+    역할(roles_no_downgrade)은 제외한다 — 리뷰어를 낮추면 검수 자체가 약해지므로.
+    """
+    d = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
+    if not d.get("enabled"):
+        return ("normal", None)
+    if worker in (d.get("roles_no_downgrade") or []):
+        return ("normal", None)
+    if verdict.ratio >= float(d.get("downgrade_ratio", 0.9)):
+        backend = _worker_backend_name(cfg, worker)
+        lite = (((cfg.yok3x.get("limits") or {}).get(backend) or {}).get("models") or {}).get("lite")
+        if lite:
+            return ("downgrade", lite)
+    return ("normal", None)
+
+
 # ---------------------------------------------------------------- coach
 
 def _time_to_reset() -> str:

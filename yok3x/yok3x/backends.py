@@ -39,13 +39,13 @@ class BackendResult:
 
 
 def run_backend(name: str, spec: dict[str, Any], prompt: str,
-                cwd: str | None = None) -> BackendResult:
+                cwd: str | None = None, model: str | None = None) -> BackendResult:
     btype = spec.get("type", "cli")
     t0 = time.time()
     if btype == "mock":
         res = _run_mock(name, spec, prompt)
     elif btype == "cli":
-        res = _run_cli(name, spec, prompt, cwd=cwd)
+        res = _run_cli(name, spec, prompt, cwd=cwd, model=model)
     elif btype == "native":
         res = BackendResult(backend=name, ok=False,
                             error="native(HTTP API) 어댑터는 endpoint 설정 후 사용. backends.json 참조.")
@@ -61,8 +61,11 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
 # ---------------------------------------------------------------- CLI
 
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
-             cwd: str | None = None) -> BackendResult:
+             cwd: str | None = None, model: str | None = None) -> BackendResult:
     cmd = [str(a).replace("{prompt}", prompt) for a in spec["command"]]
+    # 모델 다운그레이드(적응형 열화): model이 주어지고 model_arg 템플릿이 있으면 덧붙인다.
+    if model and spec.get("model_arg"):
+        cmd += [str(a).replace("{model}", model) for a in spec["model_arg"]]
     # Windows: claude/codex/gemini는 npm .cmd 심 — CreateProcess가 PATHEXT를
     # 해석하지 않으므로 shutil.which로 실제 경로(claude.cmd 등)로 치환한다.
     resolved = shutil.which(cmd[0])

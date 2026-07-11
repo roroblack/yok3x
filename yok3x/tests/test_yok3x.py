@@ -208,6 +208,43 @@ def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     assert res.ok and res.text == "결과 OK"
 
 
+# -------------------------------------- 적응형 열화 P1: 모델 다운그레이드
+def _verdict(ratio, level="warn", backend="claude"):
+    return usage.GuardVerdict(backend, ratio, "5h", level, "detail")
+
+
+def test_degrade_plan_downgrades_producer_near_limit(tmp_path):
+    cfg = Config.load(tmp_path)                       # 기본값: claude-main→claude, lite=haiku
+    cfg.yok3x["guard"]["degrade"] = {"enabled": True, "downgrade_ratio": 0.9,
+                                     "roles_no_downgrade": ["codex-critic"]}
+    a, m = usage.degrade_plan(cfg, "claude-main", _verdict(0.95))
+    assert a == "downgrade" and m and "haiku" in m    # 한도 근처 → 가벼운 모델
+    assert usage.degrade_plan(cfg, "claude-main", _verdict(0.5))[0] == "normal"   # 여유
+    assert usage.degrade_plan(cfg, "codex-critic", _verdict(0.99))[0] == "normal"  # 리뷰어 제외
+    cfg.yok3x["guard"]["degrade"]["enabled"] = False
+    assert usage.degrade_plan(cfg, "claude-main", _verdict(0.99))[0] == "normal"   # opt-out
+
+
+def test_run_cli_injects_model_arg_only_when_model_given(monkeypatch):
+    seen = {}
+
+    class _P:
+        stdout, stderr, returncode = '{"result":"ok"}', "", 0
+
+    def _fake(cmd, **kw):
+        seen["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(backends.subprocess, "run", _fake)
+    spec = {"type": "cli", "command": ["claude", "-p", "{prompt}"],
+            "model_arg": ["--model", "{model}"], "parser": "raw"}
+    run_backend("claude", spec, "hi", model="claude-haiku-4-5-20251001")
+    assert "--model" in seen["cmd"] and "claude-haiku-4-5-20251001" in seen["cmd"]
+    seen.clear()
+    run_backend("claude", spec, "hi")                 # model 없으면 미주입
+    assert "--model" not in seen["cmd"]
+
+
 # ------------------------------------------------ verify_cmd 전역 상속/재정의
 def _pr_spec(workdir, verify_cmd=None):
     s = {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",

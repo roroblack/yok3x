@@ -42,7 +42,14 @@ DEFAULT_YOK3X = {
         "soft_ratio": 0.8,          # 경고 임계(실측/원장 사용률)
         "hard_ratio": 1.0,          # 루프 자동 정지 임계
         "use_real_limits": True,    # 진짜 한도(limits.py 실측) 우선. 끄면 원장만 사용
-        "on_probe_failure": "ledger"  # 실측 probe 실패 시: ledger(원장 폴백) | block(차단) | allow
+        "on_probe_failure": "ledger",  # 실측 probe 실패 시: ledger(원장 폴백) | block(차단) | allow
+        # 한도 인근 적응형 열화(P1: 모델 다운그레이드). opt-in. 정지(hard) 전에 가벼운
+        # 모델로 낮춰 남은 한도로 계속 진행. 모든 다운그레이드는 명시 로깅된다.
+        "degrade": {
+            "enabled": False,               # 켜면 downgrade_ratio↑에서 lite 모델로 낮춤
+            "downgrade_ratio": 0.9,         # 이 사용률(가장 빡빡한 창)↑ → 다운그레이드
+            "roles_no_downgrade": ["codex-critic", "gemini"]  # 리뷰어=품질 게이트라 제외
+        }
     },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
     # codex : app-server JSON-RPC 로 '지금 이 순간' 5h/7d used_percent 라이브 조회(진짜 실측).
@@ -58,11 +65,14 @@ DEFAULT_YOK3X = {
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
             "plan": "",                 # 추정 폴백용 상한 프리셋: pro | max5x | max20x
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
-            "limit_7d_tokens": 0
+            "limit_7d_tokens": 0,
+            # 적응형 열화 다운그레이드 대상(guard.degrade). lite=한도 근처에서 낮출 가벼운 모델
+            "models": {"full": "", "lite": "claude-haiku-4-5-20251001"}
         },
         "codex": {
             "type": "codex_appserver",  # 라이브 실측. codex_bin/app_server_args/timeout_sec 조정 가능
-            "timeout_sec": 15
+            "timeout_sec": 15,
+            "models": {"full": "", "lite": ""}   # codex 다운그레이드 모델(원하면 지정)
         },
         "gemini": {
             "type": "ledger"            # 라이브 실측 불가 → 원장. command probe로 tokscale 등 연결 가능
@@ -143,7 +153,14 @@ DEFAULT_BACKENDS = {
     "claude": {
         "type": "cli",
         # 검증 근거: https://code.claude.com/docs/en/headless
-        "command": ["claude", "-p", "{prompt}", "--output-format", "json"],
+        # --disallowedTools: 파일시스템/실행 도구를 막아 헤드리스 claude가 에이전트 모드로
+        # 파일을 뒤지거나(brief.md 등) 쓰기 권한 승인을 기다리며 멈추는 대신, 프롬프트에
+        # 주입된 컨텍스트만으로 '코드 텍스트를 1턴에 반환'하게 한다. yok3x는 context_globs로
+        # 레포 컨텍스트를 이미 프롬프트에 넣으므로 claude가 Read/Glob을 쓸 필요가 없다.
+        # (콤마 구분 단일 인자 — 공백 구분은 인자 파싱이 깨진다)
+        "command": ["claude", "-p", "{prompt}", "--output-format", "json",
+                    "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,TodoWrite,WebFetch"],
+        "model_arg": ["--model", "{model}"],   # 다운그레이드 시 덧붙는 인자
         "parser": "claude_json",
         "timeout_sec": 600
     },
@@ -151,6 +168,7 @@ DEFAULT_BACKENDS = {
         "type": "cli",
         # 검증 근거: https://developers.openai.com/codex/noninteractive
         "command": ["codex", "exec", "--json", "--skip-git-repo-check", "{prompt}"],
+        "model_arg": ["--model", "{model}"],
         "parser": "codex_jsonl",
         "timeout_sec": 600
     },
