@@ -258,10 +258,13 @@ class Orchestrator:
             else:
                 parts.append(YOK3X_TECHNIQUE)
         # workdir가 없으면 편집할 레포가 없다 → 파일 생성 대신 완성 코드를 본문에 직접.
-        # (workdir가 있으면 실제 파일을 편집하고 변경점을 보고하는 기존 코딩 워크플로우 유지)
+        # role의 '파일 변경 보고' 지침을 명시적으로 무효화해야 claude가 '변경점 보고'가 아니라
+        # 실제 코드를 출력한다. (workdir가 있으면 파일 편집+변경점 보고 워크플로우 유지)
         if not self.workdir and task_kind in ("build", "revise", "general"):
-            parts.append("[출력 형식] 작업 디렉터리가 없다. 파일을 생성/수정하려 하지 말고 "
-                         "완성된 코드를 코드블록으로 응답 본문에 직접 제시하라.")
+            parts.append("[중요·출력형식] 이 작업엔 작업 디렉터리가 없다. 위 역할의 "
+                         "'파일 변경 보고' 지침은 적용하지 마라. 파일을 만들지 말고, "
+                         "완성된 코드 전문을 코드블록으로 응답 본문에 직접 제시하라. "
+                         "파일 경로·변경점 보고가 아니라 실제 코드를 출력하라.")
         brief = knot.read_brief(cfg).strip()
         if brief:
             parts.append(f"[brief.md]\n{knot.clip(brief, cfg.yok3x['brief_max_chars'])}")
