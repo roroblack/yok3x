@@ -93,6 +93,17 @@ class Orchestrator:
         with (self.run_dir / "run.log").open("a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}\n")
 
+    def _isolated_cwd(self) -> str:
+        """workdir 없는 워커용 빈 실행 디렉터리. claude/codex CLI는 실행 cwd의 git·파일
+        컨텍스트를 자동 주입하는데, 레포 안에서 돌리면 워커가 프롬프트의 [작업] 대신
+        레포 파일(brief.md·계획서 등)을 '진짜 작업'으로 오인해 헤맨다. 빈 dir에서 실행해
+        차단한다. 런당 한 번 만들어 재사용."""
+        d = getattr(self, "_iso_dir", None)
+        if not d:
+            import tempfile
+            d = self._iso_dir = tempfile.mkdtemp(prefix="yok3x_iso_")
+        return d
+
     def _save_status(self, state: str, extra: dict | None = None) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         data = {
@@ -286,10 +297,12 @@ class Orchestrator:
         if action == "downgrade" and model_override:
             self._log(f"[degrade] {worker} 사용률 {verdict.ratio:.0%} → 모델 다운그레이드: {model_override}")
 
-        # 4) 실행 + 사용량 기록 (workdir가 있으면 그 디렉터리에서 실행)
+        # 4) 실행 + 사용량 기록. workdir가 있으면 그 디렉터리에서, 없으면 빈 격리 dir에서
+        # 실행한다(레포 컨텍스트가 워커를 오염시키는 것을 방지 — _isolated_cwd 참조).
+        run_cwd = cwd or self.workdir or self._isolated_cwd()
         self._log(f"[run] step {idx} → {worker} ({w['backend']})")
         res = run_backend(w["backend"], cfg.backends[w["backend"]], prompt,
-                          cwd=cwd or self.workdir, model=model_override)
+                          cwd=run_cwd, model=model_override)
         usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그
