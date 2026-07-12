@@ -49,6 +49,7 @@ def build_state(cfg: Config) -> dict:
         "version": cfg.yok3x.get("version", "?"),
         "flavor": cfg.yok3x["flavor"],
         "flavors": list(cfg.yok3x.get("flavors", {})),
+        "workspace": cfg.yok3x.get("workspace", ""),
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0)},
         "coach": usage.coach_messages(cfg),
@@ -166,6 +167,11 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             return {"error": f"routing '{fn}' backend 잘못됨: {be}"}
     if flavor is not None and flavor not in cfg.yok3x.get("flavors", {}):
         return {"error": f"없는 flavor: {flavor}"}
+    workspace = body.get("workspace")
+    if workspace is not None:
+        ws = str(workspace).strip()
+        if ws and not Path(ws).is_dir():
+            return {"error": f"workspace 디렉터리 없음(오타?): {ws}"}
     # 백업 후 적용
     jf = cfg.paths.yok3x_json
     if jf.exists():
@@ -180,6 +186,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x.setdefault("routing", {})[fn] = be
     if flavor is not None:
         cfg.yok3x["flavor"] = flavor
+    if workspace is not None:
+        cfg.yok3x["workspace"] = str(workspace).strip()
     cfg.save_yok3x()
     return {"ok": True}
 

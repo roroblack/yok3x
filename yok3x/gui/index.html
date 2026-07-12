@@ -275,6 +275,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         </div>
         <div style="margin-top:12px"><label class="tgl2">오케스트레이터 flavor
           <select id="c-flavor"></select></label></div>
+        <div style="margin-top:10px">
+          <div class="sub" style="margin:0 0 4px">워크스페이스(기본 workdir) — 지정하면 모든 런이 이 폴더에서 실행(비면 빈 격리 dir)</div>
+          <input id="c-workspace" class="wide" style="width:100%" placeholder="예: C:/Users/me/myrepo">
+        </div>
         <div class="qbox" id="c-queue"></div>
         <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
       </div>
@@ -484,6 +488,11 @@ function renderConsole(s,rn){
   fillSel("c-reviewer",workers.filter(w=>w!=="claude-main").concat(workers),undefined);
   const rt=document.getElementById("c-regtask"); if(rt) rt.innerHTML=(s.tasks||[]).map(t=>`<option>${t}</option>`).join("")||"<option>(없음)</option>";
   const fl=document.getElementById("c-flavor"); if(fl) fl.innerHTML=opts(s.flavors||[],s.flavor);
+  // 워크스페이스: 입력 중(포커스)이 아니면 서버 값으로 채움. 런별 workdir placeholder에도 반영
+  const ws=document.getElementById("c-workspace");
+  if(ws && document.activeElement!==ws) ws.value=s.workspace||"";
+  const cw=document.getElementById("c-workdir");
+  if(cw) cw.placeholder = s.workspace ? ("기본: "+s.workspace) : "F:/my/repo";
   // 실시간 사용량 스트립
   const us=document.getElementById("c-usage");
   if(us) us.innerHTML=(s.tools||[]).map(t=>{
@@ -552,7 +561,8 @@ async function saveConfig(){
   const bd=document.getElementById("board");
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
   const flavor=document.getElementById("c-flavor").value;
-  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor})});
+  const workspace=document.getElementById("c-workspace").value.trim();
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor,workspace})});
     const j=await r.json();
     document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
     if(r.ok){bd.dataset.dirty="";} load();

@@ -14,6 +14,7 @@ dist/
 # 사용자별 생성 설정(정본은 코드의 DEFAULT_YOK3X/DEFAULT_BACKENDS). 도구 소스 리포에선 미추적
 /yok3x.json
 /backends.json
+*.bak
 
 # 로컬 백업: 큰 폴더 스냅샷은 제외, 버전 아카이브(zip+매니페스트)는 추적해 GitHub에도 보존
 backup/*

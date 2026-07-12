@@ -457,8 +457,8 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     """task.json 실행. 반환: 종료 상태 문자열."""
     spec = json.loads(Path(task_file).read_text(encoding="utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
-    # 코딩 태스크 옵션
-    orch.workdir = spec.get("workdir") or None
+    # 코딩 태스크 옵션. task가 workdir를 지정하면 우선, 없으면 전역 workspace를 상속.
+    orch.workdir = spec.get("workdir") or cfg.yok3x.get("workspace") or None
     if orch.workdir and not Path(orch.workdir).is_dir():
         msg = f"workdir 없음(오타?): {orch.workdir}"
         print(f"[error] {msg}")

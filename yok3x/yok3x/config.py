@@ -20,6 +20,9 @@ DEFAULT_YOK3X = {
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
     "repo_context_max_chars": 6000, # context_globs 레포 컨텍스트 주입 글자 제한
+    # 작업 워크스페이스(기본 workdir). 지정하면 모든 런이 이 디렉터리에서 워커를 실행한다
+    # (task의 workdir가 있으면 그것이 우선). 비면 no-workdir → 빈 격리 dir에서 실행.
+    "workspace": "",
     # 산출물 검증 게이트(객관): producer-reviewer가 통과 판정 전에 실제로 돌린다.
     # 예: "pytest -q" · "npm test". 비면 게이트 없음. task 파일의 verify_cmd가 우선.
     "verify_cmd": "",

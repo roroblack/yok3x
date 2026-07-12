@@ -287,6 +287,28 @@ def test_task_verify_cmd_overrides_config(mock_root, tmp_path):
     assert (tmp_path / "task.txt").exists() and not (tmp_path / "cfg.txt").exists()
 
 
+# ------------------------------------------------ 전역 워크스페이스(기본 workdir)
+def test_run_inherits_global_workspace(mock_root, tmp_path):
+    cfg = Config.load(mock_root)
+    ws = tmp_path / "ws"; ws.mkdir()
+    cfg.yok3x["workspace"] = str(ws)          # task에 workdir 없음 → 전역 상속
+    tf = mock_root / "t.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t",
+        "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1}),
+        encoding="utf-8")
+    assert run_task_file(cfg, tf, auto=True) == "done"
+
+
+def test_run_aborts_on_bad_global_workspace(mock_root):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["workspace"] = "/definitely/no/such/dir/xyz123"
+    tf = mock_root / "t.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t",
+        "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1}),
+        encoding="utf-8")
+    assert run_task_file(cfg, tf, auto=True).startswith("aborted")   # 명시 중단
+
+
 def test_task_file_with_bom_runs(mock_root):
     cfg = Config.load(mock_root)
     spec = {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",
