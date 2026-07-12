@@ -4,6 +4,45 @@
 
 ---
 
+## v3.3.0 · 2026-07-11 — 상황별 모델 프로파일(S1) + 프로듀서 병목 근본 해결
+
+> 기록 정직성 참고(RULE §7): 아래 v3.3.0·v3.2.0 항목은 7/10~11 작업을 뒤늦게 일괄
+> 정리한 것이다(그동안 HISTORY 갱신을 빠뜨림). 상세는 git 이력(684c190..) 참조.
+
+- **프로듀서 병목 근본 해결(가장 큰 건)**: Windows에서 claude/codex/gemini는 npm `.cmd`
+  심이라 **멀티라인 인자를 subprocess argv로 넘기면 cmd.exe가 첫 줄바꿈에서 잘라버려**
+  워커가 프롬프트 첫 줄만 받고 "작업 없음"으로 실패하던 결정적 버그. → 프롬프트를 **stdin**
+  으로 전달(`_run_cli`, 커맨드에서 `{prompt}` 제거). 성공률 0/4 → 4/4, 실제 producer-reviewer
+  **SCORE 7.0 통과** 확인. 겸사 코드생성 프롬프트 미니멀화 + role의 '파일 편집' 언어 제거.
+- **v3.3 S1 — 상황별 모델 프로파일**: `models_catalog`·`situations`·`profiles`(best/balanced/
+  cost/speed)·`active_profile` + `resolve_model` 순수함수 + call_worker 라우팅(P1 배관 재사용)
+  + `yok3x profile <mode>` CLI. opt-in(비면 현행). 벤치마크/모델ID는 설정(§5.5). 계획서
+  `reports/v3.3.0-plan-situational-model-profiles-*`.
+- **gemini `--skip-trust`**: 0.44+가 '신뢰 안 된 디렉터리'에서 거부(exit 55)해 gemini 워커가
+  조용히 실패하던 것 해결(codex `--skip-git-repo-check` 격). 실측 파싱·토큰 정상 확인.
+- **전역 워크스페이스(기본 workdir)**: GUI '에이전트 배치'에서 지정 → 모든 런 상속. `/api/config`
+  검증(존재하는 dir만)·저장, `/api/state` 노출. task workdir가 우선.
+- **워커 격리 실행**: workdir 없으면 빈 임시 dir에서 실행 — 워커가 실행 cwd의 레포/git을
+  주워 오인하는 오염 방지. **run_id 마이크로초** 추가(초 단위 동시 런 충돌·손상 방지).
+- **Zed 연동 계획서**(`reports/v3.4.0-plan-zed-acp-integration-*`) + `feat/zed-acp` 분기 파킹.
+
+## v3.2.0 · 2026-07-10 — 라이브 한도 실측(claude/codex) + 적응형 열화(P1) + 하드닝
+
+- **claude 라이브 실측**: 비공식 `GET /api/oauth/usage`(구독 OAuth 토큰)로 5h/7d 현재 사용률·
+  리셋을 실시간 조회(메시지 소비 0) — codex급 실측. 실패 시 트랜스크립트 추정→원장 명시 열화.
+  모델별 7d·추가크레딧 surfacing, mat '실측' 라벨 버그 수정. `limits.claude.type=claude_oauth`.
+- **codex 0.144 파서 호환**: agent 메시지가 `item.completed`의 `item.type=agent_message`로 옮겨가
+  SCORE 미파싱되던 것 수정(신·구 스키마 호환).
+- **적응형 열화 P1**: 한도 근처(`downgrade_ratio`)에서 lite 모델로 다운그레이드(`degrade_plan`
+  순수함수 + `backends.model_arg` 주입). opt-in, 리뷰어 제외, 명시 로깅. 계획서
+  `reports/v3.2.0-plan-adaptive-degradation-*`.
+- **CLI 백엔드 stdin 데드락 방지**: 헤드리스 실행 중 대화형 대기로 멈추던 것 → `stdin=DEVNULL`.
+- **GUI 한도 임계선(Lovable식)**: 게이지에 warn/stop 세로선 + 창별 색 전환.
+- **verify_cmd 전역 상속** + **pyproject 패키징·pytest 회귀 스위트**(dep-0, `yok3x[zed]` 등 extra)
+  + 생성 설정(yok3x.json/backends.json/*.bak) gitignore.
+- **버그 3종**: 공유 가변 기본값 오염(deepcopy) · 버전 표기 드리프트(단일 출처) · 스톨 감지 신호
+  개선(리뷰어 결함 기준). 테스트 29케이스로 회귀 잠금.
+
 ## v3.1.0 · 2026-07-05 — 오케스트레이션 콘솔 (태스크 탭 → 콘솔)
 
 - **정적 "태스크" 탭을 실동작 "콘솔" 탭으로 전환** (`gui/index.html`):
