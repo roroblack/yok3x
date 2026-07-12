@@ -7,7 +7,8 @@
 | `harness-multiagent-v2.2.zip` | 2.2.0 | 11 | git 초기커밋 스냅샷. 라이브 한도(codex app-server)·plan/calibrate까지 반영된 상태이나 `__version__`은 아직 2.2.0, **GUI(guiserver) 이전**. |
 | `harness-multiagent-v2.3.0.zip` | 2.3.0 | 15 | 리네임 전 완성판. GUI 프로토타입·guiserver·RULE·HISTORY 포함. `backup/harness-multiagent-v2.3.0-backup-*/` 폴더를 zip으로 만든 것. |
 | `yok3x-v3.0.1.zip` | 3.0.1 | 15 | yok3x 리네임 + 코딩 게이트 + 폴백/하드코딩 감사. |
-| `yok3x-v3.1.0.zip` | 3.1.0 | 16 | **현재 정본.** 오케스트레이션 콘솔(작업 채팅+실시간 사용량+배치 보드, `/api/run`·`/api/config`) + 도움말 탭. `release/`와 동일. 폴더 스냅샷: `backup/yok3x-v3.1.0-*/`. |
+| `yok3x-v3.1.0.zip` | 3.1.0 | 16 | 오케스트레이션 콘솔(작업 채팅+실시간 사용량+배치 보드, `/api/run`·`/api/config`) + 도움말 탭. 폴더 스냅샷: `backup/yok3x-v3.1.0-*/`. |
+| `yok3x-v3.3.0.zip` | 3.3.0 | 21 | **현재 정본.** 라이브 한도 실측(claude OAuth·codex)·적응형 열화 P1·**상황별 모델 프로파일 S1~S3**·전역 워크스페이스·GUI 한도 임계선/프로파일 선택기. **핵심: 프로듀서 병목 근본 해결(멀티라인 프롬프트 stdin 전달 — Windows .cmd 심 argv 잘림)**. `release/`와 동일. 폴더 스냅샷: `backup/yok3x-v3.3.0-20260711/`. |
 
 ## 복원 출처(정직 표기)
 
