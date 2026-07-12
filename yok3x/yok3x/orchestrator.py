@@ -76,6 +76,8 @@ class Orchestrator:
         self.run_dir = cfg.paths.runs / self.run_id
         self.steps: list[StepLog] = []
         self._step_i = 0
+        self._failover_map: dict[str, str] = {}   # P2: 이번 런에서 폴오버한 워커→대체 backend(sticky)
+        self._failovers = 0                        # P2: 이번 런 전환 횟수(상한 체크)
         self.pattern = "-"
         self.task_desc = ""   # 상태/채팅 표시용 작업 목표
         # 태스크 옵션(코딩 기능): run_task_file이 세팅
@@ -243,27 +245,48 @@ class Orchestrator:
         idx = self._step_i
         cfg = self.cfg
 
-        # 1) 요금 가드 — stop이면 루프가 스스로 멈춘다
-        allowed, verdict = usage.guard_allows(cfg, worker)
+        w = cfg.worker(worker)
+        # 1) 유효 backend 결정: 프로파일 라우팅(S1/S2, 가용성 인지) → 이번 런 sticky 폴오버 유지
+        #    → 워커 기본. 이후 가드·열화·실행이 모두 이 backend 기준으로 동작한다.
+        backend, model_override = w["backend"], None
+        rb, rm, route_reason = resolve_model(cfg, task_kind,
+                                             available=lambda b: usage.backend_available(cfg, b))
+        if rb and rb in cfg.backends:
+            backend, model_override = rb, rm
+            self._log(f"[route] {task_kind} → {route_reason} ({backend}{'/' + rm if rm else ''})")
+        _sticky = self._failover_map.get(worker)
+        if _sticky and _sticky in cfg.backends:
+            backend, model_override = _sticky, None
+
+        # 2) 요금 가드 + P2 백엔드 폴오버(on/off, 기본 off). off면 stop→루프 정지(현행 동작).
+        #    on이면 failover_ratio↑/stop에서 여유 있는 다른 도구로 전환(런당 상한·sticky 히스테리시스).
+        verdict = usage.check_backend(cfg, backend)
         if verdict.level == "warn":
             self._log(f"[guard] 경고: {verdict.backend} {verdict.metric} {verdict.ratio:.0%} ({verdict.detail})")
-        if not allowed:
-            self.steps.append(StepLog(idx, worker, task_kind, "blocked",
-                                      f"guard stop: {verdict.backend} {verdict.detail}"))
-            self._save_status("stopped_by_guard")
-            raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
-                             f"{verdict.ratio:.0%} ({verdict.detail})")
+        _deg = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
+        if verdict.level == "stop" or verdict.ratio >= float(_deg.get("failover_ratio", 0.97)):
+            alt = usage.failover_backend(cfg, worker, backend, self._failovers)
+            if alt:
+                self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")
+                self._failover_map[worker] = alt
+                self._failovers += 1
+                backend, model_override, verdict = alt, None, usage.check_backend(cfg, alt)
+            elif verdict.level == "stop":
+                self.steps.append(StepLog(idx, worker, task_kind, "blocked",
+                                          f"guard stop: {verdict.backend} {verdict.detail}"))
+                self._save_status("stopped_by_guard")
+                raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
+                                 f"{verdict.ratio:.0%} ({verdict.detail})")
 
-        # 2) 승인 게이트
+        # 3) 승인 게이트
         if not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}"):
             self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
             return BackendResult(backend="-", ok=False, error="skipped by gate")
 
-        # 3) 프롬프트 조립. 코드생성 워커(build/revise/general)는 [작업]을 '맨 앞'에 두고
+        # 4) 프롬프트 조립. 코드생성 워커(build/revise/general)는 [작업]을 '맨 앞'에 두고
         # '지금 구현·되묻지 마라'를 명시한다 — 헤드리스 claude가 역할 설명을 '작업 없음'으로
         # 오인해 명확화만 되묻는 실패모드(체계적)를 막기 위함. critic/review는 산출물
         # (extra_context) 뒤에 채점 지시를 두는 기존 순서 유지.
-        w = cfg.worker(worker)
         is_codegen = task_kind in ("build", "revise", "general")
         parts: list[str] = []
         if is_codegen:
@@ -298,15 +321,7 @@ class Orchestrator:
             parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
-        # 3.5) 상황별 프로파일 라우팅(S1) + 가용성·한도 필터(S2) → 적응형 열화(P1) 순.
-        # S2: 프로파일 픽의 backend가 미설치/한도stop이면 벤치마크 다음 순위로 폴백.
-        backend, model_override = w["backend"], None
-        rb, rm, route_reason = resolve_model(cfg, task_kind,
-                                             available=lambda b: usage.backend_available(cfg, b))
-        if rb and rb in cfg.backends:      # 라우팅 backend가 설정에 있을 때만
-            backend, model_override = rb, rm
-            self._log(f"[route] {task_kind} → {route_reason} ({backend}{'/' + rm if rm else ''})")
-        # 적응형 열화: 라우팅된 backend 기준 한도 근처면 lite 모델로 낮춤(열화가 우선).
+        # 5) 적응형 열화 P1(최종 backend·verdict 기준). 라우팅/폴오버 후 backend의 lite로 낮춤.
         action, lite = usage.degrade_plan(cfg, worker, verdict, backend=backend)
         if action == "downgrade" and lite:
             model_override = lite

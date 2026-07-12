@@ -49,9 +49,15 @@ DEFAULT_YOK3X = {
         # 한도 인근 적응형 열화(P1: 모델 다운그레이드). opt-in. 정지(hard) 전에 가벼운
         # 모델로 낮춰 남은 한도로 계속 진행. 모든 다운그레이드는 명시 로깅된다.
         "degrade": {
-            "enabled": False,               # 켜면 downgrade_ratio↑에서 lite 모델로 낮춤
+            "enabled": False,               # P1: 켜면 downgrade_ratio↑에서 lite 모델로 낮춤
             "downgrade_ratio": 0.9,         # 이 사용률(가장 빡빡한 창)↑ → 다운그레이드
-            "roles_no_downgrade": ["codex-critic", "gemini"]  # 리뷰어=품질 게이트라 제외
+            "roles_no_downgrade": ["codex-critic", "gemini"],  # 리뷰어=품질 게이트라 제외
+            # P2: 백엔드 폴오버 — 한도 도달 시 여유 있는 '다른 도구'로 워커를 임시 전환.
+            # 결과물 품질이 달라질 수 있어 기본 OFF(별도 on/off). 켜면 정지 대신 계속 진행.
+            "failover_enabled": False,      # ← on/off (기본 off = 한도 시 현행처럼 정지)
+            "failover_ratio": 0.97,         # 이 사용률↑ 또는 backend stop → 다른 도구로 전환
+            "roles_no_failover": [],        # 특정 역할은 전환 제외(예: 리뷰어 고정 원하면 지정)
+            "max_failovers_per_run": 3      # 런당 전환 상한(스래싱 방지). sticky로 왕복도 방지
         }
     },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.

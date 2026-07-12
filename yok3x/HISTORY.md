@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-11 — 적응형 열화 P2: 백엔드 폴오버(on/off)
+
+- 한도 도달 시 여유 있는 '다른 도구'로 워커를 임시 전환(정지 대신 계속 진행). **on/off 토글**
+  `guard.degrade.failover_enabled`(**기본 off** — 결과물 품질이 달라질 수 있어 opt-in). `failover_ratio`
+  ↑ 또는 backend stop에서 발동, `usage.failover_backend`가 설치+여유 backend 중 최소 사용률 선택.
+  런당 상한(`max_failovers_per_run`) + sticky(런 내 대체 backend 유지)로 스래싱 방지, `roles_no_failover`
+  로 역할 제외. S2의 `backend_available` 재사용. call_worker 가드부를 유효 backend 기준으로 재구성.
+- off면 현행 그대로(한도 stop → 루프 정지). 테스트 4건 추가(총 36).
+
 ## 문서 · 2026-07-11 — 버그 리포트 아카이브(reports/bugs/)
 
 - 2026-07-10~11 디버깅 세션의 버그 11건을 건별 리포트로 기록(`reports/bugs/BUG-01~11`,

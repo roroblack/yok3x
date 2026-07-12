@@ -206,6 +206,32 @@ def backend_available(cfg: Config, backend: str) -> bool:
         return True
 
 
+def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int) -> str | None:
+    """P2 백엔드 폴오버(on/off): exclude(한도초과/불가) 대신 쓸 '가장 여유 있는' 다른 backend.
+
+    반환 None 조건: 폴오버 off(`failover_enabled`) · 역할 제외(`roles_no_failover`) · 런당 상한
+    초과 · 설치+여유(backend_available)한 대안 없음. 후보 중 사용률(ratio) 최소 backend 선택.
+    """
+    d = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
+    if not d.get("failover_enabled"):
+        return None
+    if worker in (d.get("roles_no_failover") or []):
+        return None
+    if switches_used >= int(d.get("max_failovers_per_run", 3)):
+        return None
+    best, best_ratio = None, None
+    for b in (cfg.backends or {}):
+        if b in (exclude, "mock") or not backend_available(cfg, b):
+            continue
+        try:
+            r = check_backend(cfg, b).ratio
+        except Exception:
+            r = 0.0
+        if best_ratio is None or r < best_ratio:
+            best, best_ratio = b, r
+    return best
+
+
 def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict",
                  backend: str | None = None) -> tuple[str, str | None]:
     """한도 인근 적응형 열화 결정(P1: 모델 다운그레이드). 반환 (action, model|None).

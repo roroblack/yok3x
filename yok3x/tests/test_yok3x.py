@@ -279,6 +279,55 @@ def test_resolve_model_s2_falls_back_to_next_available(tmp_path):
     assert orchestrator.resolve_model(cfg, "critic", available=lambda bk: False) == (None, None, "")
 
 
+# -------------------------------------- v3.2 P2: 백엔드 폴오버(on/off)
+def test_failover_backend_off_by_default(tmp_path):
+    cfg = Config.load(tmp_path)                       # failover_enabled 기본 False
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None
+
+
+def test_failover_backend_picks_freest_and_respects_limits(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"]["failover_enabled"] = True
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)   # 전부 설치
+    ratios = {"claude": 0.99, "codex": 0.1, "gemini": 0.5}
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, ratios.get(b, 0.0), "5h", "ok", "d"))
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) == "codex"   # 최소 ratio
+    assert usage.failover_backend(cfg, "claude-main", "claude", 3) is None      # 런당 상한
+    cfg.yok3x["guard"]["degrade"]["roles_no_failover"] = ["claude-main"]
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # 역할 제외
+
+
+def test_call_worker_fails_over_when_stopped(tmp_path, monkeypatch):
+    from yok3x.config import scaffold
+    from yok3x.backends import BackendResult
+    scaffold(tmp_path)
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"]["failover_enabled"] = True
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
+    monkeypatch.setattr(usage, "check_backend", lambda c, b: usage.GuardVerdict(
+        b, 1.0 if b == "claude" else 0.1, "5h", "stop" if b == "claude" else "ok", "d"))
+    cap = {}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None: cap.update(backend=n) or
+                        BackendResult(backend=n, ok=True, text="x"))
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.call_worker("claude-main", "t", "build")     # claude stop → 폴오버
+    assert cap["backend"] != "claude"              # 다른 도구로 전환됨
+    assert o._failover_map.get("claude-main") == cap["backend"]   # sticky 기록
+
+
+def test_call_worker_aborts_on_stop_without_failover(tmp_path, monkeypatch):
+    from yok3x.config import scaffold
+    scaffold(tmp_path)
+    cfg = Config.load(tmp_path)                     # failover off(기본)
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, 1.0, "5h", "stop", "d"))
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    with pytest.raises(orchestrator.RunAborted):    # 폴오버 off → 현행처럼 정지
+        o.call_worker("claude-main", "t", "build")
+
+
 def test_call_worker_applies_profile_routing(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}
