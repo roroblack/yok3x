@@ -201,7 +201,10 @@ DEFAULT_BACKENDS = {
     "gemini": {
         "type": "cli",
         # 검증 근거: https://geminicli.com/docs/cli/headless/
-        "command": ["gemini", "-p", "{prompt}", "--output-format", "json"],
+        # --skip-trust: gemini 0.44+는 '신뢰되지 않은 디렉터리'에서 실행 거부(exit 55). 헤드리스로
+        # 임의 워크스페이스/격리 dir에서 돌리려면 필수(codex의 --skip-git-repo-check 격).
+        "command": ["gemini", "-p", "{prompt}", "--output-format", "json", "--skip-trust"],
+        "model_arg": ["--model", "{model}"],   # 프로파일/다운그레이드 시 모델 주입
         "parser": "gemini_json",
         "timeout_sec": 600
     },
