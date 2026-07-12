@@ -292,6 +292,28 @@ def test_run_cli_injects_model_arg_only_when_model_given(monkeypatch):
     assert "--model" not in seen["cmd"]
 
 
+def test_cli_backend_passes_multiline_prompt_via_stdin(monkeypatch):
+    # {prompt}가 argv에 없으면 프롬프트를 stdin으로 넘긴다 — Windows .cmd 심의 멀티라인
+    # argv 잘림(첫 줄바꿈에서 절단)을 우회하는 핵심 수정.
+    seen = {}
+
+    class _P:
+        stdout, stderr, returncode = '{"result":"ok"}', "", 0
+
+    def _fake(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return _P()
+
+    monkeypatch.setattr(backends.subprocess, "run", _fake)
+    spec = {"type": "cli", "command": ["claude", "-p", "--output-format", "json"],
+            "parser": "raw"}
+    ml = "[작업]\n여러 줄\n프롬프트"
+    run_backend("claude", spec, ml)
+    assert ml not in seen["cmd"]                    # argv에는 프롬프트가 없고
+    assert seen["kw"].get("input") == ml           # stdin(input)으로 온전히 전달
+    assert "stdin" not in seen["kw"]               # DEVNULL 아님
+
+
 # ------------------------------------------------ verify_cmd 전역 상속/재정의
 def _pr_spec(workdir, verify_cmd=None):
     s = {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",

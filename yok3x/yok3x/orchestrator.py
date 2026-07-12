@@ -259,37 +259,43 @@ class Orchestrator:
             self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
             return BackendResult(backend="-", ok=False, error="skipped by gate")
 
-        # 3) 프롬프트 조립: 역할 + brief/context(글자 제한) + knot 공유 기억
+        # 3) 프롬프트 조립. 코드생성 워커(build/revise/general)는 [작업]을 '맨 앞'에 두고
+        # '지금 구현·되묻지 마라'를 명시한다 — 헤드리스 claude가 역할 설명을 '작업 없음'으로
+        # 오인해 명확화만 되묻는 실패모드(체계적)를 막기 위함. critic/review는 산출물
+        # (extra_context) 뒤에 채점 지시를 두는 기존 순서 유지.
         w = cfg.worker(worker)
-        parts = [f"[역할] {w['role']}"]
-        # 할루시네이션 방지 + yok3x 기법 주입
-        if cfg.yok3x.get("anti_hallucination", {}).get("enabled", True):
-            parts.append(ANTI_HALLUCINATION)
-        if cfg.yok3x.get("yok3x_technique", {}).get("enabled", True):
-            if task_kind in ("critic", "review"):
+        is_codegen = task_kind in ("build", "revise", "general")
+        parts: list[str] = []
+        if is_codegen:
+            # 코드생성: [작업]을 맨 앞 + 계획/자가검증/사실성/출력형식을 '한 블록'으로 압축.
+            # 장황한 역할·anti-halluc·기법 블록은 헤드리스 claude를 '파일 편집 시도(→권한 대기)'
+            # 나 '작업 없음 되묻기'로 몰아 체계적으로 실패시켰다(실측). 미니멀 프롬프트가 1턴에
+            # 안정적으로 코드를 낸다(6s vs 실패).
+            parts.append(f"[작업]\n{task}")
+            parts.append("[지시] 완성된 코드를 코드블록으로 즉시 출력하라. 파일을 만들거나 편집하려 "
+                         "하지 말고 코드는 텍스트로만 답한다. 코드 앞에 접근을 2~3줄로 요약(계획)하고, "
+                         "끝에 'SELF-CHECK:'로 엣지케이스·오류처리·요구충족을 점검하라. 존재하지 않는 "
+                         "API·파일을 지어내지 말고, 명확화를 되묻지 말고 합리적 가정으로 곧장 구현하라.")
+        else:
+            parts.append(f"[역할] {w['role']}")
+            if cfg.yok3x.get("anti_hallucination", {}).get("enabled", True):
+                parts.append(ANTI_HALLUCINATION)
+            if cfg.yok3x.get("yok3x_technique", {}).get("enabled", True):
                 parts.append(REVIEW_GUARD)
-            else:
-                parts.append(YOK3X_TECHNIQUE)
-        # workdir가 없으면 편집할 레포가 없다 → 파일 생성 대신 완성 코드를 본문에 직접.
-        # role의 '파일 변경 보고' 지침을 명시적으로 무효화해야 claude가 '변경점 보고'가 아니라
-        # 실제 코드를 출력한다. (workdir가 있으면 파일 편집+변경점 보고 워크플로우 유지)
-        if not self.workdir and task_kind in ("build", "revise", "general"):
-            parts.append("[중요·출력형식] 이 작업엔 작업 디렉터리가 없다. 위 역할의 "
-                         "'파일 변경 보고' 지침은 적용하지 마라. 파일을 만들지 말고, "
-                         "완성된 코드 전문을 코드블록으로 응답 본문에 직접 제시하라. "
-                         "파일 경로·변경점 보고가 아니라 실제 코드를 출력하라.")
+        # 실제 내용이 있는 brief/context/memory만 주입 — 스캐폴드 플레이스홀더는 노이즈라 제외.
         brief = knot.read_brief(cfg).strip()
-        if brief:
+        if brief and "글자 제한 적용)" not in brief:
             parts.append(f"[brief.md]\n{knot.clip(brief, cfg.yok3x['brief_max_chars'])}")
         ctx = knot.read_context(cfg).strip()
-        if ctx:
+        if ctx and "글자 제한 적용)" not in ctx:
             parts.append(f"[context.md]\n{knot.clip(ctx, cfg.yok3x['context_max_chars'])}")
         mem = knot.context_for_prompt(cfg, task)
         if mem:
             parts.append(mem)
         if extra_context:
             parts.append(extra_context)
-        parts.append(f"[작업]\n{task}")
+        if not is_codegen:
+            parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
         # 3.5) 상황별 프로파일 라우팅(S1) → 적응형 열화(P1) 순. 모든 선택은 명시 로깅.

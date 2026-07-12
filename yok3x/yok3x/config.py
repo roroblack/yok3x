@@ -134,11 +134,11 @@ DEFAULT_YOK3X = {
         # worker → backend + 역할 시스템 프롬프트 (코딩 워크플로우)
         "claude-main": {
             "backend": "claude",
-            "role": "구현 담당. 요구된 기능의 코드를 작성/수정한다. 변경한 파일 경로와 핵심 변경점만 간결히 보고한다."
+            "role": "구현 담당. 요청된 기능의 완성 코드를 작성해 코드블록으로 응답한다(파일 편집 아님)."
         },
         "codex-main": {
             "backend": "codex",
-            "role": "구현·리팩터 담당. 코드를 작성하거나 개선한다. 변경점만 간결히 보고한다."
+            "role": "구현·리팩터 담당. 요청된 코드를 작성/개선해 코드블록으로 응답한다(파일 편집 아님)."
         },
         "codex-critic": {
             "backend": "codex",
@@ -184,7 +184,8 @@ DEFAULT_BACKENDS = {
         # 주입된 컨텍스트만으로 '코드 텍스트를 1턴에 반환'하게 한다. yok3x는 context_globs로
         # 레포 컨텍스트를 이미 프롬프트에 넣으므로 claude가 Read/Glob을 쓸 필요가 없다.
         # (콤마 구분 단일 인자 — 공백 구분은 인자 파싱이 깨진다)
-        "command": ["claude", "-p", "{prompt}", "--output-format", "json",
+        # 프롬프트는 stdin으로 전달({prompt} 없음) — Windows .cmd 심의 멀티라인 argv 잘림 회피.
+        "command": ["claude", "-p", "--output-format", "json",
                     "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,TodoWrite,WebFetch"],
         "model_arg": ["--model", "{model}"],   # 다운그레이드 시 덧붙는 인자
         "parser": "claude_json",
@@ -193,7 +194,7 @@ DEFAULT_BACKENDS = {
     "codex": {
         "type": "cli",
         # 검증 근거: https://developers.openai.com/codex/noninteractive
-        "command": ["codex", "exec", "--json", "--skip-git-repo-check", "{prompt}"],
+        "command": ["codex", "exec", "--json", "--skip-git-repo-check"],   # 프롬프트는 stdin
         "model_arg": ["--model", "{model}"],
         "parser": "codex_jsonl",
         "timeout_sec": 600
@@ -203,7 +204,7 @@ DEFAULT_BACKENDS = {
         # 검증 근거: https://geminicli.com/docs/cli/headless/
         # --skip-trust: gemini 0.44+는 '신뢰되지 않은 디렉터리'에서 실행 거부(exit 55). 헤드리스로
         # 임의 워크스페이스/격리 dir에서 돌리려면 필수(codex의 --skip-git-repo-check 격).
-        "command": ["gemini", "-p", "{prompt}", "--output-format", "json", "--skip-trust"],
+        "command": ["gemini", "--output-format", "json", "--skip-trust"],   # 프롬프트는 stdin
         "model_arg": ["--model", "{model}"],   # 프로파일/다운그레이드 시 모델 주입
         "parser": "gemini_json",
         "timeout_sec": 600

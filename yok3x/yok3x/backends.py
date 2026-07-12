@@ -62,7 +62,9 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
 
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              cwd: str | None = None, model: str | None = None) -> BackendResult:
-    cmd = [str(a).replace("{prompt}", prompt) for a in spec["command"]]
+    template = spec["command"]
+    has_prompt_arg = any("{prompt}" in str(a) for a in template)
+    cmd = [str(a).replace("{prompt}", prompt) for a in template]
     # 모델 다운그레이드(적응형 열화): model이 주어지고 model_arg 템플릿이 있으면 덧붙인다.
     if model and spec.get("model_arg"):
         cmd += [str(a).replace("{model}", model) for a in spec["model_arg"]]
@@ -72,14 +74,16 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
     if resolved:
         cmd[0] = resolved
     timeout = int(spec.get("timeout_sec", 600))
+    # 프롬프트 전달: argv에 {prompt}가 없으면 stdin으로 넘긴다. Windows npm .cmd 심은
+    # 멀티라인 argv를 첫 줄바꿈에서 잘라버려(cmd.exe 파싱), 여러 줄 프롬프트가 첫 줄만
+    # 전달되던 치명 버그가 있었다 — stdin 전달로 우회한다. input=prompt는 프롬프트 후
+    # 즉시 EOF라 대화형 대기 데드락도 방지한다. {prompt}가 argv에 있으면(구식) DEVNULL 유지.
+    # encoding=utf-8: Windows 기본(cp949)이 CLI의 UTF-8 JSON을 깨뜨리지 않게.
+    stdin_kw = {"stdin": subprocess.DEVNULL} if has_prompt_arg else {"input": prompt}
     try:
-        # stdin=DEVNULL: 프롬프트는 argv({prompt})로 넘기므로 stdin 불필요. 이를 막지 않으면
-        # 헤드리스 실행 중 CLI가 인증·온보딩 등으로 대화형 입력을 기다릴 때 상속된 stdin에서
-        # 데드락(→ timeout까지 멈춤)한다. DEVNULL로 즉시 EOF → 대화형이면 빠르게 실패한다.
-        # encoding=utf-8: Windows 기본(cp949) 디코딩이 CLI의 UTF-8 JSON을 깨뜨리지 않게.
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              cwd=cwd or None, stdin=subprocess.DEVNULL,
-                              encoding="utf-8", errors="replace")
+                              cwd=cwd or None, encoding="utf-8", errors="replace",
+                              **stdin_kw)
     except FileNotFoundError:
         return BackendResult(backend=name, ok=False,
                              error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
