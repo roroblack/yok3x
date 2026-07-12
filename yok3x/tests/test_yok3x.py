@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from yok3x import __version__, backends, limits, matview, usage
+from yok3x import __version__, backends, limits, matview, orchestrator, usage
 from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_YOK3X, Config, scaffold
 from yok3x.orchestrator import Orchestrator, run_task_file
@@ -214,6 +214,45 @@ def test_run_id_includes_microseconds(mock_root):
     from yok3x.orchestrator import Orchestrator
     o = Orchestrator(Config.load(mock_root))
     assert re.match(r"run_\d{8}_\d{6}_\d{6}$", o.run_id)   # 초 단위 충돌 방지
+
+
+# -------------------------------------- v3.3 S1: 상황별 모델 프로파일
+def test_resolve_model_off_by_default(tmp_path):
+    cfg = Config.load(tmp_path)                        # active_profile 기본 ""
+    assert orchestrator.resolve_model(cfg, "review") == (None, None, "")
+
+
+def test_resolve_model_routes_by_profile_and_situation(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = "best"
+    b, m, why = orchestrator.resolve_model(cfg, "critic")   # critic→review→fable-5
+    assert b == "claude" and m == "claude-fable-5" and "review" in why
+    assert orchestrator.resolve_model(cfg, "build")[0] == "codex"          # build→gpt-5.6
+    assert orchestrator.resolve_model(cfg, "design_review")[0] == "gemini"  # design→gemini
+    assert orchestrator.resolve_model(cfg, "weird")[0] == "claude"          # 미매핑→"*" 폴백
+
+
+def test_resolve_model_unknown_profile_is_noop(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = "nope"
+    assert orchestrator.resolve_model(cfg, "review") == (None, None, "")
+
+
+def test_call_worker_applies_profile_routing(mock_root, monkeypatch):
+    from yok3x.backends import BackendResult
+    cap = {}
+
+    def spy(name, spec, prompt, cwd=None, model=None):
+        cap["backend"], cap["model"] = name, model
+        return BackendResult(backend=name, ok=True, text="x")
+
+    monkeypatch.setattr(orchestrator, "run_backend", spy)
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["use_real_limits"] = False       # 결정적(네트워크 X)
+    cfg.yok3x["active_profile"] = "best"
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.call_worker("claude-main", "task", "critic")      # review 상황 → fable-5
+    assert cap["backend"] == "claude" and cap["model"] == "claude-fable-5"
 
 
 # -------------------------------------- 적응형 열화 P1: 모델 다운그레이드

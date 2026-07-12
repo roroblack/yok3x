@@ -292,16 +292,23 @@ class Orchestrator:
         parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
-        # 3.5) 적응형 열화: 한도 인근이면 모델 다운그레이드(P1). 모든 열화는 명시 로깅.
-        action, model_override = usage.degrade_plan(cfg, worker, verdict)
-        if action == "downgrade" and model_override:
-            self._log(f"[degrade] {worker} 사용률 {verdict.ratio:.0%} → 모델 다운그레이드: {model_override}")
+        # 3.5) 상황별 프로파일 라우팅(S1) → 적응형 열화(P1) 순. 모든 선택은 명시 로깅.
+        backend, model_override = w["backend"], None
+        rb, rm, route_reason = resolve_model(cfg, task_kind)
+        if rb and rb in cfg.backends:      # 라우팅 backend가 설정에 있을 때만(없으면 S2가 처리)
+            backend, model_override = rb, rm
+            self._log(f"[route] {task_kind} → {route_reason} ({backend}{'/' + rm if rm else ''})")
+        # 적응형 열화: 라우팅된 backend 기준 한도 근처면 lite 모델로 낮춤(열화가 우선).
+        action, lite = usage.degrade_plan(cfg, worker, verdict, backend=backend)
+        if action == "downgrade" and lite:
+            model_override = lite
+            self._log(f"[degrade] {worker} 사용률 {verdict.ratio:.0%} → 모델 다운그레이드: {lite}")
 
         # 4) 실행 + 사용량 기록. workdir가 있으면 그 디렉터리에서, 없으면 빈 격리 dir에서
         # 실행한다(레포 컨텍스트가 워커를 오염시키는 것을 방지 — _isolated_cwd 참조).
         run_cwd = cwd or self.workdir or self._isolated_cwd()
-        self._log(f"[run] step {idx} → {worker} ({w['backend']})")
-        res = run_backend(w["backend"], cfg.backends[w["backend"]], prompt,
+        self._log(f"[run] step {idx} → {worker} ({backend})")
+        res = run_backend(backend, cfg.backends[backend], prompt,
                           cwd=run_cwd, model=model_override)
         usage.record(cfg, worker, task_kind, res)
 
@@ -451,6 +458,32 @@ class Orchestrator:
 
 
 # ---------------------------------------------------------------- loop
+
+def resolve_model(cfg: Config, task_kind: str) -> tuple[str | None, str | None, str]:
+    """상황별 모델 프로파일 라우팅(v3.3 S1). 반환 (backend|None, model_id|None, reason).
+
+    active_profile이 비었거나 매핑/카탈로그가 없으면 (None, None, "") = 오버라이드 없음
+    (현행: 워커 기본 backend·CLI 기본 모델). 순수 함수 — 결정적으로 테스트된다.
+    사용자 우선 원칙: 프로파일은 '기본 추천'이며, 이후 call_worker에서 태스크 명시값이
+    있으면 그것이 이긴다.
+    """
+    yk = cfg.yok3x
+    prof_name = (yk.get("active_profile") or "").strip()
+    if not prof_name:
+        return (None, None, "")
+    prof = (yk.get("profiles") or {}).get(prof_name)
+    if not prof:
+        return (None, None, "")
+    situation = (yk.get("situations") or {}).get(task_kind, task_kind)
+    logical = prof.get(situation) or prof.get("*")
+    if not logical:
+        return (None, None, "")
+    entry = (yk.get("models_catalog") or {}).get(logical) or {}
+    backend = entry.get("backend")
+    if not backend:
+        return (None, None, "")
+    return (backend, entry.get("model") or None, f"{prof_name}/{situation}→{logical}")
+
 
 def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                   ask=None) -> str:

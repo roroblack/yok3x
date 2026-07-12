@@ -188,7 +188,8 @@ def guard_allows(cfg: Config, worker: str) -> tuple[bool, GuardVerdict]:
     return v.level != "stop", v
 
 
-def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict") -> tuple[str, str | None]:
+def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict",
+                 backend: str | None = None) -> tuple[str, str | None]:
     """한도 인근 적응형 열화 결정(P1: 모델 다운그레이드). 반환 (action, model|None).
 
     action='downgrade'면 이번 호출에 lite 모델을 주입한다. 순수 함수(부수효과 없음)라
@@ -201,8 +202,8 @@ def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict") -> tuple[str
     if worker in (d.get("roles_no_downgrade") or []):
         return ("normal", None)
     if verdict.ratio >= float(d.get("downgrade_ratio", 0.9)):
-        backend = _worker_backend_name(cfg, worker)
-        lite = (((cfg.yok3x.get("limits") or {}).get(backend) or {}).get("models") or {}).get("lite")
+        b = backend or _worker_backend_name(cfg, worker)   # 라우팅된 backend 우선
+        lite = (((cfg.yok3x.get("limits") or {}).get(b) or {}).get("models") or {}).get("lite")
         if lite:
             return ("downgrade", lite)
     return ("normal", None)

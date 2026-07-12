@@ -93,6 +93,29 @@ DEFAULT_YOK3X = {
         "test": "claude",           # 테스트 작성
         "design_review": "gemini"   # 설계/아키텍처 검토
     },
+    # 상황별 모델 프로파일(v3.3 S1). active_profile을 고르면 작업 상황(task_kind)마다
+    # 최적 모델로 라우팅한다. 비면("") 라우팅 off = 현행(워커 기본 backend·CLI 기본 모델).
+    # 벤치마크 점수는 코드에 박지 않고 사용자가 설정으로 갱신한다(§5.5·§7).
+    "active_profile": "",           # "" | best | balanced | cost | speed  (yok3x profile <mode>)
+    "models_catalog": {             # 논리모델명 → (backend, model_id). id 비면 CLI 기본
+        "fable-5":    {"backend": "claude", "model": "claude-fable-5"},
+        "opus-4.8":   {"backend": "claude", "model": "claude-opus-4-8"},
+        "sonnet-5":   {"backend": "claude", "model": "claude-sonnet-5"},
+        "haiku-4.5":  {"backend": "claude", "model": "claude-haiku-4-5-20251001"},
+        "gpt-5.6":    {"backend": "codex",  "model": ""},   # 자기 환경 model_id로 채우기
+        "gemini-3.5": {"backend": "gemini", "model": ""}
+    },
+    "situations": {                 # task_kind → 상황 슬롯(프로파일 키)
+        "critic": "review", "review": "review",
+        "build": "build", "refactor": "build", "test": "build",
+        "design_review": "design", "general": "build"
+    },
+    "profiles": {                   # mode → 상황 → 논리모델. "*"=기본, 특정 상황만 오버라이드
+        "best":     {"review": "fable-5",  "build": "gpt-5.6", "design": "gemini-3.5", "*": "fable-5"},
+        "balanced": {"review": "opus-4.8", "build": "gpt-5.6", "design": "gemini-3.5", "*": "opus-4.8"},
+        "cost":     {"design": "gemini-3.5", "*": "sonnet-5"},
+        "speed":    {"design": "gemini-3.5", "*": "haiku-4.5"}
+    },
     "flavors": {
         "claude-orchestrator": {
             "orchestrator": "claude-main",

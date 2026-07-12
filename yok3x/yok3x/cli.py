@@ -105,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("tool", nargs="?")
     sp.add_argument("name", nargs="?")
 
+    sp = sub.add_parser("profile", help="상황별 모델 프로파일 확인/설정(best|balanced|cost|speed|off)")
+    sp.add_argument("mode", nargs="?")
+
     sp = sub.add_parser("calibrate", help="실제 사용률로 claude 한도 역산 보정(정확)")
     sp.add_argument("tool")
     sp.add_argument("window", choices=["5h", "7d"])
@@ -191,6 +194,25 @@ def main(argv: list[str] | None = None) -> int:
                 cur = (cfg.yok3x.get("limits", {}).get(tool, {}) or {}).get("plan") or "(미설정)"
                 print(f"{tool}: {cur}   가능: {', '.join(presets)}")
             print("codex: app-server가 plan 자동 감지(설정 불필요)")
+        return 0
+
+    if a.cmd == "profile":
+        from .orchestrator import resolve_model
+        profiles = cfg.yok3x.get("profiles", {})
+        if a.mode is not None:
+            if a.mode not in profiles and a.mode not in ("off", ""):
+                print(f"없는 프로파일: {a.mode} (가능: {', '.join(profiles)}, off)")
+                return 2
+            cfg.yok3x["active_profile"] = "" if a.mode in ("off", "") else a.mode
+            cfg.save_yok3x()
+        cur = cfg.yok3x.get("active_profile") or ""
+        print(f"현재 프로파일: {cur or '(off — 워커 기본 backend·CLI 기본 모델)'}")
+        print(f"가능: {', '.join(profiles)}  (off로 끄기)")
+        if cur:
+            print("상황별 라우팅 미리보기:")
+            for tk in ("build", "review", "design_review"):
+                b, m, why = resolve_model(cfg, tk)
+                print(f"  {tk:14s} → {(b or '(기본)')}{'/' + m if m else ''}   {('[' + why + ']') if why else ''}")
         return 0
 
     if a.cmd == "calibrate":
