@@ -28,6 +28,20 @@ _QUEUE: list[tuple[str, int]] = []   # (task_file, iterations)
 _LOCK = threading.Lock()
 
 
+def _routing_preview(cfg: Config) -> list:
+    """활성 프로파일의 상황별 라우팅(가용성·한도 반영) — GUI '왜 이 모델' 표시용.
+    프로파일 off면 빈 리스트(성능: 폴링마다 probe 안 함)."""
+    if not (cfg.yok3x.get("active_profile") or "").strip():
+        return []
+    from .orchestrator import resolve_model
+    avail = lambda b: usage.backend_available(cfg, b)
+    out = []
+    for kind, label in (("build", "구현"), ("review", "검수"), ("design_review", "설계검토")):
+        b, m, why = resolve_model(cfg, kind, available=avail)
+        out.append({"kind": kind, "label": label, "backend": b, "model": m, "why": why})
+    return out
+
+
 def build_state(cfg: Config) -> dict:
     totals = usage.today_totals(cfg)
     tools = []
@@ -50,6 +64,9 @@ def build_state(cfg: Config) -> dict:
         "flavor": cfg.yok3x["flavor"],
         "flavors": list(cfg.yok3x.get("flavors", {})),
         "workspace": cfg.yok3x.get("workspace", ""),
+        "active_profile": cfg.yok3x.get("active_profile", ""),
+        "profiles": list(cfg.yok3x.get("profiles", {})),
+        "route_preview": _routing_preview(cfg),
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0)},
         "coach": usage.coach_messages(cfg),
@@ -172,6 +189,12 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         ws = str(workspace).strip()
         if ws and not Path(ws).is_dir():
             return {"error": f"workspace 디렉터리 없음(오타?): {ws}"}
+    active_profile = body.get("active_profile")
+    if active_profile is not None:
+        ap = str(active_profile).strip()
+        ap = "" if ap == "off" else ap
+        if ap and ap not in cfg.yok3x.get("profiles", {}):
+            return {"error": f"없는 프로파일: {ap} (가능: {', '.join(cfg.yok3x.get('profiles', {}))}, off)"}
     # 백업 후 적용
     jf = cfg.paths.yok3x_json
     if jf.exists():
@@ -188,6 +211,9 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["flavor"] = flavor
     if workspace is not None:
         cfg.yok3x["workspace"] = str(workspace).strip()
+    if active_profile is not None:
+        ap = str(active_profile).strip()
+        cfg.yok3x["active_profile"] = "" if ap == "off" else ap
     cfg.save_yok3x()
     return {"ok": True}
 

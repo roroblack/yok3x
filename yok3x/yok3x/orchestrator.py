@@ -486,12 +486,15 @@ def resolve_model(cfg: Config, task_kind: str,
     if not prof:
         return (None, None, "")
     situation = (yk.get("situations") or {}).get(task_kind, task_kind)
-    pick = prof.get(situation) or prof.get("*")
+    bench_sit = (yk.get("benchmarks") or {}).get(situation) or {}
+    if prof.get("_derive"):     # S3: benchmarks 최고점 모델 자동 채택(argmax), 없으면 "*"
+        pick = max(bench_sit, key=lambda k: bench_sit[k]) if bench_sit else prof.get("*")
+    else:
+        pick = prof.get(situation) or prof.get("*")
     catalog = yk.get("models_catalog") or {}
     candidates: list[str] = [pick] if pick else []
     if available:   # S2: benchmarks 점수 내림차순으로 폴백 후보 확장
-        bench = (yk.get("benchmarks") or {}).get(situation) or {}
-        for m in sorted(bench, key=lambda k: bench[k], reverse=True):
+        for m in sorted(bench_sit, key=lambda k: bench_sit[k], reverse=True):
             if m not in candidates:
                 candidates.append(m)
     for logical in candidates:

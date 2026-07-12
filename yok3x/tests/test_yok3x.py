@@ -238,6 +238,20 @@ def test_resolve_model_unknown_profile_is_noop(tmp_path):
     assert orchestrator.resolve_model(cfg, "review") == (None, None, "")
 
 
+# -------------------------------------- v3.3 S3: best 프로파일 argmax 자동 유도
+def test_best_profile_derives_from_benchmarks(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = "best"
+    # 기본 benchmarks review 최고점 = fable-5
+    assert orchestrator.resolve_model(cfg, "critic")[:2] == ("claude", "claude-fable-5")
+    # benchmarks만 갱신해도 best가 자동 추종
+    cfg.yok3x["benchmarks"]["review"] = {"gpt-5.6": 99.0, "fable-5": 80.0}
+    b, m, why = orchestrator.resolve_model(cfg, "critic")
+    assert b == "codex" and "review→gpt-5.6" in why
+    # 벤치마크 없는 상황은 "*"로 폴백
+    assert orchestrator.resolve_model(cfg, "weird")[0] == "claude"
+
+
 # -------------------------------------- v3.3 S2: 가용성·한도 필터
 def test_backend_available_installed_and_headroom(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)

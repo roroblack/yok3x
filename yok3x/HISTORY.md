@@ -21,6 +21,10 @@
 - **v3.3 S2 — 가용성·한도 필터**: `backend_available`(CLI 설치 + 한도 stop 아님) + 상황별
   `benchmarks` 점수로, 프로파일 픽이 불가하면 '다음 순위 가용 모델'로 폴백(reason에 '(폴백)').
   "이론상 최고" → "지금 가능한 최고". `yok3x profile` 미리보기도 가용성 반영.
+- **v3.3 S3 — best 자동유도 + GUI**: `best` 프로파일을 `_derive`로 → 상황마다 benchmarks
+  최고점 모델을 argmax로 자동 채택(데이터 갱신만으로 최신화). GUI 콘솔에 **프로파일 선택기
+  + "왜 이 모델" 라우팅 미리보기**(`/api/state` route_preview, `/api/config` active_profile
+  검증·저장). 새 backend(GLM 등)는 설정으로 확장 가능(실 CLI 없어 미검증).
 - **gemini `--skip-trust`**: 0.44+가 '신뢰 안 된 디렉터리'에서 거부(exit 55)해 gemini 워커가
   조용히 실패하던 것 해결(codex `--skip-git-repo-check` 격). 실측 파싱·토큰 정상 확인.
 - **전역 워크스페이스(기본 workdir)**: GUI '에이전트 배치'에서 지정 → 모든 런 상속. `/api/config`

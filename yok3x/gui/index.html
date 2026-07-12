@@ -279,6 +279,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           <div class="sub" style="margin:0 0 4px">워크스페이스(기본 workdir) — 지정하면 모든 런이 이 폴더에서 실행(비면 빈 격리 dir)</div>
           <input id="c-workspace" class="wide" style="width:100%" placeholder="예: C:/Users/me/myrepo">
         </div>
+        <div style="margin-top:11px">
+          <label class="tgl2">모델 프로파일(상황별 자동선택) <select id="c-profile"></select></label>
+          <div class="sub" id="c-routing" style="margin-top:6px;line-height:1.7"></div>
+        </div>
         <div class="qbox" id="c-queue"></div>
         <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
       </div>
@@ -493,6 +497,13 @@ function renderConsole(s,rn){
   if(ws && document.activeElement!==ws) ws.value=s.workspace||"";
   const cw=document.getElementById("c-workdir");
   if(cw) cw.placeholder = s.workspace ? ("기본: "+s.workspace) : "F:/my/repo";
+  // 모델 프로파일 선택 + 상황별 라우팅('왜 이 모델')
+  const pf=document.getElementById("c-profile");
+  if(pf && document.activeElement!==pf) pf.innerHTML=opts((s.profiles||[]).concat(["off"]), s.active_profile||"off");
+  const rtp=document.getElementById("c-routing");
+  if(rtp) rtp.innerHTML=(s.route_preview&&s.route_preview.length)
+    ? s.route_preview.map(r=>`<div>${r.label}(${r.kind}) → <b>${r.backend||'기본'}${r.model?'/'+r.model:''}</b> <span style="opacity:.55">${r.why||''}</span></div>`).join("")
+    : '<span style="opacity:.55">off — 워커 기본 backend·CLI 기본 모델</span>';
   // 실시간 사용량 스트립
   const us=document.getElementById("c-usage");
   if(us) us.innerHTML=(s.tools||[]).map(t=>{
@@ -562,7 +573,8 @@ async function saveConfig(){
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
   const flavor=document.getElementById("c-flavor").value;
   const workspace=document.getElementById("c-workspace").value.trim();
-  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor,workspace})});
+  const active_profile=document.getElementById("c-profile").value;
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor,workspace,active_profile})});
     const j=await r.json();
     document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
     if(r.ok){bd.dataset.dirty="";} load();

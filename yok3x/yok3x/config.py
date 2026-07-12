@@ -111,7 +111,9 @@ DEFAULT_YOK3X = {
         "design_review": "design", "general": "build"
     },
     "profiles": {                   # mode → 상황 → 논리모델. "*"=기본, 특정 상황만 오버라이드
-        "best":     {"review": "fable-5",  "build": "gpt-5.6", "design": "gemini-3.5", "*": "fable-5"},
+        # best: "_derive" → 상황마다 benchmarks 최고점 모델을 자동 채택(데이터 갱신만으로 최신화).
+        # 벤치마크가 없는 상황은 "*"로 폴백.
+        "best":     {"_derive": True, "*": "fable-5"},
         "balanced": {"review": "opus-4.8", "build": "gpt-5.6", "design": "gemini-3.5", "*": "opus-4.8"},
         "cost":     {"design": "gemini-3.5", "*": "sonnet-5"},
         "speed":    {"design": "gemini-3.5", "*": "haiku-4.5"}
