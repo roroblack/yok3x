@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -186,6 +187,23 @@ def guard_allows(cfg: Config, worker: str) -> tuple[bool, GuardVerdict]:
     b = _worker_backend_name(cfg, worker) or "claude"
     v = check_backend(cfg, b)
     return v.level != "stop", v
+
+
+def backend_available(cfg: Config, backend: str) -> bool:
+    """S2 라우팅 필터: 이 backend를 지금 쓸 수 있는가 = CLI 설치 + 한도 여유(stop 아님).
+
+    설치 안 됐거나 한도가 꽉 찼으면 False → resolve_model이 다음 순위로 폴백한다.
+    판정 자체가 실패하면(예외) 보수적으로 True(라우팅을 막지 않음)."""
+    spec = (cfg.backends or {}).get(backend) or {}
+    cmd = spec.get("command") or []
+    btype = spec.get("type", "cli")
+    if btype == "cli":
+        if not cmd or shutil.which(str(cmd[0])) is None:
+            return False        # CLI 미설치
+    try:
+        return check_backend(cfg, backend).level != "stop"   # 한도 여유
+    except Exception:
+        return True
 
 
 def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict",

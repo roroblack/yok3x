@@ -238,6 +238,33 @@ def test_resolve_model_unknown_profile_is_noop(tmp_path):
     assert orchestrator.resolve_model(cfg, "review") == (None, None, "")
 
 
+# -------------------------------------- v3.3 S2: 가용성·한도 필터
+def test_backend_available_installed_and_headroom(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    monkeypatch.setattr(usage.shutil, "which", lambda x: None)          # 미설치
+    assert usage.backend_available(cfg, "claude") is False
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)   # 설치됨
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, 0.2, "5h", "ok", "d"))
+    assert usage.backend_available(cfg, "claude") is True
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, 1.0, "5h", "stop", "d"))
+    assert usage.backend_available(cfg, "claude") is False              # 한도 stop
+
+
+def test_resolve_model_s2_falls_back_to_next_available(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = "best"                 # review→fable-5(claude)
+    # claude 전부 불가 → review benchmarks 다음 순위 중 가용한 gpt-5.6(codex)
+    b, m, why = orchestrator.resolve_model(cfg, "critic", available=lambda bk: bk != "claude")
+    assert b == "codex" and "폴백" in why
+    # 전부 가용 → 프로파일 픽 그대로(폴백 아님)
+    b2, m2, why2 = orchestrator.resolve_model(cfg, "critic", available=lambda bk: True)
+    assert b2 == "claude" and m2 == "claude-fable-5" and "폴백" not in why2
+    # 전부 불가 → 오버라이드 없음
+    assert orchestrator.resolve_model(cfg, "critic", available=lambda bk: False) == (None, None, "")
+
+
 def test_call_worker_applies_profile_routing(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}

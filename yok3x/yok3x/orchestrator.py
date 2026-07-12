@@ -298,10 +298,12 @@ class Orchestrator:
             parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
-        # 3.5) 상황별 프로파일 라우팅(S1) → 적응형 열화(P1) 순. 모든 선택은 명시 로깅.
+        # 3.5) 상황별 프로파일 라우팅(S1) + 가용성·한도 필터(S2) → 적응형 열화(P1) 순.
+        # S2: 프로파일 픽의 backend가 미설치/한도stop이면 벤치마크 다음 순위로 폴백.
         backend, model_override = w["backend"], None
-        rb, rm, route_reason = resolve_model(cfg, task_kind)
-        if rb and rb in cfg.backends:      # 라우팅 backend가 설정에 있을 때만(없으면 S2가 처리)
+        rb, rm, route_reason = resolve_model(cfg, task_kind,
+                                             available=lambda b: usage.backend_available(cfg, b))
+        if rb and rb in cfg.backends:      # 라우팅 backend가 설정에 있을 때만
             backend, model_override = rb, rm
             self._log(f"[route] {task_kind} → {route_reason} ({backend}{'/' + rm if rm else ''})")
         # 적응형 열화: 라우팅된 backend 기준 한도 근처면 lite 모델로 낮춤(열화가 우선).
@@ -465,13 +467,16 @@ class Orchestrator:
 
 # ---------------------------------------------------------------- loop
 
-def resolve_model(cfg: Config, task_kind: str) -> tuple[str | None, str | None, str]:
-    """상황별 모델 프로파일 라우팅(v3.3 S1). 반환 (backend|None, model_id|None, reason).
+def resolve_model(cfg: Config, task_kind: str,
+                  available=None) -> tuple[str | None, str | None, str]:
+    """상황별 모델 프로파일 라우팅. 반환 (backend|None, model_id|None, reason).
 
-    active_profile이 비었거나 매핑/카탈로그가 없으면 (None, None, "") = 오버라이드 없음
-    (현행: 워커 기본 backend·CLI 기본 모델). 순수 함수 — 결정적으로 테스트된다.
-    사용자 우선 원칙: 프로파일은 '기본 추천'이며, 이후 call_worker에서 태스크 명시값이
-    있으면 그것이 이긴다.
+    S1: active_profile의 상황별 픽. active_profile이 비었거나 매핑/카탈로그가 없으면
+        (None, None, "") = 오버라이드 없음(현행: 워커 기본 backend·CLI 기본 모델).
+    S2: available(backend)->bool 콜러블이 주어지면 '가용한(설치+한도여유) 첫 후보'로 폴백.
+        후보 순서 = 프로파일 픽 → 해당 상황 benchmarks 점수 내림차순(중복 제외). 폴백 시
+        reason에 '(폴백)' 표기. 순수 함수(available 주입) — 결정적으로 테스트된다.
+    사용자 우선: 프로파일은 '기본 추천'이며 call_worker에서 태스크 명시값이 있으면 이긴다.
     """
     yk = cfg.yok3x
     prof_name = (yk.get("active_profile") or "").strip()
@@ -481,14 +486,24 @@ def resolve_model(cfg: Config, task_kind: str) -> tuple[str | None, str | None, 
     if not prof:
         return (None, None, "")
     situation = (yk.get("situations") or {}).get(task_kind, task_kind)
-    logical = prof.get(situation) or prof.get("*")
-    if not logical:
-        return (None, None, "")
-    entry = (yk.get("models_catalog") or {}).get(logical) or {}
-    backend = entry.get("backend")
-    if not backend:
-        return (None, None, "")
-    return (backend, entry.get("model") or None, f"{prof_name}/{situation}→{logical}")
+    pick = prof.get(situation) or prof.get("*")
+    catalog = yk.get("models_catalog") or {}
+    candidates: list[str] = [pick] if pick else []
+    if available:   # S2: benchmarks 점수 내림차순으로 폴백 후보 확장
+        bench = (yk.get("benchmarks") or {}).get(situation) or {}
+        for m in sorted(bench, key=lambda k: bench[k], reverse=True):
+            if m not in candidates:
+                candidates.append(m)
+    for logical in candidates:
+        entry = catalog.get(logical) or {}
+        backend = entry.get("backend")
+        if not backend:
+            continue
+        if available and not available(backend):
+            continue
+        reason = f"{prof_name}/{situation}→{logical}" + ("(폴백)" if logical != pick else "")
+        return (backend, entry.get("model") or None, reason)
+    return (None, None, "")
 
 
 def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,

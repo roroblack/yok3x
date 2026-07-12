@@ -116,6 +116,13 @@ DEFAULT_YOK3X = {
         "cost":     {"design": "gemini-3.5", "*": "sonnet-5"},
         "speed":    {"design": "gemini-3.5", "*": "haiku-4.5"}
     },
+    # 상황별 벤치마크 점수(S2 폴백 순위 근거). 프로파일 픽의 backend가 미설치/한도stop이면
+    # 이 표에서 '가용한 다음 순위'로 폴백한다. 점수는 코드가 아니라 설정 — 사용자가 갱신(§7).
+    "benchmarks": {
+        "review": {"fable-5": 80.0, "opus-4.8": 69.2, "gpt-5.6": 64.6, "sonnet-5": 63.2},   # 정확한 패치
+        "build":  {"gpt-5.6": 88.8, "fable-5": 83.1, "sonnet-5": 80.4, "opus-4.8": 78.9},   # 터미널/빌드
+        "design": {"gemini-3.5": 83.6, "opus-4.8": 77.8}                                     # 도구/설계
+    },
     "flavors": {
         "claude-orchestrator": {
             "orchestrator": "claude-main",
