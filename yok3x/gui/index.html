@@ -579,7 +579,7 @@ function renderConsole(s,rn){
   const bd=document.getElementById("board");
   if(bd && !bd.dataset.dirty) bd.innerHTML=workers.map(w=>{
     const be=s.workers[w].backend, mdl=s.workers[w].model||"";
-    const list=["claude","codex","gemini","mock"];
+    const list=["claude","codex","gemini","local","mock"];
     const avail=(s.backend_models&&s.backend_models[be])||[];   // 동적 조회(claude=API·codex=캐시)
     let mopts=['<option value="">(기본 모델)</option>'];
     avail.forEach(m=>mopts.push(`<option value="${m}" ${m===mdl?'selected':''}>${m}</option>`));
@@ -587,9 +587,16 @@ function renderConsole(s,rn){
     mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
     const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
     const hint=avail.length?`동적 조회됨(${avail.length}개)`:"목록 조회 불가(gemini 등) — 커스텀 입력";
+    // 추론 강도(effort): claude=--effort, codex=-c model_reasoning_effort. gemini/local은 미적용.
+    const eff=s.workers[w].effort||"";
+    const effSupported=(be==="claude"||be==="codex");
+    const effOpts=['<option value="">effort 기본</option>'].concat(
+      ["low","medium","high"].map(e=>`<option value="${e}" ${e===eff?'selected':''}>${e}</option>`)).join("");
+    const effTitle=effSupported?"추론 강도 — claude/codex에 실제 적용":"추론 강도 — 이 backend는 미적용(claude/codex만)";
     return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
       <select data-w="${w}" onchange="${dirty}">${opts(list,be)}</select>
-      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). ${hint}. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select></div>`;
+      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). ${hint}. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select>
+      <select data-we="${w}" onchange="${dirty}" title="${effTitle}" ${effSupported?"":"style='opacity:.5'"}>${effOpts}</select></div>`;
   }).join("");
   // 큐
   const q=document.getElementById("c-queue");
@@ -644,10 +651,11 @@ async function saveConfig(){
   const bd=document.getElementById("board");
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
   const worker_models={}; bd.querySelectorAll("select[data-wm]").forEach(s=>worker_models[s.dataset.wm]=s.value);
+  const worker_efforts={}; bd.querySelectorAll("select[data-we]").forEach(s=>worker_efforts[s.dataset.we]=s.value);
   const flavor=document.getElementById("c-flavor").value;
   const workspace=document.getElementById("c-workspace").value.trim();
   const active_profile=document.getElementById("c-profile").value;
-  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,worker_models,flavor,workspace,active_profile})});
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,worker_models,worker_efforts,flavor,workspace,active_profile})});
     const j=await r.json();
     document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
     if(r.ok){bd.dataset.dirty="";} load();

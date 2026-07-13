@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — effort 설정 UI(에이전트 보드) + 보드 local backend (§5.6 승인)
+
+- 사용자 승인(option 1)으로 **에이전트 배치 보드에 워커별 effort 드롭다운** 추가(기본/low/medium/high).
+  claude/codex는 활성, gemini/local은 dim(미적용 표시). 저장은 `/api/config` worker_efforts →
+  `_apply_config`(값검증 low/medium/high) → workers[w].effort. build_state에 effort 노출.
+- 보드 backend 목록에 `local` 추가(P3 워커 local-main이 'claude'로 오표시되던 것 정정).
+- gemini는 thinking 지원하나 settings.json(thinkingLevel) 경유라 per-call 미연결 → dim 처리(정직).
+  라이브 검증: 드롭다운 렌더 5행, 저장 라운드트립 ok(claude-main=high 반영), JS 에러 0.
+
 ## 미출시(dev) · 2026-07-13 — gemini-3.5 가짜 라벨 제거 + 추론강도(effort) 백엔드 통과
 
 - `models_catalog`/profiles/benchmarks의 논리라벨 **`gemini-3.5`(실존 안 하는 이름)를 `gemini-3-flash`**

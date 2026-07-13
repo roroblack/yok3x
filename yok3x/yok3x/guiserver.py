@@ -89,7 +89,7 @@ def build_state(cfg: Config) -> dict:
         })
     g = cfg.yok3x["guard"]
     workers = {name: {"backend": w.get("backend"), "role": w.get("role", ""),
-                      "model": w.get("model", "")}
+                      "model": w.get("model", ""), "effort": w.get("effort", "")}
                for name, w in cfg.yok3x.get("workers", {}).items()}
     return {
         "version": __version__,   # 코드 버전(단일 출처) — 저장된 yok3x.json의 낡은 값에 오염되지 않게
@@ -236,6 +236,12 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     for w in worker_models:
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커(model): {w}"}
+    worker_efforts = body.get("worker_efforts") or {}  # 워커별 추론 강도(빈값=기본)
+    for w, e in worker_efforts.items():
+        if w not in cfg.yok3x.get("workers", {}):
+            return {"error": f"없는 워커(effort): {w}"}
+        if e and str(e) not in ("low", "medium", "high"):
+            return {"error": f"effort 값 오류: {e} (low/medium/high)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     soft = body.get("soft_ratio")
     hard = body.get("hard_ratio")
@@ -273,6 +279,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["active_profile"] = "" if ap == "off" else ap
     for w, m in worker_models.items():
         cfg.yok3x["workers"][w]["model"] = str(m or "").strip()
+    for w, e in worker_efforts.items():
+        cfg.yok3x["workers"][w]["effort"] = str(e or "").strip()
     if failover_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
     if soft is not None:
