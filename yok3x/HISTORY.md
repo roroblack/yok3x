@@ -4,6 +4,14 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — gemini 모델 목록 드디어 조회(CLI 번들 GEMINI_MODELS 레지스트리)
+
+- gemini는 이 계정에서 Antigravity/CloudSDK **암호화 OAuth**로 인증(env·.env·평문토큰 전무) → 키
+  접근 불가라 Google API를 못 쓴다. 대신 **gemini CLI 번들의 `GEMINI_MODELS` Set**을 파싱해 10개
+  실제 모델(gemini-3-pro-preview·3.1-pro/flash·2.5-pro/flash/flash-lite·gemma…) 조회 성공.
+  codex `models_cache.json`과 동급의 실제 소스(CLI 버전 따라 갱신). API 키 주면 실시간 API가 우선.
+- `_gemini_api_key`에 gemini의 `.env` 탐색 미러(cwd→상위→홈) 추가. §5.5 레지스트리 B항 갱신. 49 passed.
+
 ## 미출시(dev) · 2026-07-13 — §5.5 폴백·하드코딩 감사 레지스트리 신설(밀린 리포트 보강)
 
 - RULE §5.5가 참조하나 부재했던 **폴백/하드코딩 레지스트리**를 신설:

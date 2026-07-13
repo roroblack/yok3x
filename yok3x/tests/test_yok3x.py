@@ -123,7 +123,8 @@ def test_list_models_dynamic(tmp_path, monkeypatch):
     monkeypatch.setattr(limits.Path, "home", classmethod(lambda cls: home))
     assert limits.list_models(cfg, "codex") == ["gpt-5.6-sol"]      # 캐시 slug, hide 제외
     limits._MODELS_CACHE.clear()
-    assert limits.list_models(cfg, "gemini") == []                  # 키 없음 → 빈 목록(명시적 폴백)
+    monkeypatch.setattr(limits, "_gemini_bundle_dir", lambda: None)  # 번들도 없는 최초 경로
+    assert limits.list_models(cfg, "gemini") == []                  # 키·번들 없음 → 빈 목록(명시적 폴백)
 
     # gemini: 키가 있으면 Google /v1beta/models 실제 조회 → generateContent 지원 모델만
     monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
@@ -136,6 +137,24 @@ def test_list_models_dynamic(tmp_path, monkeypatch):
                         lambda url, timeout=0: _Resp(payload))
     limits._MODELS_CACHE.clear()
     assert limits.list_models(cfg, "gemini") == ["gemini-3-pro", "gemini-2.5-flash"]
+
+
+def test_gemini_bundle_registry_parse(tmp_path, monkeypatch):
+    # 키가 없을 때 gemini CLI 번들의 GEMINI_MODELS Set(변수참조)을 해석해 슬러그를 뽑는다.
+    bundle = tmp_path / "bundle"; bundle.mkdir()
+    (bundle / "chunk-x.js").write_text(
+        'var PREVIEW_GEMINI_MODEL = "gemini-3-pro-preview";\n'
+        'var DEFAULT_GEMINI_MODEL = "gemini-2.5-pro";\n'
+        'var DEFAULT_GEMINI_FLASH_MODEL = "gemini-2.5-flash";\n'
+        'var GEMMA_MODEL = "gemma-4-31b-it";\n'
+        'var NOISE = "gemini-9001-super-duper";\n'   # Set에 없으면 제외돼야
+        'GEMINI_MODELS = /* @__PURE__ */ new Set([\n'
+        '  PREVIEW_GEMINI_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_FLASH_MODEL, GEMMA_MODEL\n'
+        ']);\n', encoding="utf-8")
+    monkeypatch.setattr(limits, "_gemini_bundle_dir", lambda: bundle)
+    got = limits._gemini_bundle_models()
+    assert got == ["gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemma-4-31b-it"]
+    assert "gemini-9001-super-duper" not in got   # Set 멤버 아님 → 노이즈 제외
 
 
 def test_version_is_single_source():

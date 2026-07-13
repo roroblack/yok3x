@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -144,26 +145,36 @@ def _fetch_models(cfg: Config, backend: str) -> list[str]:
         # 키는 config 주도로 해석(어느 env·파일에서 읽을지 설정이 지정) → 평문 하드코딩 아님.
         conf = (cfg.yok3x.get("limits") or {}).get("gemini") or {}
         key = _gemini_api_key(conf)
-        if not key:
-            return []   # 키 없음 → 명시적 폴백(GUI 커스텀 입력). GEMINI_API_KEY 주면 실시간 목록.
-        base = conf.get("models_url",
-                        "https://generativelanguage.googleapis.com/v1beta/models")
-        url = f"{base}?key={urllib.parse.quote(key)}&pageSize=1000"
-        with urllib.request.urlopen(url, timeout=15) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-        out = []
-        for m in data.get("models", []):
-            name = (m.get("name") or "").split("/")[-1]   # "models/gemini-2.5-pro" → 슬러그
-            methods = m.get("supportedGenerationMethods") or []
-            if name and (not methods or "generateContent" in methods):
-                out.append(name)
-        return out
+        if key:
+            # 1순위: 실시간 Google API(키 있을 때 가장 정확)
+            base = conf.get("models_url",
+                            "https://generativelanguage.googleapis.com/v1beta/models")
+            url = f"{base}?key={urllib.parse.quote(key)}&pageSize=1000"
+            with urllib.request.urlopen(url, timeout=15) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            out = []
+            for m in data.get("models", []):
+                name = (m.get("name") or "").split("/")[-1]   # "models/gemini-2.5-pro" → 슬러그
+                methods = m.get("supportedGenerationMethods") or []
+                if name and (not methods or "generateContent" in methods):
+                    out.append(name)
+            return out
+        # 2순위: 키 없음(이 계정은 Antigravity/CloudSDK 암호화 OAuth라 키 접근 불가). gemini CLI
+        # 번들의 GEMINI_MODELS 레지스트리를 읽는다 — 설치된 CLI 버전이 지원하는 실제 모델 집합
+        # (codex의 models_cache.json과 동급의 실제 소스, CLI 업데이트 시 갱신).
+        return _gemini_bundle_models()
     return []
 
 
 def _gemini_api_key(conf: dict[str, Any]) -> str:
-    """gemini API 키 해석(config 주도). 우선순위: conf['api_key'] → conf['api_key_path'] 파일 →
-    conf['api_key_env'] 환경변수(기본 GEMINI_API_KEY/GOOGLE_API_KEY). 없으면 ''(명시적 폴백)."""
+    """gemini API 키 해석. 우선순위: conf['api_key'] → conf['api_key_path'] 파일 → 환경변수 →
+    **gemini CLI와 동일한 .env 탐색**(loadEnvironment/findEnvFile 미러). 없으면 ''(명시적 폴백).
+
+    gemini CLI는 키를 env에 직접 두는 대신 .env로 로드하는 경우가 많아, 같은 규칙으로 찾아야
+    yok3x도 gemini가 인증되는 바로 그 위치에서 키를 얻는다. 키 값은 반환만 하고 노출하지 않는다."""
+    names = conf.get("api_key_env") or ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
+    if isinstance(names, str):
+        names = [names]
     k = (conf.get("api_key") or "").strip()
     if k:
         return k
@@ -172,13 +183,90 @@ def _gemini_api_key(conf: dict[str, Any]) -> str:
         fp = Path(p).expanduser()
         if fp.exists():
             return fp.read_text(encoding="utf-8").strip()
-    names = conf.get("api_key_env") or ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
-    if isinstance(names, str):
-        names = [names]
-    for n in names:
+    for n in names:                       # 이미 프로세스 환경에 있으면 그대로
         v = os.environ.get(n)
         if v:
             return v.strip()
+    # gemini의 findEnvFile 미러: cwd→상위로 각 단계 .gemini/.env 다음 .env, 그다음 홈.
+    try:
+        start = Path(conf.get("env_search_from") or Path.cwd()).resolve()
+    except Exception:
+        start = Path.home()
+    seen, candidates = set(), []
+    d = start
+    while True:
+        candidates += [d / ".gemini" / ".env", d / ".env"]
+        if d.parent == d:
+            break
+        d = d.parent
+    candidates += [Path.home() / ".gemini" / ".env", Path.home() / ".env"]
+    for env_file in candidates:
+        if env_file in seen:
+            continue
+        seen.add(env_file)
+        v = _read_env_key(env_file, names)
+        if v:
+            return v
+    return ""
+
+
+def _gemini_bundle_dir() -> Path | None:
+    """설치된 gemini CLI의 bundle 디렉터리를 찾는다(shim 위치 + npm 전역 경로 후보)."""
+    cands: list[Path] = []
+    exe = shutil.which("gemini")
+    if exe:
+        p = Path(exe).resolve().parent
+        cands += [p / "node_modules" / "@google" / "gemini-cli" / "bundle",
+                  p.parent / "lib" / "node_modules" / "@google" / "gemini-cli" / "bundle"]
+    cands += [Path.home() / "AppData" / "Roaming" / "npm" / "node_modules" / "@google" / "gemini-cli" / "bundle",
+              Path("/usr/local/lib/node_modules/@google/gemini-cli/bundle"),
+              Path("/usr/lib/node_modules/@google/gemini-cli/bundle")]
+    for c in cands:
+        if c.is_dir():
+            return c
+    return None
+
+
+def _gemini_bundle_models() -> list[str]:
+    """gemini CLI 번들의 GEMINI_MODELS Set(모델 검증용 정식 레지스트리)을 읽어 슬러그 목록 반환.
+    Set 멤버는 변수 참조라 `var NAME = "gemini-.."` 할당을 해석한다. 못 찾으면 []."""
+    bundle = _gemini_bundle_dir()
+    if not bundle:
+        return []
+    members: list[str] = []
+    assigns: dict[str, str] = {}
+    for f in bundle.glob("*.js"):
+        try:
+            t = f.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        i = t.find("GEMINI_MODELS = ")
+        if i >= 0:
+            j = t.find("]", i)
+            if j >= 0:
+                members = re.findall(r"\b([A-Z][A-Z0-9_]+)\b", t[i:j + 1])
+        for m in re.finditer(r'\b([A-Z][A-Z0-9_]+)\s*=\s*"(gemini[^"]*|gemma[^"]*)"', t):
+            assigns.setdefault(m.group(1), m.group(2))
+    return [assigns[m] for m in members if m in assigns]
+
+
+def _read_env_key(env_file: Path, names: list[str]) -> str:
+    """.env 파일에서 names 중 첫 키의 값을 읽는다(KEY=VALUE, 따옴표/export 처리). 실패 시 ''."""
+    try:
+        if not env_file.is_file():
+            return ""
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if key.startswith("export "):
+                key = key[len("export "):].strip()
+            if key in names:
+                return val.strip().strip('"').strip("'")
+    except Exception:
+        return ""
     return ""
 
 
