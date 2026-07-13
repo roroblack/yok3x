@@ -428,6 +428,51 @@ def test_knot_query_dual_level_expansion(tmp_path):
     assert {n.get("title") for _, n in knot.query(cfg, "slug", expand=False)} == {"alpha topic"}
 
 
+def test_knot_recency_decay_weight():
+    from yok3x import knot
+    from datetime import datetime
+    now = datetime(2026, 7, 13, 12, 0, 0)
+    assert knot._recency_weight(now.isoformat(), now, 90) == 1.0            # 나이 0 → 감쇠 없음
+    old = datetime(2026, 4, 14, 12, 0, 0).isoformat()                       # 90일 전
+    assert abs(knot._recency_weight(old, now, 90) - 0.5) < 0.02             # 반감기 → 0.5
+    assert knot._recency_weight(old, now, 0) == 1.0                         # halflife 0 → 끔
+    assert knot._recency_weight("garbage", now, 90) == 1.0                  # 파싱 실패 → 1.0
+
+
+def test_knot_recency_ranks_newer_first(tmp_path, monkeypatch):
+    from yok3x import knot
+    from datetime import datetime
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    cfg.yok3x["knot"]["recency_halflife_days"] = 30
+    knot.save(cfg, "old slug", "slug slug slug", tags=["t"])
+    knot.save(cfg, "new slug", "slug slug slug", tags=["t"])
+    # old 노트의 created를 과거로 조작
+    import re as _re
+    for p in cfg.paths.knowledge.glob("old-slug*.md"):
+        t = p.read_text(encoding="utf-8")
+        p.write_text(_re.sub(r"created: .*", "created: 2026-01-01T00:00:00", t), encoding="utf-8")
+    monkeypatch.setattr(knot, "datetime", __import__("datetime").datetime)
+    ranked = [n.get("title") for _, n in knot.query(cfg, "slug", expand=False)]
+    assert ranked[0] == "new slug"          # 동일 키워드 점수라도 최신이 상위
+
+
+def test_knot_lint_flags_duplicates(tmp_path):
+    from yok3x import knot
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    knot.save(cfg, "auth login flow", "handles [[session]] and tokens", tags=["auth", "security"])
+    knot.save(cfg, "auth login flow v2", "handles [[session]] and tokens", tags=["auth", "security"])
+    knot.save(cfg, "unrelated cooking", "pasta recipe", tags=["food"])
+    dups = [i for i in knot.lint(cfg) if "중복 후보" in i]
+    assert len(dups) == 1 and "cooking" not in dups[0]     # 유사 쌍만 감지
+
+
+def test_knot_extract_key_points():
+    from yok3x import knot
+    text = "intro line\nSCORE: 8\n- [x] 엣지케이스 처리\n랜덤 문장\nSELF-CHECK: 통과"
+    kp = knot.extract_key_points(text)
+    assert "SCORE: 8" in kp and "SELF-CHECK: 통과" in kp and "랜덤 문장" not in kp
+
+
 # -------------------------------------- run_id 충돌 방지(마이크로초)
 def test_run_id_includes_microseconds(mock_root):
     import re

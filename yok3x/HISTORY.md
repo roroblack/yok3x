@@ -4,6 +4,14 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — knot consolidation(Mem0식, 의존성 0) — 요점저장·중복통합·최신성감쇠
+
+- Mem0 평가 권고 이행(벡터DB·추가 LLM 없이): ① 최신성 감쇠(`_recency_weight`, `query` 점수에 반감기
+  감쇠 곱 — `knot.recency_halflife_days` 기본 90) ② 중복 통합(`lint`에 노트쌍 유사도≥`dedup_threshold`
+  0.6면 '중복 후보' 표시, `_similarity`=태그·링크·제목 자카드) ③ 요점 저장(`extract_key_points`가
+  SELF-CHECK·SCORE·결정 신호만 응축, orchestrator `_finish`가 런 저장 시 사용 — 지식그물 비대 억제).
+- 의존성 0·설정 조절 가능. 신규 테스트 5. 리포트 `reports/v3.5.0-knot-consolidation-2026-07-13-1600.md`.
+
 ## 미출시(dev) · 2026-07-13 — 오프라인 폴백(P3) on/off GUI 토글 (사용자 요청)
 
 - 사용자가 '로컬 모델 사용을 끄는 기능'을 명시 요청 → 기존 폴오버(P2) 토글과 동일 패턴으로 **오프라인

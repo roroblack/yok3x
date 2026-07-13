@@ -89,6 +89,46 @@ def _load_notes(cfg: Config) -> list[dict]:
     return notes
 
 
+def _recency_weight(created: str, now: datetime, halflife_days: float) -> float:
+    """최신성 감쇠 가중(0~1). 반감기마다 절반. halflife<=0이거나 파싱 실패면 1.0(감쇠 없음).
+    Mem0의 '낡은 기억 강등'을 의존성 0으로 근사 — 검색 점수에 곱한다."""
+    if halflife_days <= 0 or not created:
+        return 1.0
+    try:
+        dt = datetime.fromisoformat(str(created).strip())
+    except Exception:
+        return 1.0
+    age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+    return 0.5 ** (age_days / halflife_days)
+
+
+def _similarity(a: dict, b: dict) -> float:
+    """두 노트의 유사도(0~1) — 태그·링크·제목토큰 자카드의 평균. 임베딩 없이 그래프/텍스트만."""
+    def toks(n):
+        title = re.sub(r"[^\w가-힣 ]", " ", str(n.get("title", "")).lower())
+        return set(w for w in title.split() if len(w) > 1)
+    def links(n):
+        return set(l.lower().strip() for l in LINK_RE.findall(n.get("body", "")))
+    parts = []
+    for sa, sb in ((set(a.get("tags", [])), set(b.get("tags", []))),
+                   (links(a), links(b)), (toks(a), toks(b))):
+        if sa or sb:
+            parts.append(len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0)
+    return sum(parts) / len(parts) if parts else 0.0
+
+
+def extract_key_points(text: str, max_points: int = 8) -> str:
+    """요점 추출(Mem0식 consolidation, 의존성 0). 원문 전체 대신 SELF-CHECK·결정·결함 등
+    '결론 신호' 줄만 남긴다 — 새 LLM 호출 없이 워커가 이미 낸 구조를 재사용."""
+    sig = ("self-check", "score", "결함", "결정", "수정", "요약", "결론", "todo",
+           "버그", "fix", "decision", "- [", "* ")
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    picked = [l for l in lines if any(s in l.lower() for s in sig)]
+    if not picked:                       # 신호 없으면 앞 몇 줄로 폴백
+        picked = lines[:max_points]
+    return "\n".join(picked[:max_points])
+
+
 def query(cfg: Config, q: str, limit: int = 5, expand: bool = True) -> list[tuple[float, dict]]:
     """이중레벨 검색(LightRAG식, 의존성 0).
 
@@ -99,18 +139,21 @@ def query(cfg: Config, q: str, limit: int = 5, expand: bool = True) -> list[tupl
     """
     terms = [t.lower() for t in q.split() if t.strip()]
     notes = _load_notes(cfg)
+    now = datetime.now()
+    halflife = float((cfg.yok3x.get("knot") or {}).get("recency_halflife_days", 0) or 0)
     # 링크 해소용 인덱스: 제목/파일stem(소문자) → 노트
     by_key: dict[str, dict] = {}
     for n in notes:
         by_key.setdefault(str(n.get("title", "")).lower().strip(), n)
         by_key.setdefault(n["path"].stem.lower(), n)
     scores: dict[Path, list] = {}   # path → [score, note]
-    for n in notes:                 # 저수준: 키워드
+    for n in notes:                 # 저수준: 키워드 × 최신성 감쇠
         title = str(n.get("title", "")).lower()
         tags = " ".join(n.get("tags", [])).lower()
         body = n.get("body", "").lower()
         s = sum(3 * title.count(t) + 2 * tags.count(t) + min(body.count(t), 5) for t in terms)
         if s > 0:
+            s *= _recency_weight(n.get("created", ""), now, halflife)   # 낡은 기억 강등
             scores[n["path"]] = [float(s), n]
     if expand and scores:           # 고수준: 링크·태그 그래프 확장
         for base, n in sorted(scores.values(), key=lambda x: -x[0])[:3]:
@@ -145,6 +188,14 @@ def lint(cfg: Config) -> list[str]:
             l = link.lower().strip()
             if l not in titles and l not in stems:
                 issues.append(f"{rel}: 깨진 링크 [[{link}]]")
+    # 중복 통합(Mem0식): 유사도 임계 이상인 노트 쌍을 병합 후보로 표시(임베딩 없이 태그·링크·제목).
+    thr = float((cfg.yok3x.get("knot") or {}).get("dedup_threshold", 0.6) or 0.6)
+    for i in range(len(notes)):
+        for j in range(i + 1, len(notes)):
+            sim = _similarity(notes[i], notes[j])
+            if sim >= thr:
+                issues.append(f"{notes[i]['path'].name} ~ {notes[j]['path'].name}: "
+                              f"중복 후보(유사도 {sim:.0%}) — 통합 검토")
     return issues
 
 

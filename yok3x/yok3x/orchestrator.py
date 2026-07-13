@@ -510,8 +510,11 @@ class Orchestrator:
         # brief.md 갱신(글자 제한) + knot에 런 요약 저장 → 에이전트 간 기억 공유
         knot.write_brief(self.cfg, f"# brief.md\n\n최근 런 {self.run_id}\n작업: {task}\n"
                                    f"결과 요약: {final_output[:400]}")
+        # Mem0식 요점 저장: 원문 전체 대신 결론 신호(SELF-CHECK·SCORE·결정 등)만 응축해 knot에 저장
+        # → 지식그물이 비대·중복해지는 것을 억제(새 LLM 호출 없이 워커가 낸 구조 재사용).
+        key_points = knot.extract_key_points(final_output)
         knot.save(self.cfg, f"run-{self.run_id}",
-                  f"작업: {task}\n\n결과:\n{final_output[:1500]}",
+                  f"작업: {task}\n\n요점:\n{key_points[:1200]}",
                   tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
         self._save_status("done")
         self._log(f"[done] 최종 산출물: {out}")

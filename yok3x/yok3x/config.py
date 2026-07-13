@@ -23,6 +23,11 @@ DEFAULT_YOK3X = {
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
+    # knot(지식그물) 통합 설정 — Mem0식 consolidation(의존성 0 근사)
+    "knot": {
+        "recency_halflife_days": 90,  # 검색 점수 최신성 감쇠 반감기(일). 0=끔. 낡은 기억 자연 강등
+        "dedup_threshold": 0.6        # lint 중복 후보 감지 유사도 임계(태그·링크·제목 자카드)
+    },
     "repo_context_max_chars": 6000, # context_globs 레포 컨텍스트 주입 글자 제한
     # 작업 워크스페이스(기본 workdir). 지정하면 모든 런이 이 디렉터리에서 워커를 실행한다
     # (task의 workdir가 있으면 그것이 우선). 비면 no-workdir → 빈 격리 dir에서 실행.
