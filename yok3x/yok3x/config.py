@@ -17,6 +17,7 @@ DEFAULT_YOK3X = {
     "version": "3.1",
     "flavor": "claude-orchestrator",
     "auto_approve": False,          # 승인 게이트 기본값: 사람이 y/n
+    "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
     "repo_context_max_chars": 6000, # context_globs 레포 컨텍스트 주입 글자 제한

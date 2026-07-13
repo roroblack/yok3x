@@ -44,6 +44,14 @@ REVIEW_GUARD = (
     "[검증 지침] 산출물의 모든 코드·사실 주장을 근거에 대조하라. "
     "지어낸 API·존재하지 않는 함수·검증 안 된 확신을 '환각'으로 명시 지적하라.")
 
+# 적대적 검수(ARIS AD1) — 리뷰어를 '채점'이 아니라 '반증/파괴'에 맞춘다.
+ADVERSARIAL_REVIEW = (
+    "다음 산출물을 적대적으로 검수하라. 너의 목표는 통과시키는 것이 아니라 '무너뜨리는 것'이다. "
+    "가장 강한 반례·미검증 가정·엣지케이스 실패·보안/정확성 결함을 적극적으로 찾아라. 근거 없이 "
+    "'동작한다'고 주장된 부분을 지목하고 반증 가능한 구체적 시나리오를 제시하라. 테스트/검증 결과가 "
+    "실패면 통과시키지 마라. 첫 줄에 'SCORE: <0-10>'(엄격), 이후 치명 결함부터 나열하고 재현·수정 "
+    "지시를 써라. 확신이 없으면 낮은 점수를 줘라.")
+
 # 근거 없는 과잉 확신 표현(가벼운 휴리스틱)
 _OVERCONFIDENCE = ("반드시 동작", "무조건 동작", "100% 정확", "완벽하게 동작",
                    "definitely works", "guaranteed to work", "never fails")
@@ -86,6 +94,7 @@ class Orchestrator:
         self.verify_timeout: int = 300       # verify_cmd 제한시간(초) — task로 재정의 가능
         self.context_globs: list[str] = []   # 레포 컨텍스트 주입 glob
         self.rubric: str = ""                # 채점표 파일 경로
+        self.adversarial: bool = cfg.yok3x.get("adversarial_review", False)  # ARIS AD1 적대적 검수
 
     # ------------------------------------------------------------ infra
 
@@ -402,14 +411,33 @@ class Orchestrator:
             merged = res.text if res.ok else merged
         self._finish(task, merged)
 
+    def _ensure_cross_family(self, producer: str, reviewer: str) -> str:
+        """적대적 검수(ARIS): 프로듀서와 리뷰어가 같은 모델 패밀리면 다른 패밀리 워커로 리뷰어
+        교체(교차검증 강화). 다른 패밀리 워커가 없으면 경고만. 반환: (교체된) reviewer."""
+        pb = (self.cfg.worker(producer) or {}).get("backend")
+        rb = (self.cfg.worker(reviewer) or {}).get("backend")
+        if not pb or pb != rb:
+            return reviewer
+        for w in self.cfg.yok3x.get("workers", {}):
+            wb = (self.cfg.worker(w) or {}).get("backend")
+            if wb and wb != pb:
+                self._log(f"[adversarial] 교차 패밀리: 리뷰어 {reviewer}({rb}) → {w}({wb}) 교체")
+                return w
+        self._log(f"[adversarial] 경고: 프로듀서·리뷰어 같은 패밀리({pb}), 다른 패밀리 워커 없음")
+        return reviewer
+
     def run_producer_reviewer(self, task: str, producer: str, reviewer: str,
                               max_rounds: int = 2, pass_score: float = 8.0) -> None:
         """Producer-Reviewer: 한 모델이 만들고 다른 모델이 채점(멀티 에이전트 검수).
 
         코딩 강화: 레포 컨텍스트 주입 · 테스트/검증 게이트(객관) · rubric · 스톨 감지.
         통과 조건 = SCORE >= pass_score **그리고** (verify_cmd 있으면) 검증 통과.
+        adversarial=True면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제(ARIS AD1).
         """
         self.pattern = "producer-reviewer"
+        if self.adversarial:
+            reviewer = self._ensure_cross_family(producer, reviewer)
+            self._log("[adversarial] 적대적 검수 모드 — 리뷰어가 반증 우선")
         self._save_status("running", {"task": task})
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
@@ -437,11 +465,11 @@ class Orchestrator:
                 rev_blocks.append(rubric)
             if self.verify_cmd:
                 rev_blocks.append(f"[테스트/검증 결과] exit={'0(통과)' if verify_ok else 'nonzero(실패)'}\n{verify_out[:1200]}")
-            rev = self.call_worker(
-                reviewer,
+            review_instr = ADVERSARIAL_REVIEW if self.adversarial else (
                 "다음 산출물을 채점하라. 첫 줄 'SCORE: <0-10>', 이후 결함과 수정 지시. "
-                "테스트/검증 결과가 실패면 통과시키지 마라.",
-                "critic", extra_context="\n\n".join(rev_blocks))
+                "테스트/검증 결과가 실패면 통과시키지 마라.")
+            rev = self.call_worker(reviewer, review_instr, "critic",
+                                   extra_context="\n\n".join(rev_blocks))
             score = self.steps[-1].score
             issues_sig = self._defect_sig(rev.text)
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
@@ -543,6 +571,8 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                               or cfg.yok3x.get("verify_timeout_sec", 300))
     orch.context_globs = spec.get("context_globs", []) or []
     orch.rubric = spec.get("rubric", "") or ""
+    if "adversarial" in spec:                       # task가 명시하면 우선, 없으면 config 기본
+        orch.adversarial = bool(spec.get("adversarial"))
     pattern = spec.get("pattern", "producer-reviewer")
     task = spec["task"]
     orch.task_desc = task

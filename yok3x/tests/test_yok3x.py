@@ -229,6 +229,29 @@ def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     assert res.ok and res.text == "결과 OK"
 
 
+# -------------------------------------- ARIS AD1: 적대적 검수
+def test_ensure_cross_family_swaps_reviewer(tmp_path):
+    cfg = Config.load(tmp_path)                          # 기본 backend(claude/codex/gemini)
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    rev = o._ensure_cross_family("claude-main", "claude-main")   # 같은 패밀리 → 교체
+    assert cfg.worker(rev)["backend"] != "claude"
+    assert o._ensure_cross_family("claude-main", "codex-critic") == "codex-critic"  # 다른 패밀리 유지
+
+
+def test_adversarial_review_uses_redteam_prompt(mock_root, monkeypatch):
+    from yok3x.backends import BackendResult
+    prompts = []
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None: prompts.append(p) or
+                        BackendResult(backend=n, ok=True, text="SCORE: 5\n결함"))
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["use_real_limits"] = False
+    cfg.yok3x["adversarial_review"] = True
+    orchestrator.Orchestrator(cfg, auto=True).run_producer_reviewer(
+        "t", "claude-main", "codex-critic", max_rounds=1, pass_score=9)
+    assert any("무너뜨리는" in p or "적대적으로 검수" in p for p in prompts)   # red-team 주입
+
+
 # -------------------------------------- knot 이중레벨 검색(LightRAG식, 의존성0)
 def test_knot_query_dual_level_expansion(tmp_path):
     from yok3x import knot
