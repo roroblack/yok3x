@@ -9,7 +9,8 @@
 | `yok3x-v3.0.1.zip` | 3.0.1 | 15 | yok3x 리네임 + 코딩 게이트 + 폴백/하드코딩 감사. |
 | `yok3x-v3.1.0.zip` | 3.1.0 | 16 | 오케스트레이션 콘솔(작업 채팅+실시간 사용량+배치 보드, `/api/run`·`/api/config`) + 도움말 탭. 폴더 스냅샷: `backup/yok3x-v3.1.0-*/`. |
 | `yok3x-v3.3.0.zip` | 3.3.0 | 21 | 라이브 한도 실측(claude OAuth·codex)·적응형 열화 P1·상황별 모델 프로파일 S1~S3·전역 워크스페이스·GUI 임계선. 프로듀서 병목 근본 해결(멀티라인 프롬프트 stdin). |
-| `yok3x-v3.4.0.zip` | 3.4.0 | 34 | **현재 정본.** v3.3.0 + **적응형 열화 P2(백엔드 폴오버, GUI on/off 토글)** · 워크스페이스 폴더선택 · claude 모델별 주간(Fable) · 프로파일 설명·워커 수동모델 · codex 창라벨 수정(BUG-12) · **버그 리포트 아카이브 12건**. `release/`와 동일. 폴더 스냅샷: `backup/yok3x-v3.4.0-20260711/`. |
+| `yok3x-v3.4.0.zip` | 3.4.0 | 34 | v3.3.0 + **적응형 열화 P2(백엔드 폴오버, GUI on/off 토글)** · 워크스페이스 폴더선택 · claude 모델별 주간(Fable) · 프로파일 설명·워커 수동모델 · codex 창라벨 수정(BUG-12) · **버그 리포트 아카이브 12건**. 폴더 스냅샷: `backup/yok3x-v3.4.0-20260711/`. |
+| `yok3x-v3.5.0.zip` | 3.5.0 | 41 | **현재 정본.** v3.4.0 + **CLI 모델 동적조회**(claude API·codex 캐시·gemini 번들 GEMINI_MODELS) · **P3 오프라인 폴백**(로컬 OpenAI 호환, 의존성0, GUI on/off) · **추론강도(effort)** claude/codex 통과+보드 UI · **knot consolidation**(Mem0식: 요점저장·중복통합·최신성감쇠) · claude stale-while-error·1003% 차단 · 버전 단일출처 · RULE §5.6(GUI 승인규율). `release/`와 동일. |
 
 ## 복원 출처(정직 표기)
 

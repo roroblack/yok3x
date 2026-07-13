@@ -4,6 +4,18 @@
 
 ---
 
+## v3.5.0 · 2026-07-13 — 릴리스: CLI 모델 동적조회 · P3 오프라인 폴백 · effort · knot consolidation
+
+- 이번 사이클 성과를 v3.5.0으로 묶음: **CLI 모델 동적조회**(claude `/v1/models`·codex 캐시·gemini 번들
+  GEMINI_MODELS, 하드코딩 제거) · **P3 오프라인 폴백**(로컬 OpenAI 호환, urllib만·의존성0, GUI on/off
+  토글) · **추론강도(effort)** claude(`--effort`)·codex(`-c model_reasoning_effort`) 통과 + 보드 드롭다운 ·
+  **knot consolidation**(Mem0식 요점저장·중복통합·최신성감쇠) · claude stale-while-error·1003% 오표시
+  차단 · 버전 단일출처(§5.6 GUI 승인규율 신설).
+- `release/yok3x-v3.5.0.zip`(41파일, 내부 `__version__` 3.5.0 검증) + `backup/versions/` 보존, VERSIONS.md
+  항목 추가. mock 스모크 테스트(init/setup/run/gui/limits) 통과. pytest 57 passed.
+- 미완(정직): gemini effort는 settings.json thinkingLevel 경유라 라이브 검증이 gemini 레이트리밋으로
+  보류(GUI dim 유지). 환경 회복 시 연결 예정.
+
 ## 미출시(dev) · 2026-07-13 — knot consolidation(Mem0식, 의존성 0) — 요점저장·중복통합·최신성감쇠
 
 - Mem0 평가 권고 이행(벡터DB·추가 LLM 없이): ① 최신성 감쇠(`_recency_weight`, `query` 점수에 반감기
