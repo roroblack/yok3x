@@ -360,6 +360,16 @@ def _fetch_claude_oauth_usage(backend: str, conf: dict[str, Any]) -> LimitReadin
             continue
         windows.append(Window(nm, float(seg["utilization"]),
                               resets_at=_parse_iso(seg.get("resets_at"))))
+    # 모델 스코프 주간(limits[].weekly_scoped, scope.model) — Fable/Sonnet 등 모델별 주간한도.
+    # seven_day_opus/sonnet 필드는 이 계정에서 null이라, 이 배열이 실제 모델별 소스다.
+    for L in (data.get("limits") or []):
+        if L.get("group") != "weekly":
+            continue
+        model = ((L.get("scope") or {}).get("model") or {}).get("display_name")
+        pct = L.get("percent")
+        if model and pct is not None:
+            windows.append(Window(f"7d·{model}", float(pct),
+                                  resets_at=_parse_iso(L.get("resets_at"))))
     if not windows:
         return LimitReading(backend, "claude_oauth", ok=False, real=True,
                             error="usage 응답에 five_hour/seven_day 없음")

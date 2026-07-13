@@ -42,6 +42,36 @@ def _routing_preview(cfg: Config) -> list:
     return out
 
 
+def _profile_routes(cfg: Config) -> dict:
+    """각 프로파일이 상황별로 어떤 모델을 고르는지(설명용). 가용성 미반영 '이론상' 픽."""
+    from .orchestrator import resolve_model
+    out = {}
+    for pname in cfg.yok3x.get("profiles", {}):
+        rows = []
+        for kind, label in (("build", "구현"), ("review", "검수"), ("design_review", "설계검토")):
+            b, m, _ = resolve_model(cfg, kind, profile=pname)
+            rows.append({"kind": kind, "label": label, "backend": b, "model": m})
+        out[pname] = rows
+    return out
+
+
+def pick_directory() -> str | None:
+    """서버(로컬) 머신에서 네이티브 폴더 선택 대화상자를 띄워 경로 반환. 취소 시 None.
+    tkinter를 별도 서브프로세스로 격리 실행(스레드/Tk 안전, 블로킹 방지)."""
+    import subprocess as _sp
+    import sys as _sys
+    code = ("import tkinter,tkinter.filedialog as fd;"
+            "r=tkinter.Tk();r.withdraw();r.attributes('-topmost',True);"
+            "p=fd.askdirectory();print(p or '')")
+    try:
+        r = _sp.run([_sys.executable, "-c", code], capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=120)
+        p = (r.stdout or "").strip().splitlines()
+        return (p[-1].strip() or None) if p else None
+    except Exception:
+        return None
+
+
 def build_state(cfg: Config) -> dict:
     totals = usage.today_totals(cfg)
     tools = []
@@ -57,7 +87,8 @@ def build_state(cfg: Config) -> dict:
             "usd": round(t.get("usd", 0), 2), "tokens": t.get("tokens", 0),
         })
     g = cfg.yok3x["guard"]
-    workers = {name: {"backend": w.get("backend"), "role": w.get("role", "")}
+    workers = {name: {"backend": w.get("backend"), "role": w.get("role", ""),
+                      "model": w.get("model", "")}
                for name, w in cfg.yok3x.get("workers", {}).items()}
     return {
         "version": cfg.yok3x.get("version", "?"),
@@ -67,6 +98,8 @@ def build_state(cfg: Config) -> dict:
         "active_profile": cfg.yok3x.get("active_profile", ""),
         "profiles": list(cfg.yok3x.get("profiles", {})),
         "route_preview": _routing_preview(cfg),
+        "profile_routes": _profile_routes(cfg),
+        "models_catalog": cfg.yok3x.get("models_catalog", {}),
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0)},
         "coach": usage.coach_messages(cfg),
@@ -195,6 +228,10 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         ap = "" if ap == "off" else ap
         if ap and ap not in cfg.yok3x.get("profiles", {}):
             return {"error": f"없는 프로파일: {ap} (가능: {', '.join(cfg.yok3x.get('profiles', {}))}, off)"}
+    worker_models = body.get("worker_models") or {}   # 워커별 수동 모델(빈값=기본)
+    for w in worker_models:
+        if w not in cfg.yok3x.get("workers", {}):
+            return {"error": f"없는 워커(model): {w}"}
     # 백업 후 적용
     jf = cfg.paths.yok3x_json
     if jf.exists():
@@ -214,6 +251,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     if active_profile is not None:
         ap = str(active_profile).strip()
         cfg.yok3x["active_profile"] = "" if ap == "off" else ap
+    for w, m in worker_models.items():
+        cfg.yok3x["workers"][w]["model"] = str(m or "").strip()
     cfg.save_yok3x()
     return {"ok": True}
 
@@ -266,6 +305,11 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                 body = self._read_body()
             except Exception as e:
                 self._json(400, {"error": f"bad request: {e}"})
+                return
+
+            if path == "/api/pickdir":
+                p = pick_directory()   # 로컬 네이티브 폴더 대화상자
+                self._json(200, {"path": p or ""})
                 return
 
             if path == "/api/run":

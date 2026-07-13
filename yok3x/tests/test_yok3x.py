@@ -349,6 +349,34 @@ def test_call_worker_aborts_on_stop_without_failover(tmp_path, monkeypatch):
         o.call_worker("claude-main", "t", "build")
 
 
+def test_manual_worker_model_used_when_profile_off(mock_root, monkeypatch):
+    from yok3x.backends import BackendResult
+    cap = {}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None: cap.update(model=model) or
+                        BackendResult(backend=n, ok=True, text="x"))
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["use_real_limits"] = False
+    cfg.yok3x["active_profile"] = ""                       # off → 수동 모델 적용
+    cfg.yok3x["workers"]["claude-main"]["model"] = "claude-opus-4-8"
+    orchestrator.Orchestrator(cfg, auto=True).call_worker("claude-main", "t", "build")
+    assert cap["model"] == "claude-opus-4-8"
+
+
+def test_profile_overrides_manual_model(mock_root, monkeypatch):
+    from yok3x.backends import BackendResult
+    cap = {}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None: cap.update(model=model) or
+                        BackendResult(backend=n, ok=True, text="x"))
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["use_real_limits"] = False
+    cfg.yok3x["active_profile"] = "best"                   # on → 프로파일이 수동보다 우선
+    cfg.yok3x["workers"]["claude-main"]["model"] = "claude-opus-4-8"
+    orchestrator.Orchestrator(cfg, auto=True).call_worker("claude-main", "t", "critic")
+    assert cap["model"] == "claude-fable-5"                # review→fable-5(프로파일)
+
+
 def test_call_worker_applies_profile_routing(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}

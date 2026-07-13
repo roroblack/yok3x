@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-11 — GUI 4종 개선(폴더선택·모델별주간·프로파일설명·수동모델)
+
+- **워크스페이스 폴더 선택 대화상자**: `/api/pickdir`(서버 로컬 tkinter 서브프로세스로 네이티브
+  폴더 선택) + GUI '📁 찾기' 버튼. 경로 타이핑 대신 클릭 선택.
+- **claude 모델별 주간한도 표시**: `/api/oauth/usage`의 `limits[].weekly_scoped`(scope.model,
+  Fable 등)를 파싱해 `7d·Fable` 창으로 표시(seven_day_opus/sonnet은 계정이 null이라 이 배열이
+  실제 소스). 현재 Fable 0%(사용 이력 없음), 쓰면 상승·표시.
+- **프로파일 설명·미리보기**: 프로파일 드롭다운에 설명(best=상황별 벤치마크 최고점 등) + 선택한
+  프로파일이 상황별로 고르는 모델 미리보기(`/api/state` profile_routes, `resolve_model(profile=)`).
+- **워커별 수동 모델**: `workers[].model` 지원 — GUI 배치보드에 워커별 모델 드롭다운(카탈로그 기반).
+  call_worker가 base로 사용(프로파일 off일 때 적용, on이면 프로파일이 override). `/api/config`
+  worker_models 검증·저장. 테스트 2건(off시 수동·on시 프로파일 우선).
+- 검증: pytest 40 passed, JS `node --check` OK, GUI 라이브 4종 DOM 확인.
+
 ## 미출시(dev) · 2026-07-11 — codex 한도 창 오라벨 수정(BUG-12)
 
 - codex 실측이 `primary→5h·secondary→7d` 위치 고정 매핑이라, codex가 primary에 7일 창

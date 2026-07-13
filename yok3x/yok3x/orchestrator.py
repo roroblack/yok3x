@@ -246,9 +246,10 @@ class Orchestrator:
         cfg = self.cfg
 
         w = cfg.worker(worker)
-        # 1) 유효 backend 결정: 프로파일 라우팅(S1/S2, 가용성 인지) → 이번 런 sticky 폴오버 유지
-        #    → 워커 기본. 이후 가드·열화·실행이 모두 이 backend 기준으로 동작한다.
-        backend, model_override = w["backend"], None
+        # 1) 유효 backend·model 결정. base = 워커의 backend + 수동 지정 모델(workers[].model,
+        #    있으면. 없으면 CLI 기본). 프로파일 라우팅(S1/S2)이 켜져 있으면 그것이 override(auto),
+        #    이어서 sticky 폴오버 → 적응형 열화 순. 즉 프로파일 off면 수동 모델이 그대로 쓰인다.
+        backend, model_override = w["backend"], (w.get("model") or None)
         rb, rm, route_reason = resolve_model(cfg, task_kind,
                                              available=lambda b: usage.backend_available(cfg, b))
         if rb and rb in cfg.backends:
@@ -482,8 +483,8 @@ class Orchestrator:
 
 # ---------------------------------------------------------------- loop
 
-def resolve_model(cfg: Config, task_kind: str,
-                  available=None) -> tuple[str | None, str | None, str]:
+def resolve_model(cfg: Config, task_kind: str, available=None,
+                  profile: str | None = None) -> tuple[str | None, str | None, str]:
     """상황별 모델 프로파일 라우팅. 반환 (backend|None, model_id|None, reason).
 
     S1: active_profile의 상황별 픽. active_profile이 비었거나 매핑/카탈로그가 없으면
@@ -494,7 +495,7 @@ def resolve_model(cfg: Config, task_kind: str,
     사용자 우선: 프로파일은 '기본 추천'이며 call_worker에서 태스크 명시값이 있으면 이긴다.
     """
     yk = cfg.yok3x
-    prof_name = (yk.get("active_profile") or "").strip()
+    prof_name = (profile if profile is not None else yk.get("active_profile") or "").strip()
     if not prof_name:
         return (None, None, "")
     prof = (yk.get("profiles") or {}).get(prof_name)

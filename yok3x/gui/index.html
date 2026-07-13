@@ -277,7 +277,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           <select id="c-flavor"></select></label></div>
         <div style="margin-top:10px">
           <div class="sub" style="margin:0 0 4px">워크스페이스(기본 workdir) — 지정하면 모든 런이 이 폴더에서 실행(비면 빈 격리 dir)</div>
-          <input id="c-workspace" class="wide" style="width:100%" placeholder="예: C:/Users/me/myrepo">
+          <div style="display:flex;gap:6px;align-items:center">
+            <input id="c-workspace" class="wide" style="flex:1" placeholder="예: C:/Users/me/myrepo">
+            <button class="btn" type="button" onclick="pickWorkspace()" title="폴더 선택 대화상자">📁 찾기</button>
+          </div>
         </div>
         <div style="margin-top:11px">
           <label class="tgl2">모델 프로파일(상황별 자동선택) <select id="c-profile"></select></label>
@@ -483,7 +486,23 @@ function render(s){
 
 // ---- 콘솔 렌더 ----
 const ROLE={"claude-main":"구현","codex-main":"리팩터","codex-critic":"코드리뷰","gemini":"설계검토"};
+const PROFILE_DESC={best:"상황별 벤치마크 최고점 자동선택",balanced:"성능·비용 균형",cost:"저비용 우선",speed:"속도 우선",off:"수동(워커 기본 backend·수동 모델)"};
 function opts(list,sel){return list.map(v=>`<option ${v===sel?"selected":""}>${v}</option>`).join("")}
+function renderProfileRoutes(){
+  const pf=document.getElementById("c-profile"), rtp=document.getElementById("c-routing");
+  if(!pf||!rtp) return;
+  const sel=pf.value;
+  const routes=(sel==="off"||!sel)?null:((window._profRoutes||{})[sel]);
+  rtp.innerHTML = routes
+    ? `<div style="opacity:.7;margin-bottom:2px">${PROFILE_DESC[sel]||""} — 상황별 선택:</div>`
+      +routes.map(r=>`<div>· ${r.label}(${r.kind}) → <b>${r.backend||'기본'}${r.model?'/'+r.model:''}</b></div>`).join("")
+    : '<span style="opacity:.55">off — 각 워커의 기본 backend·수동 모델 사용</span>';
+}
+async function pickWorkspace(){
+  try{const r=await fetch("/api/pickdir",{method:"POST"});const j=await r.json();
+    if(j.path){const el=document.getElementById("c-workspace");el.value=j.path;el.focus();}
+  }catch(e){alert("폴더 선택 실패(`yok3x gui`로 실행해야 함): "+e);}
+}
 function fillSel(id,list,sel){const el=document.getElementById(id);if(el&&el.dataset.filled!=="1"+list.join()){el.innerHTML=opts(list,sel);el.dataset.filled="1"+list.join();}}
 function renderConsole(s,rn){
   const workers=Object.keys(s.workers||{});
@@ -497,13 +516,14 @@ function renderConsole(s,rn){
   if(ws && document.activeElement!==ws) ws.value=s.workspace||"";
   const cw=document.getElementById("c-workdir");
   if(cw) cw.placeholder = s.workspace ? ("기본: "+s.workspace) : "F:/my/repo";
-  // 모델 프로파일 선택 + 상황별 라우팅('왜 이 모델')
+  // 모델 프로파일 선택(설명 포함) + 선택한 프로파일이 상황별로 고르는 모델 미리보기
+  window._profRoutes=s.profile_routes||{};
   const pf=document.getElementById("c-profile");
-  if(pf && document.activeElement!==pf) pf.innerHTML=opts((s.profiles||[]).concat(["off"]), s.active_profile||"off");
-  const rtp=document.getElementById("c-routing");
-  if(rtp) rtp.innerHTML=(s.route_preview&&s.route_preview.length)
-    ? s.route_preview.map(r=>`<div>${r.label}(${r.kind}) → <b>${r.backend||'기본'}${r.model?'/'+r.model:''}</b> <span style="opacity:.55">${r.why||''}</span></div>`).join("")
-    : '<span style="opacity:.55">off — 워커 기본 backend·CLI 기본 모델</span>';
+  if(pf && document.activeElement!==pf){
+    pf.innerHTML=((s.profiles||[]).concat(["off"])).map(p=>`<option value="${p}" ${p===(s.active_profile||"off")?"selected":""}>${p} — ${PROFILE_DESC[p]||""}</option>`).join("");
+    pf.onchange=renderProfileRoutes;
+  }
+  renderProfileRoutes();
   // 실시간 사용량 스트립
   const us=document.getElementById("c-usage");
   if(us) us.innerHTML=(s.tools||[]).map(t=>{
@@ -514,10 +534,16 @@ function renderConsole(s,rn){
   // 에이전트 배치 보드(워커→backend)
   const bd=document.getElementById("board");
   if(bd && !bd.dataset.dirty) bd.innerHTML=workers.map(w=>{
-    const be=s.workers[w].backend;
+    const be=s.workers[w].backend, mdl=s.workers[w].model||"";
     const list=["claude","codex","gemini","mock"];
+    const cat=s.models_catalog||{};
+    let mopts=['<option value="">(기본 모델)</option>'];
+    Object.entries(cat).forEach(([k,e])=>{ if(e.backend===be && e.model) mopts.push(`<option value="${e.model}" ${e.model===mdl?'selected':''}>${k}</option>`); });
+    if(mdl && !Object.values(cat).some(e=>e.model===mdl)) mopts.push(`<option value="${mdl}" selected>${mdl}(커스텀)</option>`);
+    const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
     return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
-      <select data-w="${w}" onchange="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'">${opts(list,be)}</select></div>`;
+      <select data-w="${w}" onchange="${dirty}">${opts(list,be)}</select>
+      <select data-wm="${w}" onchange="${dirty}" title="수동 모델(프로파일 off일 때 적용). 저장 후 backend 바꿨으면 목록 새로고침">${mopts.join("")}</select></div>`;
   }).join("");
   // 큐
   const q=document.getElementById("c-queue");
@@ -571,10 +597,11 @@ async function postRun(payload,msgId){
 async function saveConfig(){
   const bd=document.getElementById("board");
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
+  const worker_models={}; bd.querySelectorAll("select[data-wm]").forEach(s=>worker_models[s.dataset.wm]=s.value);
   const flavor=document.getElementById("c-flavor").value;
   const workspace=document.getElementById("c-workspace").value.trim();
   const active_profile=document.getElementById("c-profile").value;
-  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,flavor,workspace,active_profile})});
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,worker_models,flavor,workspace,active_profile})});
     const j=await r.json();
     document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
     if(r.ok){bd.dataset.dirty="";} load();
