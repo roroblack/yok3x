@@ -138,6 +138,11 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
             metric = f"{w.name}·{reading.source}" if w else reading.source
             level = _level(g, ratio)
             tag = "" if reading.real else " (추정)"
+            # 미보정 추정(real=False)이 비현실적으로 높으면(>300%) 신뢰 불가 → 정지 대신 경고.
+            # (트랜스크립트 롤링은 캐시read 포함해 과대. 실측 실패 시 false-stop 방지 — calibrate 권장)
+            if not reading.real and level == "stop" and ratio > 3.0:
+                level = "warn"
+                tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
             return GuardVerdict(backend, ratio, metric, level,
                                 reading.detail + tag, source=reading.source,
                                 real=reading.real, reading=reading)

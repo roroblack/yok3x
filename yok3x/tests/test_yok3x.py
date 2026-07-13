@@ -111,6 +111,19 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     assert cfg.yok3x["context_max_chars"] == 1234
 
 
+# ------------------------------------ 미보정 추정 false-stop 방지
+def test_uncalibrated_estimate_does_not_hard_stop(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    est = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                              windows=[limits.Window("5h", 788.0)], detail="est")
+    monkeypatch.setattr(limits, "probe", lambda c, b, use_cache=True: est)
+    assert usage.check_backend(cfg, "claude").level == "warn"        # 추정 788% → 정지 유보
+    live = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("5h", 788.0)], detail="live")
+    monkeypatch.setattr(limits, "probe", lambda c, b, use_cache=True: live)
+    assert usage.check_backend(cfg, "claude").level == "stop"        # 실측 788% → 정지
+
+
 # ------------------------------------ codex 한도 창 라벨(길이 기준, 위치 무관)
 def test_window_name_from_duration():
     assert limits._window_name(300) == "5h"
