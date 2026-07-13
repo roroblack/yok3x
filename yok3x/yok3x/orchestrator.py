@@ -345,9 +345,12 @@ class Orchestrator:
         # 4) 실행 + 사용량 기록. workdir가 있으면 그 디렉터리에서, 없으면 빈 격리 dir에서
         # 실행한다(레포 컨텍스트가 워커를 오염시키는 것을 방지 — _isolated_cwd 참조).
         run_cwd = cwd or self.workdir or self._isolated_cwd()
-        self._log(f"[run] step {idx} → {worker} ({backend})")
+        # 추론 강도(effort): 워커별 지정 > 전역 기본 default_effort. backend가 effort_arg를 지원할 때만
+        # 실제 전달(claude/codex). 폴오버로 backend가 바뀌면 그 backend의 effort_arg 유무에 따름.
+        effort = w.get("effort") or cfg.yok3x.get("default_effort") or None
+        self._log(f"[run] step {idx} → {worker} ({backend}{'·' + effort if effort else ''})")
         res = run_backend(backend, cfg.backends[backend], prompt,
-                          cwd=run_cwd, model=model_override)
+                          cwd=run_cwd, model=model_override, effort=effort)
         usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그

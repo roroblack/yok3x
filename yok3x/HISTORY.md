@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — gemini-3.5 가짜 라벨 제거 + 추론강도(effort) 백엔드 통과
+
+- `models_catalog`/profiles/benchmarks의 논리라벨 **`gemini-3.5`(실존 안 하는 이름)를 `gemini-3-flash`**
+  로 정정(실제 모델 gemini-3-flash-preview에 매핑). 드롭다운 목록은 원래 실제 CLI 레지스트리라 3.5가
+  안 뜨는 게 정상 — 오해를 부른 건 이 하드코딩 라벨이었음(§5.5).
+- **추론 강도(effort) 지원**: 워커별 `effort`(low/medium/high) 또는 전역 `default_effort` → backend별
+  `effort_arg`로 전달. claude=`--effort <level>`, codex=`-c model_reasoning_effort=<level>`, gemini=미지원.
+  `run_backend(..., effort=)` + `_run_cli`. 미지정 시 미부착(기존 동작 불변). GUI 컨트롤은 §5.6로 별도.
+
 ## 미출시(dev) · 2026-07-13 — P3 오프라인 폴백(로컬 모델, 의존성 0) — 클라우드 전멸 시 무중단
 
 - 적응형 열화 3단계 신설: 클라우드 백엔드가 전부 stop이면 **로컬 OpenAI 호환 서버로 강등**해 멈추지

@@ -157,11 +157,11 @@ def test_gemini_bundle_registry_parse(tmp_path, monkeypatch):
     assert "gemini-9001-super-duper" not in got   # Set 멤버 아님 → 노이즈 제외
 
 
-def test_version_is_single_source():
+def test_config_version_matches_version_module():
     # GUI가 보여주는 버전은 _version.py 단일 출처와 일치해야 한다(config 하드코딩 오염 금지).
-    from yok3x._version import __version__
+    from yok3x._version import __version__ as v
     from yok3x.config import DEFAULT_YOK3X
-    assert DEFAULT_YOK3X["version"] == __version__
+    assert DEFAULT_YOK3X["version"] == v
 
 
 def test_gemini_api_key_resolution(tmp_path, monkeypatch):
@@ -244,6 +244,25 @@ def test_local_openai_http_adapter(monkeypatch):
                                "base_url": "http://localhost:8000/v1"}, "prompt")
     assert res.ok and res.text == "`lambda s: s==s[::-1]`"   # think 제거됨
     assert res.cost_usd == 0.0 and res.total_tokens == 20     # 로컬=무료
+
+
+def test_effort_passthrough_argv(monkeypatch):
+    # 워커 effort가 backend별 effort_arg로 argv에 붙는지(claude --effort, codex -c ...). 미지정 시 미부착.
+    from yok3x import backends
+    cap = {}
+    class _P:
+        stdout = '{"result":"ok","is_error":false}'; stderr = ""; returncode = 0
+    monkeypatch.setattr(backends.subprocess, "run", lambda cmd, **kw: (cap.__setitem__("c", cmd), _P())[1])
+    monkeypatch.setattr(backends.shutil, "which", lambda x: x)
+    cl = {"type": "cli", "command": ["claude", "-p"], "effort_arg": ["--effort", "{effort}"], "parser": "raw"}
+    backends.run_backend("claude", cl, "hi", effort="high")
+    assert cap["c"] == ["claude", "-p", "--effort", "high"]
+    cx = {"type": "cli", "command": ["codex", "exec"],
+          "effort_arg": ["-c", "model_reasoning_effort={effort}"], "parser": "raw"}
+    backends.run_backend("codex", cx, "hi", effort="medium")
+    assert cap["c"] == ["codex", "exec", "-c", "model_reasoning_effort=medium"]
+    backends.run_backend("claude", cl, "hi")             # effort 미지정 → 미부착
+    assert cap["c"] == ["claude", "-p"]
 
 
 def test_p3_offline_failover(monkeypatch, tmp_path):
@@ -386,7 +405,7 @@ def test_adversarial_review_uses_redteam_prompt(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     prompts = []
     monkeypatch.setattr(orchestrator, "run_backend",
-                        lambda n, s, p, cwd=None, model=None: prompts.append(p) or
+                        lambda n, s, p, cwd=None, model=None, effort=None: prompts.append(p) or
                         BackendResult(backend=n, ok=True, text="SCORE: 5\n결함"))
     cfg = Config.load(mock_root)
     cfg.yok3x["guard"]["use_real_limits"] = False
@@ -483,6 +502,7 @@ def test_resolve_model_s2_falls_back_to_next_available(tmp_path):
 # -------------------------------------- v3.2 P2: 백엔드 폴오버(on/off)
 def test_failover_backend_off_by_default(tmp_path):
     cfg = Config.load(tmp_path)                       # failover_enabled 기본 False
+    cfg.yok3x["guard"]["degrade"]["offline_enabled"] = False   # P3도 끄면 대안 없음(P3는 별도 테스트)
     assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None
 
 
@@ -510,7 +530,7 @@ def test_call_worker_fails_over_when_stopped(tmp_path, monkeypatch):
         b, 1.0 if b == "claude" else 0.1, "5h", "stop" if b == "claude" else "ok", "d"))
     cap = {}
     monkeypatch.setattr(orchestrator, "run_backend",
-                        lambda n, s, p, cwd=None, model=None: cap.update(backend=n) or
+                        lambda n, s, p, cwd=None, model=None, effort=None: cap.update(backend=n) or
                         BackendResult(backend=n, ok=True, text="x"))
     o = orchestrator.Orchestrator(cfg, auto=True)
     o.call_worker("claude-main", "t", "build")     # claude stop → 폴오버
@@ -522,10 +542,11 @@ def test_call_worker_aborts_on_stop_without_failover(tmp_path, monkeypatch):
     from yok3x.config import scaffold
     scaffold(tmp_path)
     cfg = Config.load(tmp_path)                     # failover off(기본)
+    cfg.yok3x["guard"]["degrade"]["offline_enabled"] = False   # P3 오프라인 폴백도 꺼야 순수 정지
     monkeypatch.setattr(usage, "check_backend",
                         lambda c, b: usage.GuardVerdict(b, 1.0, "5h", "stop", "d"))
     o = orchestrator.Orchestrator(cfg, auto=True)
-    with pytest.raises(orchestrator.RunAborted):    # 폴오버 off → 현행처럼 정지
+    with pytest.raises(orchestrator.RunAborted):    # 폴오버·오프라인 모두 off → 현행처럼 정지
         o.call_worker("claude-main", "t", "build")
 
 
@@ -533,7 +554,7 @@ def test_manual_worker_model_used_when_profile_off(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}
     monkeypatch.setattr(orchestrator, "run_backend",
-                        lambda n, s, p, cwd=None, model=None: cap.update(model=model) or
+                        lambda n, s, p, cwd=None, model=None, effort=None: cap.update(model=model) or
                         BackendResult(backend=n, ok=True, text="x"))
     cfg = Config.load(mock_root)
     cfg.yok3x["guard"]["use_real_limits"] = False
@@ -547,7 +568,7 @@ def test_profile_overrides_manual_model(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}
     monkeypatch.setattr(orchestrator, "run_backend",
-                        lambda n, s, p, cwd=None, model=None: cap.update(model=model) or
+                        lambda n, s, p, cwd=None, model=None, effort=None: cap.update(model=model) or
                         BackendResult(backend=n, ok=True, text="x"))
     cfg = Config.load(mock_root)
     cfg.yok3x["guard"]["use_real_limits"] = False
@@ -561,8 +582,8 @@ def test_call_worker_applies_profile_routing(mock_root, monkeypatch):
     from yok3x.backends import BackendResult
     cap = {}
 
-    def spy(name, spec, prompt, cwd=None, model=None):
-        cap["backend"], cap["model"] = name, model
+    def spy(name, spec, prompt, cwd=None, model=None, effort=None):
+        cap["backend"], cap["model"], cap["effort"] = name, model, effort
         return BackendResult(backend=name, ok=True, text="x")
 
     monkeypatch.setattr(orchestrator, "run_backend", spy)

@@ -19,6 +19,7 @@ DEFAULT_YOK3X = {
     "version": __version__,          # 단일 출처(_version.py) — 하드코딩 금지
     "flavor": "claude-orchestrator",
     "auto_approve": False,          # 승인 게이트 기본값: 사람이 y/n
+    "default_effort": "",           # 추론 강도 전역 기본(low/medium/high). 워커별 effort가 우선. ""=미지정
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
@@ -128,7 +129,7 @@ DEFAULT_YOK3X = {
         "haiku-4.5":  {"backend": "claude", "model": "claude-haiku-4-5-20251001"},
         # 아래 논리모델은 '프로파일 라우팅'용 매핑일 뿐(GUI 드롭다운은 backend별 동적 조회 사용).
         "gpt-5.6":    {"backend": "codex",  "model": "gpt-5.6-sol"},          # codex 모델 slug
-        "gemini-3.5": {"backend": "gemini", "model": "gemini-3-flash-preview"}
+        "gemini-3-flash": {"backend": "gemini", "model": "gemini-3-flash-preview"}
     },
     "situations": {                 # task_kind → 상황 슬롯(프로파일 키)
         "critic": "review", "review": "review",
@@ -139,16 +140,16 @@ DEFAULT_YOK3X = {
         # best: "_derive" → 상황마다 benchmarks 최고점 모델을 자동 채택(데이터 갱신만으로 최신화).
         # 벤치마크가 없는 상황은 "*"로 폴백.
         "best":     {"_derive": True, "*": "fable-5"},
-        "balanced": {"review": "opus-4.8", "build": "gpt-5.6", "design": "gemini-3.5", "*": "opus-4.8"},
-        "cost":     {"design": "gemini-3.5", "*": "sonnet-5"},
-        "speed":    {"design": "gemini-3.5", "*": "haiku-4.5"}
+        "balanced": {"review": "opus-4.8", "build": "gpt-5.6", "design": "gemini-3-flash", "*": "opus-4.8"},
+        "cost":     {"design": "gemini-3-flash", "*": "sonnet-5"},
+        "speed":    {"design": "gemini-3-flash", "*": "haiku-4.5"}
     },
     # 상황별 벤치마크 점수(S2 폴백 순위 근거). 프로파일 픽의 backend가 미설치/한도stop이면
     # 이 표에서 '가용한 다음 순위'로 폴백한다. 점수는 코드가 아니라 설정 — 사용자가 갱신(§7).
     "benchmarks": {
         "review": {"fable-5": 80.0, "opus-4.8": 69.2, "gpt-5.6": 64.6, "sonnet-5": 63.2},   # 정확한 패치
         "build":  {"gpt-5.6": 88.8, "fable-5": 83.1, "sonnet-5": 80.4, "opus-4.8": 78.9},   # 터미널/빌드
-        "design": {"gemini-3.5": 83.6, "opus-4.8": 77.8}                                     # 도구/설계
+        "design": {"gemini-3-flash": 83.6, "opus-4.8": 77.8}                                     # 도구/설계
     },
     "flavors": {
         "claude-orchestrator": {
@@ -226,6 +227,7 @@ DEFAULT_BACKENDS = {
         "command": ["claude", "-p", "--output-format", "json",
                     "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,TodoWrite,WebFetch"],
         "model_arg": ["--model", "{model}"],   # 다운그레이드 시 덧붙는 인자
+        "effort_arg": ["--effort", "{effort}"],  # 추론 강도(low/medium/high) — 워커 effort 지정 시
         "parser": "claude_json",
         "timeout_sec": 600
     },
@@ -234,6 +236,7 @@ DEFAULT_BACKENDS = {
         # 검증 근거: https://developers.openai.com/codex/noninteractive
         "command": ["codex", "exec", "--json", "--skip-git-repo-check"],   # 프롬프트는 stdin
         "model_arg": ["--model", "{model}"],
+        "effort_arg": ["-c", "model_reasoning_effort={effort}"],  # 추론 강도(minimal/low/medium/high)
         "parser": "codex_jsonl",
         "timeout_sec": 600
     },

@@ -42,13 +42,14 @@ class BackendResult:
 
 
 def run_backend(name: str, spec: dict[str, Any], prompt: str,
-                cwd: str | None = None, model: str | None = None) -> BackendResult:
+                cwd: str | None = None, model: str | None = None,
+                effort: str | None = None) -> BackendResult:
     btype = spec.get("type", "cli")
     t0 = time.time()
     if btype == "mock":
         res = _run_mock(name, spec, prompt)
     elif btype == "cli":
-        res = _run_cli(name, spec, prompt, cwd=cwd, model=model)
+        res = _run_cli(name, spec, prompt, cwd=cwd, model=model, effort=effort)
     elif btype in ("openai_http", "native", "local"):
         res = _run_openai_http(name, spec, prompt, model=model)
     elif btype == "mcp":
@@ -63,13 +64,18 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
 # ---------------------------------------------------------------- CLI
 
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
-             cwd: str | None = None, model: str | None = None) -> BackendResult:
+             cwd: str | None = None, model: str | None = None,
+             effort: str | None = None) -> BackendResult:
     template = spec["command"]
     has_prompt_arg = any("{prompt}" in str(a) for a in template)
     cmd = [str(a).replace("{prompt}", prompt) for a in template]
     # 모델 다운그레이드(적응형 열화): model이 주어지고 model_arg 템플릿이 있으면 덧붙인다.
     if model and spec.get("model_arg"):
         cmd += [str(a).replace("{model}", model) for a in spec["model_arg"]]
+    # 추론 강도(effort): effort가 주어지고 effort_arg 템플릿이 있는 backend만 덧붙인다.
+    # claude=--effort <level>, codex=-c model_reasoning_effort=<level>. gemini는 미지원(무시).
+    if effort and spec.get("effort_arg"):
+        cmd += [str(a).replace("{effort}", effort) for a in spec["effort_arg"]]
     # Windows: claude/codex/gemini는 npm .cmd 심 — CreateProcess가 PATHEXT를
     # 해석하지 않으므로 shutil.which로 실제 경로(claude.cmd 등)로 치환한다.
     resolved = shutil.which(cmd[0])
