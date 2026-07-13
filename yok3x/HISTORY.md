@@ -4,6 +4,14 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — 오프라인 폴백(P3) on/off GUI 토글 (사용자 요청)
+
+- 사용자가 '로컬 모델 사용을 끄는 기능'을 명시 요청 → 기존 폴오버(P2) 토글과 동일 패턴으로 **오프라인
+  폴백(P3) on/off 토글** 추가(`#swof`/`toggleOffline`). build_state guard.offline 노출, `/api/config`
+  offline_enabled → `guard.degrade.offline_enabled`. 기본 ON. **끄면 로컬 미사용**(클라우드 stop 시 정지).
+- 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
+  라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
+
 ## 미출시(dev) · 2026-07-13 — effort 설정 UI(에이전트 보드) + 보드 local backend (§5.6 승인)
 
 - 사용자 승인(option 1)으로 **에이전트 배치 보드에 워커별 effort 드롭다운** 추가(기본/low/medium/high).

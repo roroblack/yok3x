@@ -291,6 +291,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           <b id="fotext" style="font-size:12px">OFF</b>
           <span class="sub" style="margin:0">폴오버 — 한도 도달 시 여유 도구로 자동 전환(품질 변동 가능)</span>
         </div>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div id="swof" class="switch off" onclick="toggleOffline()" title="on: 클라우드가 전부 한도 소진되면 로컬 모델(localhost)로 강등해 무중단. 로컬 서버가 떠 있을 때만 발동. 끄면 로컬 사용 안 함(현행처럼 정지)."></div>
+          <b id="oftext" style="font-size:12px">OFF</b>
+          <span class="sub" style="margin:0">오프라인 폴백(P3) — 클라우드 전멸 시 로컬 모델로 강등(끄면 로컬 미사용)</span>
+        </div>
         <div class="qbox" id="c-queue"></div>
         <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
       </div>
@@ -465,6 +470,9 @@ function render(s){
   const swfo=document.getElementById("swfo");
   if(swfo && document.activeElement!==swfo){const fo=!!(s.guard&&s.guard.failover);
     swfo.classList.toggle("off",!fo); document.getElementById("fotext").textContent=fo?"ON":"OFF";}
+  const swof=document.getElementById("swof");
+  if(swof){const of=!!(s.guard&&s.guard.offline);
+    swof.classList.toggle("off",!of); document.getElementById("oftext").textContent=of?"ON":"OFF";}
   // 설정탭 슬라이더·요금제 동기화(입력 중이 아니면)
   const sr=document.getElementById("softr"), hr=document.getElementById("hardr");
   if(sr && document.activeElement!==sr){sr.value=Math.round((s.guard.soft||.8)*100);document.getElementById("softval").textContent=sr.value;}
@@ -528,6 +536,12 @@ async function toggleFailover(){
   const turnOn=document.getElementById("swfo").classList.contains("off");  // off면 켜는 것
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({failover_enabled:turnOn})});
     if(r.ok){document.getElementById("swfo").classList.toggle("off",!turnOn);document.getElementById("fotext").textContent=turnOn?"ON":"OFF";}
+  }catch(e){}
+}
+async function toggleOffline(){
+  const turnOn=document.getElementById("swof").classList.contains("off");  // off면 켜는 것
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({offline_enabled:turnOn})});
+    if(r.ok){document.getElementById("swof").classList.toggle("off",!turnOn);document.getElementById("oftext").textContent=turnOn?"ON":"OFF";}
   }catch(e){}
 }
 function pickModel(sel){

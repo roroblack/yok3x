@@ -105,7 +105,8 @@ def build_state(cfg: Config) -> dict:
         "backend_models": {b: limits.list_models(cfg, b) for b in ("claude", "codex", "gemini")},
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
-                  "failover": bool((g.get("degrade") or {}).get("failover_enabled", False))},
+                  "failover": bool((g.get("degrade") or {}).get("failover_enabled", False)),
+                  "offline": bool((g.get("degrade") or {}).get("offline_enabled", True))},
         "coach": usage.coach_messages(cfg),
         "runs": _recent_runs(cfg),
         "tools": tools,
@@ -243,6 +244,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         if e and str(e) not in ("low", "medium", "high"):
             return {"error": f"effort 값 오류: {e} (low/medium/high)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
+    offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
     soft = body.get("soft_ratio")
     hard = body.get("hard_ratio")
     for nm, v in (("soft_ratio", soft), ("hard_ratio", hard)):
@@ -283,6 +285,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["workers"][w]["effort"] = str(e or "").strip()
     if failover_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
+    if offline_enabled is not None:
+        cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["offline_enabled"] = bool(offline_enabled)
     if soft is not None:
         cfg.yok3x["guard"]["soft_ratio"] = float(soft)
     if hard is not None:
