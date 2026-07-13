@@ -302,11 +302,19 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
     <div class="panel">
       <h2><span class="ic"></span> 가드 · 한도</h2>
       <div class="row">
-        <div><label class="f">경고(soft) 80%</label><input type="range" value="80"></div>
-        <div><label class="f">정지(hard) 100%</label><input type="range" value="100"></div>
+        <div><label class="f">경고(soft) <b id="softval">80</b>%</label>
+          <input type="range" id="softr" min="10" max="100" value="80" style="width:100%"
+                 oninput="document.getElementById('softval').textContent=this.value" onchange="saveGuardRatios()"></div>
+        <div><label class="f">정지(hard) <b id="hardval">100</b>%</label>
+          <input type="range" id="hardr" min="10" max="100" value="100" style="width:100%"
+                 oninput="document.getElementById('hardval').textContent=this.value" onchange="saveGuardRatios()"></div>
       </div>
       <label class="f">claude 요금제 (또는 <code>yok3x calibrate claude 7d &lt;실제%&gt;</code>로 정확 보정)</label>
-      <div class="seg"><button>pro</button><button class="on">max20x</button><button>max5x</button></div>
+      <div class="seg" id="planseg">
+        <button data-plan="pro" onclick="savePlan('pro')">pro</button>
+        <button data-plan="max5x" onclick="savePlan('max5x')">max5x</button>
+        <button data-plan="max20x" onclick="savePlan('max20x')">max20x</button>
+      </div>
       <div class="note">codex는 app-server가 plan 자동 감지 · gemini는 원장 예산.</div>
     </div>
     <div class="panel">
@@ -457,6 +465,11 @@ function render(s){
   const swfo=document.getElementById("swfo");
   if(swfo && document.activeElement!==swfo){const fo=!!(s.guard&&s.guard.failover);
     swfo.classList.toggle("off",!fo); document.getElementById("fotext").textContent=fo?"ON":"OFF";}
+  // 설정탭 슬라이더·요금제 동기화(입력 중이 아니면)
+  const sr=document.getElementById("softr"), hr=document.getElementById("hardr");
+  if(sr && document.activeElement!==sr){sr.value=Math.round((s.guard.soft||.8)*100);document.getElementById("softval").textContent=sr.value;}
+  if(hr && document.activeElement!==hr){hr.value=Math.round((s.guard.hard||1)*100);document.getElementById("hardval").textContent=hr.value;}
+  document.querySelectorAll('#planseg button').forEach(b=>b.classList.toggle('on',b.dataset.plan===(s.plan||"")));
   // tools
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
     const wins=t.windows.length?t.windows.map(w=>`
@@ -517,6 +530,23 @@ async function toggleFailover(){
     if(r.ok){document.getElementById("swfo").classList.toggle("off",!turnOn);document.getElementById("fotext").textContent=turnOn?"ON":"OFF";}
   }catch(e){}
 }
+function pickModel(sel){
+  if(sel.value==="__custom__"){
+    const m=(prompt("모델 ID 입력 (예: gpt-5.6-codex, gemini-2.5-pro, o3):","")||"").trim();
+    if(m){const o=document.createElement("option");o.value=m;o.textContent=m+"(커스텀)";o.selected=true;sel.insertBefore(o,sel.lastElementChild);}
+    else{sel.value="";}
+  }
+  document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경';
+}
+async function saveGuardRatios(){
+  const soft=(+document.getElementById("softr").value)/100, hard=(+document.getElementById("hardr").value)/100;
+  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soft_ratio:soft,hard_ratio:hard})});load();}catch(e){}
+}
+async function savePlan(p){
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan:p})});
+    if(r.ok){document.querySelectorAll('#planseg button').forEach(b=>b.classList.toggle('on',b.dataset.plan===p));}
+    load();}catch(e){}
+}
 function fillSel(id,list,sel){const el=document.getElementById(id);if(el&&el.dataset.filled!=="1"+list.join()){el.innerHTML=opts(list,sel);el.dataset.filled="1"+list.join();}}
 function renderConsole(s,rn){
   const workers=Object.keys(s.workers||{});
@@ -554,10 +584,11 @@ function renderConsole(s,rn){
     let mopts=['<option value="">(기본 모델)</option>'];
     Object.entries(cat).forEach(([k,e])=>{ if(e.backend===be && e.model) mopts.push(`<option value="${e.model}" ${e.model===mdl?'selected':''}>${k}</option>`); });
     if(mdl && !Object.values(cat).some(e=>e.model===mdl)) mopts.push(`<option value="${mdl}" selected>${mdl}(커스텀)</option>`);
+    mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
     const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
     return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
       <select data-w="${w}" onchange="${dirty}">${opts(list,be)}</select>
-      <select data-wm="${w}" onchange="${dirty}" title="수동 모델(프로파일 off일 때 적용). 저장 후 backend 바꿨으면 목록 새로고침">${mopts.join("")}</select></div>`;
+      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). CLI에 모델목록 명령이 없어 카탈로그+커스텀 입력으로 지정. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select></div>`;
   }).join("");
   // 큐
   const q=document.getElementById("c-queue");

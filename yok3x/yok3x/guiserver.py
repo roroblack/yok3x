@@ -96,6 +96,7 @@ def build_state(cfg: Config) -> dict:
         "flavors": list(cfg.yok3x.get("flavors", {})),
         "workspace": cfg.yok3x.get("workspace", ""),
         "active_profile": cfg.yok3x.get("active_profile", ""),
+        "plan": ((cfg.yok3x.get("limits") or {}).get("claude") or {}).get("plan", ""),
         "profiles": list(cfg.yok3x.get("profiles", {})),
         "route_preview": _routing_preview(cfg),
         "profile_routes": _profile_routes(cfg),
@@ -234,6 +235,21 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커(model): {w}"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
+    soft = body.get("soft_ratio")
+    hard = body.get("hard_ratio")
+    for nm, v in (("soft_ratio", soft), ("hard_ratio", hard)):
+        if v is not None:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                return {"error": f"{nm} 숫자 아님: {v}"}
+            if not (0 < fv <= 2):
+                return {"error": f"{nm} 범위(0~2) 벗어남: {fv}"}
+    plan = body.get("plan")
+    if plan:
+        from .config import PLAN_PRESETS
+        if plan not in PLAN_PRESETS.get("claude", {}):
+            return {"error": f"없는 요금제: {plan} (가능: {', '.join(PLAN_PRESETS.get('claude', {}))})"}
     # 백업 후 적용
     jf = cfg.paths.yok3x_json
     if jf.exists():
@@ -257,6 +273,12 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["workers"][w]["model"] = str(m or "").strip()
     if failover_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
+    if soft is not None:
+        cfg.yok3x["guard"]["soft_ratio"] = float(soft)
+    if hard is not None:
+        cfg.yok3x["guard"]["hard_ratio"] = float(hard)
+    if plan is not None:
+        cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})["plan"] = plan
     cfg.save_yok3x()
     return {"ok": True}
 

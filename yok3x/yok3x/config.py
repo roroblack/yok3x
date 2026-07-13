@@ -72,7 +72,7 @@ DEFAULT_YOK3X = {
             # codex의 app-server 실측에 대응. 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화.
             "type": "claude_oauth",     # 추정만 원하면 "claude_transcripts", 끄려면 "ledger"
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
-            "plan": "",                 # 추정 폴백용 상한 프리셋: pro | max5x | max20x
+            "plan": "max5x",            # 추정 폴백용 상한 프리셋: pro | max5x | max20x (기본 max5x)
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
             "limit_7d_tokens": 0,
             # 적응형 열화 다운그레이드 대상(guard.degrade). lite=한도 근처에서 낮출 가벼운 모델
@@ -108,8 +108,13 @@ DEFAULT_YOK3X = {
         "opus-4.8":   {"backend": "claude", "model": "claude-opus-4-8"},
         "sonnet-5":   {"backend": "claude", "model": "claude-sonnet-5"},
         "haiku-4.5":  {"backend": "claude", "model": "claude-haiku-4-5-20251001"},
-        "gpt-5.6":    {"backend": "codex",  "model": ""},   # 자기 환경 model_id로 채우기
-        "gemini-3.5": {"backend": "gemini", "model": ""}
+        # codex/gemini는 CLI에 '모델 목록' 명령이 없어 아래는 알려진 값(사용자가 갱신). GUI는
+        # 이 카탈로그 + '커스텀' 입력으로 모델을 고른다. gpt-5.6/gemini-3.5 키는 프로파일이 참조.
+        "gpt-5.6":        {"backend": "codex",  "model": "gpt-5.6-codex"},
+        "o3":             {"backend": "codex",  "model": "o3"},
+        "gemini-3.5":     {"backend": "gemini", "model": "gemini-3-flash-preview"},
+        "gemini-2.5-flash": {"backend": "gemini", "model": "gemini-2.5-flash"},
+        "gemini-2.5-pro": {"backend": "gemini", "model": "gemini-2.5-pro"}
     },
     "situations": {                 # task_kind → 상황 슬롯(프로파일 키)
         "critic": "review", "review": "review",
