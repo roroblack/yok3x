@@ -4,6 +4,14 @@
 
 ---
 
+## 미출시(dev) · 2026-07-11 — codex 한도 창 오라벨 수정(BUG-12)
+
+- codex 실측이 `primary→5h·secondary→7d` 위치 고정 매핑이라, codex가 primary에 7일 창
+  (windowDurationMins=10080)을 담으면 **주간을 "5h"로 오라벨**하고 7일 줄이 사라졌다. 창 이름을
+  **길이(windowDurationMins)로 유도**(`_window_name`)하도록 app-server·sessions 두 경로 수정.
+  리포트 `reports/bugs/BUG-12`. 참고: claude가 원장으로 보이던 건 버그 아님 — OAuth 토큰
+  만료(~1시간)로 인한 설계상 폴백, claude 한 번 쓰면 자동 갱신.
+
 ## 미출시(dev) · 2026-07-11 — 적응형 열화 P2: 백엔드 폴오버(on/off)
 
 - 한도 도달 시 여유 있는 '다른 도구'로 워커를 임시 전환(정지 대신 계속 진행). **on/off 토글**

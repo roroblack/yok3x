@@ -111,6 +111,27 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     assert cfg.yok3x["context_max_chars"] == 1234
 
 
+# ------------------------------------ codex 한도 창 라벨(길이 기준, 위치 무관)
+def test_window_name_from_duration():
+    assert limits._window_name(300) == "5h"
+    assert limits._window_name(10080) == "7d"
+    assert limits._window_name(1440) == "1d"
+    assert limits._window_name(120) == "2h"
+    assert limits._window_name(None) == "?"
+
+
+def test_codex_appserver_labels_windows_by_duration(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    # primary에 7일(10080분), secondary에 5h(300분)가 와도 '길이'로 정확히 라벨해야 한다.
+    monkeypatch.setattr(limits, "_appserver_rate_limits", lambda exe, args, to: {
+        "primary": {"usedPercent": 4, "windowDurationMins": 10080, "resetsAt": 1e9},
+        "secondary": {"usedPercent": 2, "windowDurationMins": 300, "resetsAt": 1e9},
+        "planType": "plus"})
+    r = limits._probe_codex_appserver("codex", cfg.yok3x["limits"]["codex"])
+    names = {w.name: w.used_percent for w in r.windows}
+    assert names.get("7d") == 4.0 and names.get("5h") == 2.0      # 위치 아닌 길이로 라벨
+
+
 # ------------------------------------ codex JSONL 파서(신형 스키마 호환)
 def test_parse_codex_new_item_completed_schema():
     # codex 0.144: agent 메시지가 item.completed 이벤트의 item.type=="agent_message".

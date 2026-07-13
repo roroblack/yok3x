@@ -122,6 +122,21 @@ def _probe_uncached(cfg: Config, backend: str) -> LimitReading:
 
 # ---------------------------------------------------------------- codex (라이브 실측: app-server RPC)
 
+def _window_name(mins: int | None) -> str:
+    """windowDurationMins → 창 이름. 300→'5h', 10080→'7d', 그 외 시간/일 단위."""
+    if not mins:
+        return "?"
+    if mins == 300:
+        return "5h"
+    if mins == 10080:
+        return "7d"
+    if mins % 1440 == 0:
+        return f"{mins // 1440}d"
+    if mins % 60 == 0:
+        return f"{mins // 60}h"
+    return f"{mins}m"
+
+
 def _probe_codex_appserver(backend: str, conf: dict[str, Any]) -> LimitReading:
     """`codex app-server` JSON-RPC 로 '지금 이 순간' 5h/7d 사용률을 조회(진짜 실시간).
 
@@ -140,14 +155,17 @@ def _probe_codex_appserver(backend: str, conf: dict[str, Any]) -> LimitReading:
         live_err = "app-server 응답에 rateLimits 없음"
     if rl:
         windows: list[Window] = []
-        for key, nm in (("primary", "5h"), ("secondary", "7d")):
+        # 창 이름은 primary/secondary '위치'가 아니라 windowDurationMins '길이'로 유도한다.
+        # codex는 상황에 따라 primary에 5h 또는 7d(10080분)를 담아, 위치 고정 매핑이면 오라벨된다.
+        for key in ("primary", "secondary"):
             seg = rl.get(key) or {}
             up = seg.get("usedPercent")
             if up is None:
                 continue
-            windows.append(Window(name=nm, used_percent=float(up),
+            mins = _int(seg.get("windowDurationMins"))
+            windows.append(Window(name=_window_name(mins), used_percent=float(up),
                                   resets_at=_num(seg.get("resetsAt")),
-                                  window_minutes=_int(seg.get("windowDurationMins"))))
+                                  window_minutes=mins))
         if windows:
             plan = rl.get("planType") or "?"
             det = " · ".join(f"{w.name} {w.used_percent:.0f}%" for w in windows)
@@ -243,14 +261,15 @@ def _probe_codex_sessions(backend: str, conf: dict[str, Any]) -> LimitReading:
         if not rl:
             continue
         windows: list[Window] = []
-        for key, nm in (("primary", "5h"), ("secondary", "7d")):
+        for key in ("primary", "secondary"):     # 이름은 window_minutes 길이로 유도(위치 아님)
             seg = rl.get(key) or {}
             up = seg.get("used_percent")
             if up is None:
                 continue
-            windows.append(Window(name=nm, used_percent=float(up),
+            mins = _int(seg.get("window_minutes"))
+            windows.append(Window(name=_window_name(mins), used_percent=float(up),
                                   resets_at=_num(seg.get("resets_at")),
-                                  window_minutes=_int(seg.get("window_minutes"))))
+                                  window_minutes=mins))
         if windows:
             plan = rl.get("plan_type") or "?"
             det = " · ".join(f"{w.name} {w.used_percent:.0f}%" for w in windows)

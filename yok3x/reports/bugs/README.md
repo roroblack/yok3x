@@ -16,6 +16,7 @@
 | [09](BUG-09-gemini-skip-trust.md) | gemini 신뢰 안 된 디렉터리 실행 거부 | 높음 | `df05cdf` | ✅ |
 | [10](BUG-10-producer-multiline-argv-truncation.md) | **프로듀서 병목: 멀티라인 argv 잘림** | **치명** | `43ec4db` | ✅ |
 | [11](BUG-11-gui-js-syntax-collisions.md) | GUI JS 식별자 충돌(스크립트 전체 무력화) | 높음 | `06ed52a` | ✅ |
+| [12](BUG-12-codex-window-mislabel.md) | codex 한도 창 오라벨(7일을 5h로, 주간 사라짐) | 중간 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.
