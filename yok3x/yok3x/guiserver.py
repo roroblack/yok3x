@@ -101,7 +101,8 @@ def build_state(cfg: Config) -> dict:
         "profile_routes": _profile_routes(cfg),
         "models_catalog": cfg.yok3x.get("models_catalog", {}),
         "guard": {"enabled": g.get("enabled", True),
-                  "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0)},
+                  "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
+                  "failover": bool((g.get("degrade") or {}).get("failover_enabled", False))},
         "coach": usage.coach_messages(cfg),
         "runs": _recent_runs(cfg),
         "tools": tools,
@@ -232,6 +233,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     for w in worker_models:
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커(model): {w}"}
+    failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     # 백업 후 적용
     jf = cfg.paths.yok3x_json
     if jf.exists():
@@ -253,6 +255,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["active_profile"] = "" if ap == "off" else ap
     for w, m in worker_models.items():
         cfg.yok3x["workers"][w]["model"] = str(m or "").strip()
+    if failover_enabled is not None:
+        cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
     cfg.save_yok3x()
     return {"ok": True}
 

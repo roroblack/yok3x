@@ -286,6 +286,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           <label class="tgl2">모델 프로파일(상황별 자동선택) <select id="c-profile"></select></label>
           <div class="sub" id="c-routing" style="margin-top:6px;line-height:1.7"></div>
         </div>
+        <div style="margin-top:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div id="swfo" class="switch off" onclick="toggleFailover()" title="on: 한도 초과 시 정지 대신 여유 있는 다른 도구로 자동 전환(결과 품질이 달라질 수 있음)"></div>
+          <b id="fotext" style="font-size:12px">OFF</b>
+          <span class="sub" style="margin:0">폴오버 — 한도 도달 시 여유 도구로 자동 전환(품질 변동 가능)</span>
+        </div>
         <div class="qbox" id="c-queue"></div>
         <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
       </div>
@@ -449,6 +454,9 @@ function render(s){
   document.getElementById("flavor").textContent="flavor: "+s.flavor;
   const on=s.guard.enabled; const sw=document.getElementById("sw");
   sw.classList.toggle("off",!on); document.getElementById("gtext").textContent=on?"ON":"OFF";
+  const swfo=document.getElementById("swfo");
+  if(swfo && document.activeElement!==swfo){const fo=!!(s.guard&&s.guard.failover);
+    swfo.classList.toggle("off",!fo); document.getElementById("fotext").textContent=fo?"ON":"OFF";}
   // tools
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
     const wins=t.windows.length?t.windows.map(w=>`
@@ -502,6 +510,12 @@ async function pickWorkspace(){
   try{const r=await fetch("/api/pickdir",{method:"POST"});const j=await r.json();
     if(j.path){const el=document.getElementById("c-workspace");el.value=j.path;el.focus();}
   }catch(e){alert("폴더 선택 실패(`yok3x gui`로 실행해야 함): "+e);}
+}
+async function toggleFailover(){
+  const turnOn=document.getElementById("swfo").classList.contains("off");  // off면 켜는 것
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({failover_enabled:turnOn})});
+    if(r.ok){document.getElementById("swfo").classList.toggle("off",!turnOn);document.getElementById("fotext").textContent=turnOn?"ON":"OFF";}
+  }catch(e){}
 }
 function fillSel(id,list,sel){const el=document.getElementById(id);if(el&&el.dataset.filled!=="1"+list.join()){el.innerHTML=opts(list,sel);el.dataset.filled="1"+list.join();}}
 function renderConsole(s,rn){
