@@ -163,6 +163,17 @@ def _fetch_models(cfg: Config, backend: str) -> list[str]:
         # 번들의 GEMINI_MODELS 레지스트리를 읽는다 — 설치된 CLI 버전이 지원하는 실제 모델 집합
         # (codex의 models_cache.json과 동급의 실제 소스, CLI 업데이트 시 갱신).
         return _gemini_bundle_models()
+    if backend == "local":
+        # 로컬 OpenAI 호환 서버의 /v1/models(설치·기동된 모델). 서버 없으면 빈 목록.
+        conf = (cfg.yok3x.get("limits") or {}).get("local") or {}
+        base = str((cfg.backends.get("local") or {}).get("base_url")
+                   or conf.get("base_url") or "http://localhost:8000/v1").rstrip("/")
+        try:
+            with urllib.request.urlopen(base + "/models", timeout=3) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return []
+        return [m.get("id") for m in data.get("data", []) if m.get("id")]
     return []
 
 

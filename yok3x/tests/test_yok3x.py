@@ -226,10 +226,38 @@ def test_parse_codex_new_item_completed_schema():
 
 # ------------------------------------ claude 라이브 실측(OAuth usage 엔드포인트)
 class _Resp:
-    def __init__(self, payload): self._p = payload
+    def __init__(self, payload, status=200): self._p = payload; self.status = status
     def read(self): return self._p
     def __enter__(self): return self
     def __exit__(self, *a): return False
+
+
+def test_local_openai_http_adapter(monkeypatch):
+    # 로컬 OpenAI 호환 서버 호출: choices[0].message.content 파싱, <think> 제거, cost=0.
+    from yok3x import backends
+    payload = json.dumps({"choices": [{"message": {"content":
+        "<think>reasoning...</think>\n`lambda s: s==s[::-1]`"}}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 8}}).encode()
+    monkeypatch.setattr(backends.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(payload))
+    res = backends.run_backend("local", {"type": "openai_http",
+                               "base_url": "http://localhost:8000/v1"}, "prompt")
+    assert res.ok and res.text == "`lambda s: s==s[::-1]`"   # think 제거됨
+    assert res.cost_usd == 0.0 and res.total_tokens == 20     # 로컬=무료
+
+
+def test_p3_offline_failover(monkeypatch, tmp_path):
+    # 클라우드 전부 stop이면 로컬 서버가 떠 있을 때만 local로 강등(P3).
+    cfg = Config.load(tmp_path)
+    stop = usage.GuardVerdict("claude", 1.5, "x", "stop", "한도")
+    monkeypatch.setattr(usage, "check_backend", lambda c, b: stop)   # 모든 백엔드 stop
+    monkeypatch.setattr(usage, "offline_reachable", lambda c, b="local": True)
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) == "local"   # → 강등
+    monkeypatch.setattr(usage, "offline_reachable", lambda c, b="local": False)
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # 서버 없으면 정지
+    monkeypatch.setattr(usage, "offline_reachable", lambda c, b="local": True)
+    cfg.yok3x["guard"]["degrade"]["offline_enabled"] = False
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # off면 강등 안 함
 
 
 def test_claude_oauth_parses_live_5h_7d(monkeypatch, tmp_path):

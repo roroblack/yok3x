@@ -60,7 +60,11 @@ DEFAULT_YOK3X = {
             "failover_enabled": False,      # ← on/off (기본 off = 한도 시 현행처럼 정지)
             "failover_ratio": 0.97,         # 이 사용률↑ 또는 backend stop → 다른 도구로 전환
             "roles_no_failover": [],        # 특정 역할은 전환 제외(예: 리뷰어 고정 원하면 지정)
-            "max_failovers_per_run": 3      # 런당 전환 상한(스래싱 방지). sticky로 왕복도 방지
+            "max_failovers_per_run": 3,     # 런당 전환 상한(스래싱 방지). sticky로 왕복도 방지
+            # P3: 오프라인 폴백 — 클라우드 대안이 전부 소진(stop)이면 로컬 모델로 강등해 무중단.
+            # 로컬 서버가 실제로 떠 있을 때만 전환(도달성 확인). 품질↓라 리뷰어는 제외 권장.
+            "offline_enabled": True,        # 클라우드 전멸 시 로컬로 강등(로컬 서버 있을 때만 발동)
+            "offline_backend": "local"      # 강등 대상 backend(= backends.local, OpenAI 호환)
         }
     },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
@@ -95,12 +99,16 @@ DEFAULT_YOK3X = {
             "api_key": "",              # 직접 키(비권장 — 파일/env 권장)
             "api_key_path": "",         # 키를 담은 파일 경로(예: ~/.gemini/api_key)
             "api_key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
+        },
+        "local": {
+            "type": "ledger"            # 로컬=무료·무제한 → 원장(항상 여유). P3 폴백 대상.
         }
     },
     "budgets": {                    # 실측 한도가 없을 때의 자체 안전망(로컬 자정 리셋)
         "claude": {"daily_usd": 5.0, "daily_calls": 200},
         "codex":  {"daily_tokens": 2000000, "daily_calls": 200},
-        "gemini": {"daily_tokens": 2000000, "daily_calls": 200}
+        "gemini": {"daily_tokens": 2000000, "daily_calls": 200},
+        "local":  {"daily_tokens": 1000000000, "daily_calls": 100000}   # 로컬=사실상 무제한
     },
     "routing": {                    # coach가 권하는 작업(코딩)→도구 기본 라우팅
         "build": "claude",          # 기능 구현
@@ -173,6 +181,10 @@ DEFAULT_YOK3X = {
         "gemini": {
             "backend": "gemini",
             "role": "설계/코드 검토 담당. 구조·아키텍처·요구사항 충족을 검토하고 반드시 첫 줄에 'SCORE: <0-10>'을 쓴다."
+        },
+        "local-main": {
+            "backend": "local",
+            "role": "오프라인 폴백 구현 담당. 요청된 코드를 작성해 코드블록으로 응답한다(파일 편집 아님)."
         }
     }
 }
@@ -234,6 +246,15 @@ DEFAULT_BACKENDS = {
         "model_arg": ["--model", "{model}"],   # 프로파일/다운그레이드 시 모델 주입
         "parser": "gemini_json",
         "timeout_sec": 600
+    },
+    "local": {
+        # OpenAI 호환 로컬 서버(llama.cpp·LM Studio·vLLM·Ollama /v1 등). 의존성 0(urllib).
+        # P3 오프라인 폴백: 클라우드 전부 한도 소진 시 여기로 강등해 무중단. 로컬=무료(cost 0).
+        "type": "openai_http",
+        "base_url": "http://localhost:8000/v1",  # 로컬 서버 주소(포트만 다르면 여기만 수정)
+        "model": "",                # 비우면 서버 로드 모델 사용(/v1/models 첫 항목)
+        "timeout_sec": 180,
+        "temperature": 0.2
     },
     "mock": {
         "type": "mock",

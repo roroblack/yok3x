@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — P3 오프라인 폴백(로컬 모델, 의존성 0) — 클라우드 전멸 시 무중단
+
+- 적응형 열화 3단계 신설: 클라우드 백엔드가 전부 stop이면 **로컬 OpenAI 호환 서버로 강등**해 멈추지
+  않게. `backends.local`(type openai_http, urllib만 — 의존성 0), `_run_openai_http`(/v1/chat/completions,
+  <think> 제거, cost 0), `usage.failover_backend`에 P3 티어 + `offline_reachable`(로컬 서버 있을 때만
+  발동), config `guard.degrade.offline_enabled/offline_backend`, worker `local-main`.
+- **Ollama 불필요**: 이미 기동된 localhost:8000(llama.cpp+Qwen3.5-4B, id gemma-4-e4b)을 그대로 사용.
+  라이브: `run_backend(local)`→`lambda s: s==s[::-1]`(cost0), `list_models(local)`=['gemma-4-e4b'],
+  오케스트레이터 local 라우팅 확인. GUI 미노출(BACKEND_KEYS 고정, §5.6). 51 passed. §5.5 A8 등록.
+
 ## 미출시(dev) · 2026-07-13 — gemini 모델 목록 드디어 조회(CLI 번들 GEMINI_MODELS 레지스트리)
 
 - gemini는 이 계정에서 Antigravity/CloudSDK **암호화 OAuth**로 인증(env·.env·평문토큰 전무) → 키

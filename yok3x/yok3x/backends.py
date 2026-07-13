@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,9 +49,8 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
         res = _run_mock(name, spec, prompt)
     elif btype == "cli":
         res = _run_cli(name, spec, prompt, cwd=cwd, model=model)
-    elif btype == "native":
-        res = BackendResult(backend=name, ok=False,
-                            error="native(HTTP API) 어댑터는 endpoint 설정 후 사용. backends.json 참조.")
+    elif btype in ("openai_http", "native", "local"):
+        res = _run_openai_http(name, spec, prompt, model=model)
     elif btype == "mcp":
         res = BackendResult(backend=name, ok=False,
                             error="mcp 어댑터는 MCP 클라이언트 환경(Claude Code 등)에서 서버 등록 후 사용.")
@@ -169,6 +171,52 @@ def _parse_gemini(out: str) -> BackendResult:
     return BackendResult(backend="gemini", ok=data.get("response") is not None,
                          text=str(data.get("response", "")).strip(),
                          input_tokens=it, output_tokens=ot, total_tokens=tot or (it + ot))
+
+
+# ---------------------------------------------------------------- OpenAI 호환 HTTP(로컬)
+
+def _run_openai_http(name: str, spec: dict[str, Any], prompt: str,
+                     model: str | None = None) -> BackendResult:
+    """OpenAI 호환 /v1/chat/completions 로컬 서버 호출(llama.cpp·LM Studio·vLLM·Ollama /v1 등).
+    표준 라이브러리 urllib만 사용(의존성 0). 로컬은 무료라 cost=0. P3 오프라인 폴백의 실행부."""
+    base = str(spec.get("base_url", "http://localhost:8000/v1")).rstrip("/")
+    mdl = model or spec.get("model") or "local"
+    body = json.dumps({
+        "model": mdl,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": spec.get("temperature", 0.2),
+        "max_tokens": spec.get("max_tokens", 2048),
+        "stream": False,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    key = spec.get("api_key")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    timeout = int(spec.get("timeout_sec", 120))
+    req = urllib.request.Request(base + "/chat/completions", data=body,
+                                 headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.URLError as e:
+        return BackendResult(backend=name, ok=False,
+                             error=f"로컬 HTTP 실패({base}): {getattr(e, 'reason', e)} — 로컬 서버가 떠 "
+                                   f"있는지 확인(base_url 설정).")
+    except Exception as e:
+        return BackendResult(backend=name, ok=False, error=f"로컬 HTTP 오류: {type(e).__name__}: {e}")
+    choices = data.get("choices") or []
+    text = ""
+    if choices:
+        msg = choices[0].get("message") or {}
+        text = msg.get("content") or choices[0].get("text") or ""
+    # 추론형(reasoning) 로컬 모델의 <think>…</think> 블록 제거 — 산출물만 남긴다.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    usage = data.get("usage") or {}
+    it = int(usage.get("prompt_tokens", 0) or 0)
+    ot = int(usage.get("completion_tokens", 0) or 0)
+    return BackendResult(backend=name, ok=bool(text), text=text,
+                         input_tokens=it, output_tokens=ot, total_tokens=it + ot,
+                         cost_usd=0.0, meta={"model": data.get("model", mdl), "local": True})
 
 
 # ---------------------------------------------------------------- mock

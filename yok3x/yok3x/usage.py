@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -212,29 +213,50 @@ def backend_available(cfg: Config, backend: str) -> bool:
 
 
 def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int) -> str | None:
-    """P2 백엔드 폴오버(on/off): exclude(한도초과/불가) 대신 쓸 '가장 여유 있는' 다른 backend.
+    """P2 백엔드 폴오버 + P3 오프라인 폴백. exclude(한도초과/불가) 대신 쓸 backend를 고른다.
 
-    반환 None 조건: 폴오버 off(`failover_enabled`) · 역할 제외(`roles_no_failover`) · 런당 상한
-    초과 · 설치+여유(backend_available)한 대안 없음. 후보 중 사용률(ratio) 최소 backend 선택.
+    P2(클라우드↔클라우드): `failover_enabled` on일 때, 설치+여유(backend_available)한 '다른 클라우드'
+    중 사용률(ratio) 최소를 고른다. 오프라인 backend는 여기서 제외(마지막 수단이라).
+    P3(클라우드→로컬): 클라우드 대안이 없고 `offline_enabled`면, 로컬 서버가 실제로 떠 있을 때만
+    `offline_backend`(local)로 강등해 무중단. 반환 None: 역할 제외·런당 상한 초과·대안 없음.
     """
     d = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
-    if not d.get("failover_enabled"):
-        return None
     if worker in (d.get("roles_no_failover") or []):
         return None
     if switches_used >= int(d.get("max_failovers_per_run", 3)):
         return None
+    offline_b = d.get("offline_backend", "local")
+    # P2: 클라우드 간 폴오버(오프라인 backend는 후보에서 뺀다)
     best, best_ratio = None, None
-    for b in (cfg.backends or {}):
-        if b in (exclude, "mock") or not backend_available(cfg, b):
-            continue
-        try:
-            r = check_backend(cfg, b).ratio
-        except Exception:
-            r = 0.0
-        if best_ratio is None or r < best_ratio:
-            best, best_ratio = b, r
-    return best
+    if d.get("failover_enabled"):
+        for b in (cfg.backends or {}):
+            if b in (exclude, "mock", offline_b) or not backend_available(cfg, b):
+                continue
+            try:
+                r = check_backend(cfg, b).ratio
+            except Exception:
+                r = 0.0
+            if best_ratio is None or r < best_ratio:
+                best, best_ratio = b, r
+    if best is not None:
+        return best
+    # P3: 클라우드 대안 없음 → 로컬로 강등(설정 on + 로컬 서버 도달 가능할 때만)
+    if d.get("offline_enabled", True) and offline_b and offline_b != exclude:
+        if offline_reachable(cfg, offline_b):
+            return offline_b
+    return None
+
+
+def offline_reachable(cfg: Config, backend: str = "local") -> bool:
+    """로컬 OpenAI 호환 서버가 지금 응답하는지 짧게 확인(GET /models). 죽은 엔드포인트로
+    강등하지 않기 위함. 실패/타임아웃이면 False."""
+    spec = (cfg.backends or {}).get(backend) or {}
+    base = str(spec.get("base_url", "http://localhost:8000/v1")).rstrip("/")
+    try:
+        with urllib.request.urlopen(base + "/models", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
 
 def degrade_plan(cfg: Config, worker: str, verdict: "GuardVerdict",
