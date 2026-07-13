@@ -109,13 +109,9 @@ DEFAULT_YOK3X = {
         "opus-4.8":   {"backend": "claude", "model": "claude-opus-4-8"},
         "sonnet-5":   {"backend": "claude", "model": "claude-sonnet-5"},
         "haiku-4.5":  {"backend": "claude", "model": "claude-haiku-4-5-20251001"},
-        # codex/gemini는 CLI에 '모델 목록' 명령이 없어 아래는 알려진 값(사용자가 갱신). GUI는
-        # 이 카탈로그 + '커스텀' 입력으로 모델을 고른다. gpt-5.6/gemini-3.5 키는 프로파일이 참조.
-        "gpt-5.6":        {"backend": "codex",  "model": "gpt-5.6-codex"},
-        "o3":             {"backend": "codex",  "model": "o3"},
-        "gemini-3.5":     {"backend": "gemini", "model": "gemini-3-flash-preview"},
-        "gemini-2.5-flash": {"backend": "gemini", "model": "gemini-2.5-flash"},
-        "gemini-2.5-pro": {"backend": "gemini", "model": "gemini-2.5-pro"}
+        # 아래 논리모델은 '프로파일 라우팅'용 매핑일 뿐(GUI 드롭다운은 backend별 동적 조회 사용).
+        "gpt-5.6":    {"backend": "codex",  "model": "gpt-5.6-sol"},          # codex 모델 slug
+        "gemini-3.5": {"backend": "gemini", "model": "gemini-3-flash-preview"}
     },
     "situations": {                 # task_kind → 상황 슬롯(프로파일 키)
         "critic": "review", "review": "review",

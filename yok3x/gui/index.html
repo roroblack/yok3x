@@ -580,15 +580,16 @@ function renderConsole(s,rn){
   if(bd && !bd.dataset.dirty) bd.innerHTML=workers.map(w=>{
     const be=s.workers[w].backend, mdl=s.workers[w].model||"";
     const list=["claude","codex","gemini","mock"];
-    const cat=s.models_catalog||{};
+    const avail=(s.backend_models&&s.backend_models[be])||[];   // 동적 조회(claude=API·codex=캐시)
     let mopts=['<option value="">(기본 모델)</option>'];
-    Object.entries(cat).forEach(([k,e])=>{ if(e.backend===be && e.model) mopts.push(`<option value="${e.model}" ${e.model===mdl?'selected':''}>${k}</option>`); });
-    if(mdl && !Object.values(cat).some(e=>e.model===mdl)) mopts.push(`<option value="${mdl}" selected>${mdl}(커스텀)</option>`);
+    avail.forEach(m=>mopts.push(`<option value="${m}" ${m===mdl?'selected':''}>${m}</option>`));
+    if(mdl && !avail.includes(mdl)) mopts.push(`<option value="${mdl}" selected>${mdl}(커스텀)</option>`);
     mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
     const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
+    const hint=avail.length?`동적 조회됨(${avail.length}개)`:"목록 조회 불가(gemini 등) — 커스텀 입력";
     return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
       <select data-w="${w}" onchange="${dirty}">${opts(list,be)}</select>
-      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). CLI에 모델목록 명령이 없어 카탈로그+커스텀 입력으로 지정. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select></div>`;
+      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). ${hint}. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select></div>`;
   }).join("");
   // 큐
   const q=document.getElementById("c-queue");

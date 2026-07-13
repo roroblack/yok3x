@@ -111,6 +111,21 @@ def test_config_load_tolerates_utf8_bom(tmp_path):
     assert cfg.yok3x["context_max_chars"] == 1234
 
 
+# ------------------------------------ CLI 모델 목록 동적 조회(하드코딩 아님)
+def test_list_models_dynamic(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    limits._MODELS_CACHE.clear()
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "models_cache.json").write_text(json.dumps({"models": [
+        {"slug": "gpt-5.6-sol", "visibility": "list"},
+        {"slug": "hidden-model", "visibility": "hide"}]}), encoding="utf-8")
+    monkeypatch.setattr(limits.Path, "home", classmethod(lambda cls: home))
+    assert limits.list_models(cfg, "codex") == ["gpt-5.6-sol"]      # 캐시 slug, hide 제외
+    limits._MODELS_CACHE.clear()
+    assert limits.list_models(cfg, "gemini") == []                  # 소스 없음 → 빈 목록(폴백)
+
+
 # ------------------------------------ 미보정 추정 false-stop 방지
 def test_uncalibrated_estimate_does_not_hard_stop(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)

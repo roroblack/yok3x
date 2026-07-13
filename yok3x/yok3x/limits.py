@@ -95,6 +95,52 @@ def clear_cache() -> None:
     _CACHE.clear()
 
 
+_MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_MODELS_TTL = 300.0   # 5분: 모델 목록은 자주 안 바뀜
+
+
+def list_models(cfg: Config, backend: str) -> list[str]:
+    """backend별 '사용 가능 모델'을 동적으로 조회(하드코딩 아님). 5분 캐시.
+
+    claude: Anthropic `/v1/models`(구독 OAuth 토큰) · codex: `~/.codex/models_cache.json`의
+    slug · gemini: 로컬 캐시·키 접근 불가 → 빈 목록(GUI에서 커스텀 입력). 실패 시 빈 목록.
+    """
+    hit = _MODELS_CACHE.get(backend)
+    if hit and (time.time() - hit[0]) < _MODELS_TTL:
+        return hit[1]
+    try:
+        models = _fetch_models(cfg, backend)
+    except Exception:
+        models = []
+    _MODELS_CACHE[backend] = (time.time(), models)
+    return models
+
+
+def _fetch_models(cfg: Config, backend: str) -> list[str]:
+    if backend == "claude":
+        conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+        token, _ = _claude_oauth_token(conf)
+        if not token:
+            return []
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/models",
+            headers={"authorization": f"Bearer {token}",
+                     "anthropic-version": "2023-06-01",
+                     "anthropic-beta": conf.get("oauth_beta", "oauth-2025-04-20"),
+                     "User-Agent": conf.get("user_agent", "claude-cli/2.1 (external, cli)")})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        return [m.get("id") for m in data.get("data", []) if m.get("id")]
+    if backend == "codex":
+        p = Path.home() / ".codex" / "models_cache.json"
+        if not p.exists():
+            return []
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return [m.get("slug") for m in d.get("models", [])
+                if m.get("slug") and m.get("visibility") != "hide"]
+    return []   # gemini 등: 로컬 목록/키 접근 불가 → GUI 커스텀 입력
+
+
 def _probe_uncached(cfg: Config, backend: str) -> LimitReading:
     conf = (cfg.yok3x.get("limits") or {}).get(backend) or {}
     if conf.get("enabled") is False:

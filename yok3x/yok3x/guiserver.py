@@ -16,7 +16,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from . import usage
+from . import limits, usage
 from .config import Config
 
 BACKENDS_OK = ("claude", "codex", "gemini", "mock")
@@ -101,6 +101,7 @@ def build_state(cfg: Config) -> dict:
         "route_preview": _routing_preview(cfg),
         "profile_routes": _profile_routes(cfg),
         "models_catalog": cfg.yok3x.get("models_catalog", {}),
+        "backend_models": {b: limits.list_models(cfg, b) for b in ("claude", "codex", "gemini")},
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
                   "failover": bool((g.get("degrade") or {}).get("failover_enabled", False))},

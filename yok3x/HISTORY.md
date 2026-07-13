@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — CLI 모델 목록 동적 조회(하드코딩 제거, §5.5)
+
+- 워커 모델 드롭다운을 하드코딩 카탈로그 → **동적 조회**로 교체: claude는 Anthropic
+  `/v1/models`(구독 OAuth), codex는 `~/.codex/models_cache.json` slug. gemini는 로컬 목록·키
+  접근 불가라 명시적 폴백(커스텀 입력). `limits.list_models`(5분 캐시) + `/api/state`
+  backend_models. models_catalog는 프로파일 매핑 전용으로 축소. (사용자 지적: 하드코딩/폴백은
+  §5.5 위반 — 실제 CLI 캐시/API가 소스임을 재리서치로 확인)
+- 부수: 미보정 추정 false-stop 방지(추정 ratio>300%면 정지 유보).
+
 ## v3.4.0 · 2026-07-11 — 릴리스: 폴오버 GUI 토글 + 적응형 열화·상황별 프로파일 완성
 
 - **P2 폴오버 GUI 토글**(작동): 콘솔에 폴오버 on/off 스위치(#swfo) — `/api/config`
