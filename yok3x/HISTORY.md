@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — gemini 모델 실제 API 조회 · 버전 단일출처 · RULE §5.6
+
+- gemini 모델 목록을 **실제 Google `/v1beta/models` API**로 조회(키 있으면 실시간). 키는 config 주도
+  해석(`limits.gemini.api_key`/`api_key_path`/`api_key_env`, 기본 GEMINI_API_KEY). 키 없으면 빈 목록
+  +커스텀 입력(명시적 폴백). codex 모델은 기존대로 `~/.codex/models_cache.json` 실제 소스.
+- 버전 오표시(3.1) 정정: `config.py`·`build_state`가 `_version.__version__`(3.4.0) **단일 출처**를 씀.
+- codex "5h 사라짐"은 회귀 아님 — codex(plus)가 `secondary:null`로 **7d 창 하나만** 반환(BUG-12 정정
+  결과 정확 라벨). 리포트: `reports/v3.4.0-models-usage-version-audit-2026-07-13-1445.md`.
+- **RULE §5.6 신설**: GUI/UX는 사용자 명령 없이 수정 금지, 필요 시 리포트로 제안. 47 passed.
+
 ## 미출시(dev) · 2026-07-13 — claude 429 시 미보정 추정 오표시(1003%) 차단 → 원장 폴백
 
 - live(OAuth)가 HTTP 429(호출 과다)로 실패 → 트랜스크립트 추정 폴백 → 미보정 max5x 추정이

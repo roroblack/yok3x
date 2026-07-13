@@ -26,6 +26,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -138,7 +139,47 @@ def _fetch_models(cfg: Config, backend: str) -> list[str]:
         d = json.loads(p.read_text(encoding="utf-8"))
         return [m.get("slug") for m in d.get("models", [])
                 if m.get("slug") and m.get("visibility") != "hide"]
-    return []   # gemini 등: 로컬 목록/키 접근 불가 → GUI 커스텀 입력
+    if backend == "gemini":
+        # 진짜 동적 소스: Google Generative Language API /v1beta/models(=gemini SDK/CLI가 쓰는 그 목록).
+        # 키는 config 주도로 해석(어느 env·파일에서 읽을지 설정이 지정) → 평문 하드코딩 아님.
+        conf = (cfg.yok3x.get("limits") or {}).get("gemini") or {}
+        key = _gemini_api_key(conf)
+        if not key:
+            return []   # 키 없음 → 명시적 폴백(GUI 커스텀 입력). GEMINI_API_KEY 주면 실시간 목록.
+        base = conf.get("models_url",
+                        "https://generativelanguage.googleapis.com/v1beta/models")
+        url = f"{base}?key={urllib.parse.quote(key)}&pageSize=1000"
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        out = []
+        for m in data.get("models", []):
+            name = (m.get("name") or "").split("/")[-1]   # "models/gemini-2.5-pro" → 슬러그
+            methods = m.get("supportedGenerationMethods") or []
+            if name and (not methods or "generateContent" in methods):
+                out.append(name)
+        return out
+    return []
+
+
+def _gemini_api_key(conf: dict[str, Any]) -> str:
+    """gemini API 키 해석(config 주도). 우선순위: conf['api_key'] → conf['api_key_path'] 파일 →
+    conf['api_key_env'] 환경변수(기본 GEMINI_API_KEY/GOOGLE_API_KEY). 없으면 ''(명시적 폴백)."""
+    k = (conf.get("api_key") or "").strip()
+    if k:
+        return k
+    p = conf.get("api_key_path")
+    if p:
+        fp = Path(p).expanduser()
+        if fp.exists():
+            return fp.read_text(encoding="utf-8").strip()
+    names = conf.get("api_key_env") or ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
+    if isinstance(names, str):
+        names = [names]
+    for n in names:
+        v = os.environ.get(n)
+        if v:
+            return v.strip()
+    return ""
 
 
 def _probe_uncached(cfg: Config, backend: str) -> LimitReading:

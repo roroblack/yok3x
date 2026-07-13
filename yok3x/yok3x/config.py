@@ -11,10 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ._version import __version__
+
 YOK3X_DIR_NAME = ".yok3x"
 
 DEFAULT_YOK3X = {
-    "version": "3.1",
+    "version": __version__,          # 단일 출처(_version.py) — 하드코딩 금지
     "flavor": "claude-orchestrator",
     "auto_approve": False,          # 승인 게이트 기본값: 사람이 y/n
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
@@ -85,7 +87,12 @@ DEFAULT_YOK3X = {
             "models": {"full": "", "lite": ""}   # codex 다운그레이드 모델(원하면 지정)
         },
         "gemini": {
-            "type": "ledger"            # 라이브 실측 불가 → 원장. command probe로 tokscale 등 연결 가능
+            "type": "ledger",           # 라이브 실측 불가 → 원장. command probe로 tokscale 등 연결 가능
+            # 모델 목록 동적 조회(Google Generative Language API)용 키 해석. 아래 중 하나만 채우면
+            # GUI 드롭다운이 실시간 모델 목록으로 채워진다(안 채우면 커스텀 입력). 키는 커밋 금지.
+            "api_key": "",              # 직접 키(비권장 — 파일/env 권장)
+            "api_key_path": "",         # 키를 담은 파일 경로(예: ~/.gemini/api_key)
+            "api_key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"]
         }
     },
     "budgets": {                    # 실측 한도가 없을 때의 자체 안전망(로컬 자정 리셋)

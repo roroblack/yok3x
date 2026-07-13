@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import limits, usage
+from ._version import __version__
 from .config import Config
 
 BACKENDS_OK = ("claude", "codex", "gemini", "mock")
@@ -91,7 +92,7 @@ def build_state(cfg: Config) -> dict:
                       "model": w.get("model", "")}
                for name, w in cfg.yok3x.get("workers", {}).items()}
     return {
-        "version": cfg.yok3x.get("version", "?"),
+        "version": __version__,   # 코드 버전(단일 출처) — 저장된 yok3x.json의 낡은 값에 오염되지 않게
         "flavor": cfg.yok3x["flavor"],
         "flavors": list(cfg.yok3x.get("flavors", {})),
         "workspace": cfg.yok3x.get("workspace", ""),

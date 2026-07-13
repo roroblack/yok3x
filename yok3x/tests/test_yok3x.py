@@ -123,7 +123,37 @@ def test_list_models_dynamic(tmp_path, monkeypatch):
     monkeypatch.setattr(limits.Path, "home", classmethod(lambda cls: home))
     assert limits.list_models(cfg, "codex") == ["gpt-5.6-sol"]      # 캐시 slug, hide 제외
     limits._MODELS_CACHE.clear()
-    assert limits.list_models(cfg, "gemini") == []                  # 소스 없음 → 빈 목록(폴백)
+    assert limits.list_models(cfg, "gemini") == []                  # 키 없음 → 빈 목록(명시적 폴백)
+
+    # gemini: 키가 있으면 Google /v1beta/models 실제 조회 → generateContent 지원 모델만
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    payload = json.dumps({"models": [
+        {"name": "models/gemini-3-pro", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]},  # 제외
+    ]}).encode()
+    monkeypatch.setattr(limits.urllib.request, "urlopen",
+                        lambda url, timeout=0: _Resp(payload))
+    limits._MODELS_CACHE.clear()
+    assert limits.list_models(cfg, "gemini") == ["gemini-3-pro", "gemini-2.5-flash"]
+
+
+def test_version_is_single_source():
+    # GUI가 보여주는 버전은 _version.py 단일 출처와 일치해야 한다(config 하드코딩 오염 금지).
+    from yok3x._version import __version__
+    from yok3x.config import DEFAULT_YOK3X
+    assert DEFAULT_YOK3X["version"] == __version__
+
+
+def test_gemini_api_key_resolution(tmp_path, monkeypatch):
+    for n in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"):
+        monkeypatch.delenv(n, raising=False)
+    assert limits._gemini_api_key({}) == ""                          # 아무데도 없음
+    assert limits._gemini_api_key({"api_key": " k1 "}) == "k1"       # 직접(공백 트림)
+    f = tmp_path / "key"; f.write_text("k2\n", encoding="utf-8")
+    assert limits._gemini_api_key({"api_key_path": str(f)}) == "k2"  # 파일
+    monkeypatch.setenv("GOOGLE_API_KEY", "k3")
+    assert limits._gemini_api_key({}) == "k3"                        # env(기본 목록)
 
 
 # ------------------------------------ 미보정 추정 false-stop 방지
