@@ -311,6 +311,11 @@ class Orchestrator:
                          "API·파일을 지어내지 말고, 명확화를 되묻지 말고 합리적 가정으로 곧장 구현하라.")
         else:
             parts.append(f"[역할] {w['role']}")
+            # 리뷰/크리틱도 텍스트 산출자다. 코드생성과 동일하게 '파일을 만들거나 편집하려 하지
+            # 말고 텍스트로만 답하라'를 명시 — 없으면 헤드리스 워커가 '파일 생성(→쓰기 권한 대기)'로
+            # 새어 실질 산출 없이 "권한 필요"만 반복하는 실패모드가 난다(실측: is_palindrome 런).
+            parts.append("[출력] 리뷰·수정 제안은 텍스트로만 답하라. 파일을 만들거나 편집하려 하지 "
+                         "말고, 쓰기 권한을 기다리지 마라. 코드가 필요하면 코드블록으로 제시하라.")
             if cfg.yok3x.get("anti_hallucination", {}).get("enabled", True):
                 parts.append(ANTI_HALLUCINATION)
             if cfg.yok3x.get("yok3x_technique", {}).get("enabled", True):

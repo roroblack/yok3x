@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-13 — claude 실측 배지 깜빡임 제거(stale-while-error) · critic 텍스트전용 가드
+
+- claude 실측(OAuth usage)이 429/토큰만료로 일시 실패할 때 원장으로 떨어져 배지가 실측↔원장으로
+  깜빡이던 문제. `_probe_claude_oauth`에 **stale-while-error** 추가: 최근 실측을 `max_stale_sec`(기본
+  900s) 동안 유지하고 detail에 `⚠N분 전 실측·사유` 표시(§5.5 명시적 열화). 지나면 추정→원장.
+- producer-reviewer의 **critic/review 프롬프트에도 '파일 만들지 말고 텍스트로만' 가드 추가** —
+  없어서 codex 크리틱이 파일생성을 시도하다 "쓰기 권한 대기"만 반복하던 실패모드(is_palindrome 런) 해소.
+- gemini: `gemini -p` 정상 동작 확인 → **인증됨(로그인 문제 아님)**. 키가 OS 암호화 저장이라 yok3x가
+  못 읽을 뿐. GEMINI_API_KEY(env) 또는 limits.gemini.api_key_path 주면 실시간 목록. 48 passed.
+
 ## 미출시(dev) · 2026-07-13 — gemini 모델 실제 API 조회 · 버전 단일출처 · RULE §5.6
 
 - gemini 모델 목록을 **실제 Google `/v1beta/models` API**로 조회(키 있으면 실시간). 키는 config 주도

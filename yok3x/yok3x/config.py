@@ -75,6 +75,8 @@ DEFAULT_YOK3X = {
             # codex의 app-server 실측에 대응. 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화.
             "type": "claude_oauth",     # 추정만 원하면 "claude_transcripts", 끄려면 "ledger"
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
+            "max_stale_sec": 900,       # 실측 일시 실패(429/만료) 시 마지막 실측을 유지할 최대 시간
+                                        # (원장으로 깜빡이는 대신 '⚠N분 전 실측' 표시)
             "plan": "max5x",            # 추정 폴백용 상한 프리셋: pro | max5x | max20x (기본 max5x)
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
             "limit_7d_tokens": 0,

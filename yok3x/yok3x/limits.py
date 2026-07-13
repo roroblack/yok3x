@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -472,15 +472,26 @@ def _fetch_claude_oauth_usage(backend: str, conf: dict[str, Any]) -> LimitReadin
 
 
 def _probe_claude_oauth(backend: str, conf: dict[str, Any]) -> LimitReading:
-    """라이브 실측 → (실패 시) 트랜스크립트 추정 → 원장. min_interval_sec로 호출 제한."""
+    """라이브 실측 → (실패 시) 최근 실측 stale 유지 → 추정 → 원장. min_interval_sec로 호출 제한."""
     interval = float(conf.get("min_interval_sec", 60))
+    max_stale = float(conf.get("max_stale_sec", 900))   # 실측 실패 시 마지막 실측을 이만큼 유지
+    now = time.time()
     hit = _OAUTH_LIVE_CACHE.get(backend)
-    if hit and (time.time() - hit[0]) < interval:
+    if hit and (now - hit[0]) < interval:
         return hit[1]
     live = _fetch_claude_oauth_usage(backend, conf)
     if live.ok:
-        _OAUTH_LIVE_CACHE[backend] = (time.time(), live)
+        _OAUTH_LIVE_CACHE[backend] = (now, live)
         return live
+    # 실측 실패(429/토큰만료 등): 원장으로 떨어뜨려 배지가 실측↔원장으로 깜빡이는 대신, 최근
+    # 실측값을 유지하고 detail에 '⚠N분 전 실측'을 붙여 정직하게 표시(stale-while-error).
+    # 캐시엔 성공한 실측만 저장되므로 hit[1]은 항상 진짜 실측. max_stale 지나면 아래 폴백.
+    if hit and (now - hit[0]) < max_stale:
+        prev = hit[1]
+        age = max(1, int((now - hit[0]) / 60))
+        base = prev.detail.replace(" (live)", "")
+        why = live.error.split("(")[0].strip() or "실측 일시 실패"
+        return replace(prev, detail=f"{base} (⚠{age}분 전 실측·{why})")
     est = _probe_claude_transcripts(backend, conf)   # 추정 폴백(plan/cap 있을 때만 ok)
     # 미보정 추정은 캐시read까지 세어 과대(수백~수천%)해질 수 있다. live 실패 시 그런 값을
     # 그대로 표시하면 "1003%" 같은 오표시가 난다 → 비현실적으로 높으면(>200%) 신뢰 불가로

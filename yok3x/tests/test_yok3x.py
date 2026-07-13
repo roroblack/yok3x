@@ -257,10 +257,30 @@ def test_claude_oauth_surfaces_per_model_and_credits(monkeypatch, tmp_path):
 
 def test_claude_oauth_falls_back_when_no_credentials(tmp_path):
     # 토큰 없고 추정 캡도 없으면 ok=False로 내려가 원장 폴백에 맡긴다(명시적 열화).
-    conf = {"type": "claude_oauth", "min_interval_sec": 0,
+    limits._OAUTH_LIVE_CACHE.clear()   # 이전 실측 stale 캐시 없는(최초) 경로를 검증
+    conf = {"type": "claude_oauth", "min_interval_sec": 0, "max_stale_sec": 900,
             "credentials_path": str(tmp_path / "nope.json")}
     r = limits._probe_claude_oauth("claude", conf)
     assert not r.ok and "credentials" in r.error
+
+
+def test_live_failure_keeps_last_reading_as_stale(monkeypatch, tmp_path):
+    # 실측이 429로 실패하면 원장으로 깜빡이지 말고 마지막 실측을 '⚠N분 전 실측'으로 유지해야 한다.
+    conf = {"type": "claude_oauth", "min_interval_sec": 0, "max_stale_sec": 900,
+            "credentials_path": str(tmp_path / "nope.json")}
+    good = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("5h", 14.0)], detail="5h 14% (live)")
+    limits._OAUTH_LIVE_CACHE["claude"] = (1000.0, good)   # 과거 성공 실측 캐시
+    monkeypatch.setattr(limits.time, "time", lambda: 1000.0 + 120)   # 2분 뒤, live는 실패
+    r = limits._probe_claude_oauth("claude", conf)
+    assert r.ok and r.real                       # 실측 배지 유지(원장으로 안 떨어짐)
+    assert r.ratio() == 0.14                      # 마지막 실측 수치 그대로
+    assert "전 실측" in r.detail                   # stale 표시
+    # max_stale 지나면 더는 유지하지 않는다 → 폴백(ok=False)
+    monkeypatch.setattr(limits.time, "time", lambda: 1000.0 + 2000)
+    r2 = limits._probe_claude_oauth("claude", conf)
+    assert not r2.ok
+    limits._OAUTH_LIVE_CACHE.clear()
 
 
 def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
