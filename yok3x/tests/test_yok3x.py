@@ -233,6 +233,25 @@ def test_claude_oauth_falls_back_when_no_credentials(tmp_path):
     assert not r.ok and "credentials" in r.error
 
 
+def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
+    # live 실패 + 미보정 추정이 비현실적(>200%)이면 그 값을 표시하지 않고 ok=False로 내려
+    # 원장 폴백에 맡긴다("1003%" 오표시 방지). 현실적(<200%)이면 추정을 그대로 쓴다.
+    conf = {"type": "claude_oauth", "min_interval_sec": 0,
+            "credentials_path": str(tmp_path / "nope.json")}   # live 실패 강제
+    W = limits.Window
+    hi = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                             windows=[W("5h", 1003.6), W("7d", 778.1)])
+    monkeypatch.setattr(limits, "_probe_claude_transcripts", lambda b, c: hi)
+    r = limits._probe_claude_oauth("claude", conf)
+    assert not r.ok and "무시" in r.error          # 비현실적 추정 → 버리고 원장으로
+
+    lo = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                             windows=[W("5h", 62.0), W("7d", 20.0)])
+    monkeypatch.setattr(limits, "_probe_claude_transcripts", lambda b, c: lo)
+    r2 = limits._probe_claude_oauth("claude", conf)
+    assert r2.ok and abs(r2.ratio() - 0.62) < 1e-6  # 현실적 추정은 유지
+
+
 # -------------------------------------- CLI 백엔드 stdin 데드락 방지(회귀 잠금)
 def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     # headless 실행 중 CLI가 대화형 입력을 기다려 데드락하지 않도록 stdin=DEVNULL,

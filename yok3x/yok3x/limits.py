@@ -441,9 +441,15 @@ def _probe_claude_oauth(backend: str, conf: dict[str, Any]) -> LimitReading:
         _OAUTH_LIVE_CACHE[backend] = (time.time(), live)
         return live
     est = _probe_claude_transcripts(backend, conf)   # 추정 폴백(plan/cap 있을 때만 ok)
-    if est.ok:
+    # 미보정 추정은 캐시read까지 세어 과대(수백~수천%)해질 수 있다. live 실패 시 그런 값을
+    # 그대로 표시하면 "1003%" 같은 오표시가 난다 → 비현실적으로 높으면(>200%) 신뢰 불가로
+    # 보고 반환하지 않는다. 그러면 check_backend가 원장(sane) 폴백으로 넘어간다(§5.5: 조용한
+    # 폴백 대신, 추정이 못 미더우면 확실한 원장을 쓴다).
+    if est.ok and est.ratio() <= 2.0:
         est.detail += f" · live실패({live.error})"
         return est
+    if est.ok:   # 추정이 나왔으나 비현실적 — 사유를 남기고 원장 폴백에 맡김
+        live.error = f"{live.error}; 추정 {est.ratio() * 100:.0f}%(미보정) 무시"
     return live
 
 
