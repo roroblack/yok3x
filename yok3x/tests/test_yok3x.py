@@ -229,6 +229,19 @@ def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     assert res.ok and res.text == "결과 OK"
 
 
+# -------------------------------------- knot 이중레벨 검색(LightRAG식, 의존성0)
+def test_knot_query_dual_level_expansion(tmp_path):
+    from yok3x import knot
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    knot.save(cfg, "alpha topic", "about slug conversion. see [[beta note]].", tags=["x"])
+    knot.save(cfg, "beta note", "unrelated content here.", tags=["y"])   # 키워드 없음, 링크로만 도달
+    knot.save(cfg, "gamma", "shares tag with alpha.", tags=["x"])        # 공유 태그
+    names = {n.get("title") for _, n in knot.query(cfg, "slug", expand=True)}
+    assert "alpha topic" in names        # 저수준: 키워드 직접 히트
+    assert "beta note" in names          # 고수준: [[링크]] 확장으로 도달
+    assert {n.get("title") for _, n in knot.query(cfg, "slug", expand=False)} == {"alpha topic"}
+
+
 # -------------------------------------- run_id 충돌 방지(마이크로초)
 def test_run_id_includes_microseconds(mock_root):
     import re

@@ -89,21 +89,45 @@ def _load_notes(cfg: Config) -> list[dict]:
     return notes
 
 
-def query(cfg: Config, q: str, limit: int = 5) -> list[tuple[float, dict]]:
-    """키워드 스코어링 검색: 제목 3점, 태그 2점, 본문 1점/히트."""
+def query(cfg: Config, q: str, limit: int = 5, expand: bool = True) -> list[tuple[float, dict]]:
+    """이중레벨 검색(LightRAG식, 의존성 0).
+
+    저수준: 키워드 스코어링(제목 3·태그 2·본문 1/히트). 고수준: 상위 직접 히트에서
+    [[위키링크]]·공유 태그로 '연결된 노트'까지 확장(키워드가 직접 안 맞아도 개념적으로
+    관련된 것을 끌어온다). 확장 점수는 원점수의 할인값이라 직접 히트가 상위에 남는다.
+    expand=False면 키워드만(구동작).
+    """
     terms = [t.lower() for t in q.split() if t.strip()]
-    scored = []
-    for n in _load_notes(cfg):
-        s = 0.0
+    notes = _load_notes(cfg)
+    # 링크 해소용 인덱스: 제목/파일stem(소문자) → 노트
+    by_key: dict[str, dict] = {}
+    for n in notes:
+        by_key.setdefault(str(n.get("title", "")).lower().strip(), n)
+        by_key.setdefault(n["path"].stem.lower(), n)
+    scores: dict[Path, list] = {}   # path → [score, note]
+    for n in notes:                 # 저수준: 키워드
         title = str(n.get("title", "")).lower()
         tags = " ".join(n.get("tags", [])).lower()
         body = n.get("body", "").lower()
-        for t in terms:
-            s += 3 * title.count(t) + 2 * tags.count(t) + min(body.count(t), 5)
+        s = sum(3 * title.count(t) + 2 * tags.count(t) + min(body.count(t), 5) for t in terms)
         if s > 0:
-            scored.append((s, n))
-    scored.sort(key=lambda x: -x[0])
-    return scored[:limit]
+            scores[n["path"]] = [float(s), n]
+    if expand and scores:           # 고수준: 링크·태그 그래프 확장
+        for base, n in sorted(scores.values(), key=lambda x: -x[0])[:3]:
+            for link in LINK_RE.findall(n.get("body", "")):
+                tgt = by_key.get(link.lower().strip())
+                if tgt is not None and tgt["path"] != n["path"]:
+                    hit = scores.setdefault(tgt["path"], [0.0, tgt])
+                    hit[0] = max(hit[0], base * 0.4)          # 링크된 노트
+            ntags = set(n.get("tags", []))
+            if ntags:
+                for m in notes:
+                    shared = ntags & set(m.get("tags", []))
+                    if shared and m["path"] != n["path"]:
+                        hit = scores.setdefault(m["path"], [0.0, m])
+                        hit[0] = max(hit[0], base * 0.25 * len(shared))   # 공유 태그
+    out = sorted(scores.values(), key=lambda x: -x[0])
+    return [(sc, n) for sc, n in out[:limit]]
 
 
 def lint(cfg: Config) -> list[str]:
