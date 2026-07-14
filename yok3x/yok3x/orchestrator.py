@@ -509,11 +509,11 @@ class Orchestrator:
         out = self.run_dir / "final_output.md"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         out.write_text(final_output or "(출력 없음)", encoding="utf-8")
-        # brief.md 갱신(글자 제한) + knot에 런 요약 저장 → 에이전트 간 기억 공유
-        knot.write_brief(self.cfg, f"# brief.md\n\n최근 런 {self.run_id}\n작업: {task}\n"
-                                   f"결과 요약: {final_output[:400]}")
-        # Mem0식 요점 저장: 원문 전체 대신 결론 신호(SELF-CHECK·SCORE·결정 등)만 응축해 knot에 저장
-        # → 지식그물이 비대·중복해지는 것을 억제(새 LLM 호출 없이 워커가 낸 구조 재사용).
+        # 주의: brief.md에 런 '출력'을 덮어쓰지 않는다. 과거엔 그렇게 했다가, 다음 런 프롬프트에
+        # brief.md가 주입돼 워커가 직전 실패 출력("빈 작업입니다")을 그대로 따라하는 자기오염
+        # 피드백 루프가 생겼다. brief.md는 사용자 작업 컨텍스트 전용(수동)으로 둔다.
+        # Mem0식 요점 저장: 결론 신호(SELF-CHECK·SCORE·결정 등)만 응축해 knot에 이력으로 저장.
+        # source="orchestrator" 런 노트는 이력·검색용이며 프롬프트에는 주입하지 않는다(context_for_prompt).
         key_points = knot.extract_key_points(final_output)
         knot.save(self.cfg, f"run-{self.run_id}",
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",

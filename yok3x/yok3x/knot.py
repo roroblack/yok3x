@@ -174,12 +174,15 @@ def query(cfg: Config, q: str, limit: int = 5, expand: bool = True) -> list[tupl
 
 
 def lint(cfg: Config) -> list[str]:
-    """frontmatter 누락 필드·깨진 [[위키링크]] 점검."""
+    """frontmatter 누락 필드·깨진 [[위키링크]] 점검. 자동 저장된 런 노트(source=orchestrator)는
+    사용자 큐레이션 대상이 아니라 이력이므로 lint에서 제외한다(워커 출력의 [[..]]는 실제 링크가
+    아닌 텍스트라 깨진 링크로 오탐되던 문제)."""
     issues: list[str] = []
     notes = _load_notes(cfg)
     titles = {str(n.get("title", "")).lower() for n in notes}
     stems = {n["path"].stem.lower() for n in notes}
-    for n in notes:
+    curated = [n for n in notes if n.get("source") != "orchestrator"]
+    for n in curated:
         rel = n["path"].name
         for field in ("id", "title", "created"):
             if field not in n:
@@ -190,18 +193,21 @@ def lint(cfg: Config) -> list[str]:
                 issues.append(f"{rel}: 깨진 링크 [[{link}]]")
     # 중복 통합(Mem0식): 유사도 임계 이상인 노트 쌍을 병합 후보로 표시(임베딩 없이 태그·링크·제목).
     thr = float((cfg.yok3x.get("knot") or {}).get("dedup_threshold", 0.6) or 0.6)
-    for i in range(len(notes)):
-        for j in range(i + 1, len(notes)):
-            sim = _similarity(notes[i], notes[j])
+    for i in range(len(curated)):                    # 런 노트 제외 — 자동 이력은 중복이 정상
+        for j in range(i + 1, len(curated)):
+            sim = _similarity(curated[i], curated[j])
             if sim >= thr:
-                issues.append(f"{notes[i]['path'].name} ~ {notes[j]['path'].name}: "
+                issues.append(f"{curated[i]['path'].name} ~ {curated[j]['path'].name}: "
                               f"중복 후보(유사도 {sim:.0%}) — 통합 검토")
     return issues
 
 
 def context_for_prompt(cfg: Config, task: str, limit: int = 3) -> str:
-    """작업과 관련된 노트를 프롬프트에 주입할 블록으로 만든다."""
-    hits = query(cfg, task, limit=limit)
+    """작업과 관련된 '사용자 큐레이션' 노트를 프롬프트에 주입할 블록으로 만든다.
+    자동 저장된 런 노트(source=orchestrator)는 주입하지 않는다 — 직전 실패 출력이 다음 런에
+    주입돼 워커가 그대로 따라하는 자기오염 루프를 막기 위함(이력·검색용으로는 knot에 남아 있음)."""
+    hits = [(s, n) for s, n in query(cfg, task, limit=limit * 3)
+            if n.get("source") != "orchestrator"][:limit]
     if not hits:
         return ""
     parts = ["## 공유 기억(knot)"]

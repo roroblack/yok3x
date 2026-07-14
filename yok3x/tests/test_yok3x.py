@@ -555,6 +555,38 @@ def test_knot_extract_key_points():
     assert "SCORE: 8" in kp and "SELF-CHECK: 통과" in kp and "랜덤 문장" not in kp
 
 
+# -------------------------------------- 자기오염 루프 방지(계산기 실패 회귀)
+def test_finish_does_not_overwrite_brief(mock_root):
+    # 런 산출물이 brief.md에 덮여 다음 런 프롬프트를 오염시키던 루프 차단 — _finish는 brief.md를 안 쓴다.
+    cfg = Config.load(mock_root)
+    (cfg.paths.root / "brief.md").unlink(missing_ok=True)
+    tf = mock_root / "t.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "계산기 만들어줘",
+                              "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1},
+                             ensure_ascii=False), encoding="utf-8")
+    run_task_file(cfg, tf, auto=True)
+    assert not (cfg.paths.root / "brief.md").exists()          # 런 출력이 brief.md로 새지 않음
+
+
+def test_context_for_prompt_excludes_run_notes(mock_root):
+    from yok3x import knot
+    cfg = Config.load(mock_root)
+    knot.save(cfg, "run-abc", "작업: 옛날 실패\n요점: 빈 작업입니다", tags=["run"], source="orchestrator")
+    knot.save(cfg, "슬러그 규칙", "슬러그는 소문자·하이픈", tags=["note"], source="user")
+    out = knot.context_for_prompt(cfg, "빈 작업 슬러그")
+    assert "빈 작업입니다" not in out                          # 자동 런 노트는 주입 안 함
+    assert "run-abc" not in out
+
+
+def test_lint_skips_orchestrator_notes(mock_root):
+    from yok3x import knot
+    cfg = Config.load(mock_root)
+    knot.save(cfg, "run-xyz", "요점: [[csv-stream]] 참고", tags=["run"], source="orchestrator")
+    assert not [i for i in knot.lint(cfg) if "깨진 링크" in i]  # 런 노트의 [[..]]는 오탐 안 함
+    knot.save(cfg, "내 노트", "[[없는링크]] 참조", tags=["note"], source="user")
+    assert [i for i in knot.lint(cfg) if "깨진 링크" in i]      # 사용자 노트는 여전히 검사
+
+
 # -------------------------------------- run_id 충돌 방지(마이크로초)
 def test_run_id_includes_microseconds(mock_root):
     import re
