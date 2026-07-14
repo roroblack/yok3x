@@ -77,7 +77,7 @@ DEFAULT_YOK3X = {
         # 라이브 7d가 있는 backend(claude/codex)에 적용. opt-in.
         "daily_pace": {
             "enabled": False,               # 켜면 하루 소비 캡 적용
-            "pct_of_weekly": 0.2,           # 하루 상한 = 주간쿼터의 20%p
+            "pct_of_weekly": 0.14,          # 하루 상한 = 주간쿼터의 14%p(≈1/7, 균등 페이싱)
             "soft_frac": 0.8,               # 캡의 80%에서 경고(그 이상은 mode에 따름)
             "mode": "warn",                 # warn(경고만) | pause(정지 후 승인 재개)
             "backends": {}                  # 백엔드별 override 예: {"claude":{"pct_of_weekly":0.15}}

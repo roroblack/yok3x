@@ -81,11 +81,18 @@ def build_state(cfg: Config) -> dict:
         t = totals.get(b, {"usd": 0, "tokens": 0, "calls": 0})
         wins = [{"name": w.name, "used_percent": round(w.used_percent, 1),
                  "reset": w.reset_in()} for w in (v.reading.windows if v.reading else [])]
+        pace = None
+        if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
+            ps = usage.daily_pace_status(cfg, b, usage._weekly_pct(v.reading))
+            if ps:
+                pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
+                        "level": ps["level"], "blocked": ps["blocked"], "approved": ps["approved"]}
         tools.append({
             "backend": b, "level": v.level, "ratio": round(v.ratio, 3),
             "source": v.source, "real": v.real, "detail": v.detail,
             "windows": wins, "calls": t.get("calls", 0),
             "usd": round(t.get("usd", 0), 2), "tokens": t.get("tokens", 0),
+            "pace": pace,
         })
     g = cfg.yok3x["guard"]
     workers = {name: {"backend": w.get("backend"), "role": w.get("role", ""),
@@ -106,7 +113,10 @@ def build_state(cfg: Config) -> dict:
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
                   "failover": bool((g.get("degrade") or {}).get("failover_enabled", False)),
-                  "offline": bool((g.get("degrade") or {}).get("offline_enabled", True))},
+                  "offline": bool((g.get("degrade") or {}).get("offline_enabled", True)),
+                  "pace": {"enabled": bool((g.get("daily_pace") or {}).get("enabled", False)),
+                           "cap_pct": round(float((g.get("daily_pace") or {}).get("pct_of_weekly", 0.14)) * 100),
+                           "mode": (g.get("daily_pace") or {}).get("mode", "warn")}},
         "coach": usage.coach_messages(cfg),
         "runs": _recent_runs(cfg),
         "tools": tools,

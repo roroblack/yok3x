@@ -265,48 +265,57 @@ def test_effort_passthrough_argv(monkeypatch):
     assert cap["c"] == ["claude", "-p"]
 
 
-def test_daily_pace_snapshot_delta_and_levels(tmp_path):
-    # 하루 페이싱: 아침 스냅샷 대비 델타 = 오늘 소비. soft/cap 경계와 자정 리셋.
+def test_daily_pace_accumulate_delta_and_levels(tmp_path):
+    # 하루 페이싱: 첫 관측 이후 7d%의 양의 증분 누적 = 오늘 소비. soft/cap 경계와 자정 리셋.
     cfg = Config.load(tmp_path)
     cfg.yok3x["guard"]["daily_pace"].update(enabled=True, pct_of_weekly=0.2, soft_frac=0.8, mode="warn")
-    s = usage.daily_pace_status(cfg, "claude", 30.0, today="2026-07-14")   # 아침 스냅샷
-    assert s["day_start"] == 30.0 and s["used"] == 0.0 and s["level"] == "ok"
-    assert usage.daily_pace_status(cfg, "claude", 40.0, today="2026-07-14")["level"] == "ok"   # 10%p
-    assert usage.daily_pace_status(cfg, "claude", 47.0, today="2026-07-14")["level"] == "warn"  # 17≥soft16
-    over = usage.daily_pace_status(cfg, "claude", 52.0, today="2026-07-14")                     # 22≥cap20
+    assert usage.daily_pace_status(cfg, "claude", 30.0, today="2026-07-14")["used"] == 0.0     # 첫 관측
+    assert usage.daily_pace_status(cfg, "claude", 40.0, today="2026-07-14")["level"] == "ok"   # +10
+    assert usage.daily_pace_status(cfg, "claude", 47.0, today="2026-07-14")["level"] == "warn"  # 누적17≥soft16
+    over = usage.daily_pace_status(cfg, "claude", 52.0, today="2026-07-14")                     # 누적22≥cap20
     assert over["used"] >= over["cap"] and over["level"] == "warn"        # mode=warn → 정지 아님
-    nxt = usage.daily_pace_status(cfg, "claude", 52.0, today="2026-07-15")  # 다음 날 → 스냅샷 리셋
-    assert nxt["day_start"] == 52.0 and nxt["used"] == 0.0 and nxt["level"] == "ok"
+    nxt = usage.daily_pace_status(cfg, "claude", 52.0, today="2026-07-15")  # 다음 날 → 리셋
+    assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
-def test_daily_pace_pause_and_approve(tmp_path):
-    # mode=pause → 캡 도달 시 stop, 승인하면 오늘 하루 해제, 다음 날 override 무효.
-    cfg = Config.load(tmp_path)
-    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, pct_of_weekly=0.2, soft_frac=0.8, mode="pause")
-    usage.daily_pace_status(cfg, "codex", 10.0, today="2026-07-14")        # 아침 10
-    s = usage.daily_pace_status(cfg, "codex", 35.0, today="2026-07-14")    # 25%p ≥ cap20
-    assert s["level"] == "stop" and not s["approved"]
-    usage.pace_approve(cfg, "codex", today="2026-07-14")
-    s = usage.daily_pace_status(cfg, "codex", 35.0, today="2026-07-14")
-    assert s["approved"] and s["level"] == "ok"                            # 승인 → 해제
-    usage.daily_pace_status(cfg, "codex", 10.0, today="2026-07-15")        # 새 날 아침 10
-    s2 = usage.daily_pace_status(cfg, "codex", 35.0, today="2026-07-15")
-    assert not s2["approved"] and s2["level"] == "stop"                    # 어제 승인 → 무효
-
-
-def test_check_backend_merges_daily_pace(tmp_path, monkeypatch):
-    # 절대 5h/7d로는 ok라도, 하루 페이싱 캡 초과면 check_backend가 stop(metric=daily_pace).
+def test_daily_pace_sticky_block_survives_rolloff_and_probe_fail(tmp_path, monkeypatch):
+    # codex 리뷰 반영: pause는 cap 도달 후 값이 낮아져도(롤오프) 자동 재개 안 함(sticky). 승인/자정만 해제.
     import datetime as _dt
     cfg = Config.load(tmp_path)
     cfg.yok3x["guard"]["daily_pace"].update(enabled=True, pct_of_weekly=0.1, soft_frac=0.8, mode="pause")
     today = _dt.datetime.now().strftime("%Y-%m-%d")
-    usage._save_pace(cfg, {"claude": {"date": today, "day_start_pct": 40.0}})   # 아침 40%
+    usage.daily_pace_status(cfg, "codex", 20.0, today=today)              # 첫 관측
+    s = usage.daily_pace_status(cfg, "codex", 32.0, today=today)          # +12 ≥ cap10 → blocked
+    assert s["blocked"] and s["level"] == "stop"
+    s2 = usage.daily_pace_status(cfg, "codex", 25.0, today=today)         # 롤오프 하락 → 그래도 정지 유지
+    assert s2["blocked"] and s2["level"] == "stop"
+    assert usage.pace_block_active(cfg, "codex", today=today) is True     # probe 실패 경로에서도 정지
+    usage.pace_approve(cfg, "codex", today=today)                         # 승인
+    assert usage.pace_block_active(cfg, "codex", today=today) is False
+    assert usage.daily_pace_status(cfg, "codex", 40.0, today=today)["level"] == "ok"
+
+
+def test_daily_pace_only_on_real_and_ledger_block(tmp_path, monkeypatch):
+    # 추정치(real=False)로는 페이싱 정지 안 함. probe 실패해도 저장된 sticky block이면 stop 유지.
+    import datetime as _dt
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, pct_of_weekly=0.1, mode="pause")
+    today = _dt.datetime.now().strftime("%Y-%m-%d")
+    # 추정 reading(real=False)에 7d 높아도 페이싱 미적용 → daily_pace로 stop 아님
     W = limits.Window
-    reading = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
-                                  windows=[W("5h", 5.0), W("7d", 52.0)], detail="d")   # 절대는 ok
-    monkeypatch.setattr(limits, "probe", lambda c, b, use_cache=True: reading)
-    v = usage.check_backend(cfg, "claude")
-    assert v.level == "stop" and v.metric == "daily_pace"                  # 오늘 12%p ≥ cap10 → pause stop
+    est = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                              windows=[W("5h", 5.0), W("7d", 50.0)], detail="추정")
+    monkeypatch.setattr(limits, "probe", lambda c, b, use_cache=True: est)
+    usage._save_pace(cfg, {"claude": {"date": today, "start_pct": 40.0, "last_pct": 40.0,
+                                      "used_today": 0.0, "blocked": False}})
+    assert usage.check_backend(cfg, "claude").metric != "daily_pace"      # 추정치 → 페이싱 미적용
+    # probe 실패 + 저장된 blocked → stop 유지(codex 리뷰 #4)
+    fail = limits.LimitReading("codex", "codex_appserver", ok=False, real=False, error="fail")
+    monkeypatch.setattr(limits, "probe", lambda c, b, use_cache=True: fail)
+    usage._save_pace(cfg, {"codex": {"date": today, "start_pct": 0.0, "last_pct": 15.0,
+                                     "used_today": 15.0, "blocked": True}})
+    v = usage.check_backend(cfg, "codex")
+    assert v.level == "stop" and v.metric == "daily_pace"
 
 
 def test_p3_offline_failover(monkeypatch, tmp_path):

@@ -323,6 +323,26 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       <div class="note">codex는 app-server가 plan 자동 감지 · gemini는 원장 예산.</div>
     </div>
     <div class="panel">
+      <h2><span class="ic"></span> 하루 페이싱 <span class="sub" style="font-weight:400">— 주간쿼터를 하루 단위로</span></h2>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="swpace" class="switch off" onclick="togglePace()" title="on: 하루에 주간(7d)쿼터의 상한%만큼 쓰면 경고/정지. 롤링 7d 실측 기준(claude·codex)."></div>
+        <b id="pacetext" style="font-size:12px">OFF</b>
+        <span class="sub" style="margin:0">하루에 주간쿼터의 일부만 쓰도록 속도 제한(실측 7d 기준)</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div><label class="f">하루 상한 <b id="pacecapval">14</b>%p</label>
+          <input type="range" id="pacecap" min="2" max="50" value="14" style="width:100%"
+                 oninput="document.getElementById('pacecapval').textContent=this.value" onchange="savePace()"></div>
+        <div><label class="f">도달 시 동작</label>
+          <div class="seg" id="pacemodeseg">
+            <button data-pm="warn" onclick="savePace('warn')">경고만</button>
+            <button data-pm="pause" onclick="savePace('pause')">정지+승인</button>
+          </div></div>
+      </div>
+      <div id="pace-status" style="margin-top:8px"></div>
+      <div class="note">14%p ≈ 주간의 1/7(균등). ‘정지+승인’은 캡 도달 시 루프를 멈추고, 각 도구의 <b>재개 승인</b> 버튼(또는 <code>yok3x pace approve &lt;backend&gt;</code>)으로 그날만 재개. 자정 자동 리셋. 절대 5h/7d 한도는 계속 유효.</div>
+    </div>
+    <div class="panel">
       <h2><span class="ic"></span> 워커</h2>
       <div class="row">
         <div class="tool" style="background:var(--panel)"><b>claude-main</b><div class="sub" style="margin:2px 0 0">구현 · <span class="mono">claude</span></div></div>
@@ -473,6 +493,14 @@ function render(s){
   const swof=document.getElementById("swof");
   if(swof){const of=!!(s.guard&&s.guard.offline);
     swof.classList.toggle("off",!of); document.getElementById("oftext").textContent=of?"ON":"OFF";}
+  // 하루 페이싱 동기화
+  const pc=(s.guard&&s.guard.pace)||{};
+  const swp=document.getElementById("swpace");
+  if(swp){swp.classList.toggle("off",!pc.enabled); document.getElementById("pacetext").textContent=pc.enabled?"ON":"OFF";}
+  const pcr=document.getElementById("pacecap");
+  if(pcr && document.activeElement!==pcr && pc.cap_pct){pcr.value=pc.cap_pct;document.getElementById("pacecapval").textContent=pcr.value;}
+  document.querySelectorAll('#pacemodeseg button').forEach(b=>b.classList.toggle('on',b.dataset.pm===(pc.mode||"warn")));
+  renderPaceStatus(s);
   // 설정탭 슬라이더·요금제 동기화(입력 중이 아니면)
   const sr=document.getElementById("softr"), hr=document.getElementById("hardr");
   if(sr && document.activeElement!==sr){sr.value=Math.round((s.guard.soft||.8)*100);document.getElementById("softval").textContent=sr.value;}
@@ -555,6 +583,37 @@ function pickModel(sel){
 async function saveGuardRatios(){
   const soft=(+document.getElementById("softr").value)/100, hard=(+document.getElementById("hardr").value)/100;
   try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soft_ratio:soft,hard_ratio:hard})});load();}catch(e){}
+}
+async function togglePace(){
+  const turnOn=document.getElementById("swpace").classList.contains("off");
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({daily_pace:{enabled:turnOn}})});
+    if(r.ok){document.getElementById("swpace").classList.toggle("off",!turnOn);document.getElementById("pacetext").textContent=turnOn?"ON":"OFF";}
+    load();}catch(e){}
+}
+async function savePace(mode){
+  const body={daily_pace:{pct_of_weekly:(+document.getElementById("pacecap").value)/100}};
+  if(mode) body.daily_pace.mode=mode;
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await r.json(); if(!r.ok){alert("페이싱 설정 실패: "+(j.error||r.status));}
+    load();}catch(e){}
+}
+async function paceApprove(b){
+  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pace_approve:b})});load();}catch(e){}
+}
+function renderPaceStatus(s){
+  const el=document.getElementById("pace-status"); if(!el) return;
+  const pc=(s.guard&&s.guard.pace)||{};
+  if(!pc.enabled){el.innerHTML='<span class="sub" style="opacity:.55">off — 켜면 도구별 오늘 소비/캡이 여기 표시됩니다</span>';return;}
+  const rows=(s.tools||[]).map(t=>{
+    if(!t.pace) return `<div class="sub" style="opacity:.55">${EMOJI[t.backend]||"⬤"} ${t.backend}: 실측 7d 없음(페이싱 미적용)</div>`;
+    const p=t.pace, pct=Math.min(100,Math.round(p.used/(p.cap||1)*100));
+    const col=p.level==="stop"?"var(--red)":p.level==="warn"?"var(--yellow)":"var(--green)";
+    const btn=(p.blocked&&!p.approved)?` <button onclick="paceApprove('${t.backend}')" style="font-size:11px;padding:2px 8px">오늘 재개 승인</button>`:"";
+    const tag=p.approved?" <span class='sub'>(오늘 승인됨)</span>":p.blocked?" <span class='sub' style='color:var(--red)'>(정지)</span>":"";
+    return `<div style="margin:3px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}${tag}</span><span class="mono">${p.used}/${p.cap}%p</span></div>
+      <div style="height:7px;border:2px solid var(--ink);border-radius:6px;overflow:hidden;background:var(--panel)"><div style="height:100%;width:${pct}%;background:${col}"></div></div>${btn}</div>`;
+  }).join("");
+  el.innerHTML=rows;
 }
 async function savePlan(p){
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan:p})});

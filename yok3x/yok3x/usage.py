@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import time
 import urllib.request
@@ -132,69 +133,137 @@ _SEVERITY = {"ok": 0, "warn": 1, "stop": 2}
 
 
 def _pace_cfg(cfg: Config, backend: str) -> dict:
-    """전역 daily_pace + 백엔드별 override 병합."""
+    """전역 daily_pace + 백엔드별 override 병합 + 값 검증/클램프(파일에서 온 잘못된 값 방어)."""
     dp = dict((cfg.yok3x.get("guard") or {}).get("daily_pace") or {})
     bo = (dp.get("backends") or {}).get(backend)
     if isinstance(bo, dict):
         dp.update(bo)
+    try:
+        pct = float(dp.get("pct_of_weekly", 0.14))
+    except (TypeError, ValueError):
+        pct = 0.14
+    dp["pct_of_weekly"] = min(1.0, max(0.01, pct)) if math.isfinite(pct) else 0.14
+    try:
+        sf = float(dp.get("soft_frac", 0.8))
+    except (TypeError, ValueError):
+        sf = 0.8
+    dp["soft_frac"] = min(0.99, max(0.0, sf)) if math.isfinite(sf) else 0.8
+    if dp.get("mode") not in ("warn", "pause"):
+        dp["mode"] = "warn"
     return dp
 
 
 def _weekly_pct(reading: "limits.LimitReading | None") -> float | None:
-    """실측 reading에서 주간(7d) 창의 used_percent. 없으면 None(페이싱 판정 불가)."""
-    for w in getattr(reading, "windows", None) or []:
-        if str(w.name).startswith("7d"):
-            return float(w.used_percent)
-    return None
+    """실측 reading의 주간(7d) '집계' 창 used_percent. 정확히 '7d' 우선, 없으면 7d 접두 최대."""
+    wins = getattr(reading, "windows", None) or []
+    exact = [float(w.used_percent) for w in wins if str(w.name) == "7d"]
+    if exact:
+        return exact[0]
+    pref = [float(w.used_percent) for w in wins if str(w.name).startswith("7d")]
+    return max(pref) if pref else None
+
+
+def _pace_file(cfg: Config) -> Path:
+    return cfg.paths.yok3x_dir / "pace.json"
 
 
 def _load_pace(cfg: Config) -> dict:
-    p = cfg.paths.yok3x_dir / "pace.json"
+    p = _pace_file(cfg)
     try:
-        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except Exception:
+        if not p.exists():
+            return {}
+        d = json.loads(p.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        # 손상 파일: 조용히 {}로 리셋하면 기준점이 사라져 cap 우회 가능 → 백업만 남기고 빈 상태.
+        try:
+            p.replace(p.with_suffix(".json.corrupt"))
+        except OSError:
+            pass
         return {}
 
 
 def _save_pace(cfg: Config, state: dict) -> None:
     cfg.ensure_dirs()
-    (cfg.paths.yok3x_dir / "pace.json").write_text(
-        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    p = _pace_file(cfg)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)   # 원자적 교체(같은 볼륨) — torn write로 인한 상태 유실 방지
 
 
 def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
                       today: str | None = None) -> dict | None:
-    """하루 페이싱 상태. current_pct=현재 7d used_percent. enabled off / 7d 없으면 None.
-    '오늘 소비 = 현재 7d% − 그날 아침 스냅샷'을 캡(pct_of_weekly·100)과 비교해 level 산출."""
+    """하루 페이싱 상태. current_pct=현재 7d used_percent(실측). enabled off / 7d 없으면 None.
+    오늘소비 = '첫 관측 이후 7d%의 양의 증분 누적'(롤오프 상쇄 완화). pause 모드는 cap 도달 시
+    blocked를 저장해 값이 낮아져도 자동 재개하지 않고 승인/자정까지 정지 유지."""
     dp = _pace_cfg(cfg, backend)
     if not dp.get("enabled") or current_pct is None:
         return None
+    try:
+        current = float(current_pct)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(current):
+        return None
     today = today or datetime.now().strftime("%Y-%m-%d")
+    cap = dp["pct_of_weekly"] * 100.0
+    soft = cap * dp["soft_frac"]
+    mode = dp["mode"]
     st = _load_pace(cfg)
-    rec = st.get(backend) or {}
-    if rec.get("date") != today:                 # 새 날 → 아침 스냅샷 저장(자정 자동 리셋)
-        rec = {"date": today, "day_start_pct": float(current_pct)}
+    rec = st.get(backend) if isinstance(st.get(backend), dict) else {}
+    changed = False
+    if rec.get("date") != today:                 # 새 날 → 기준 초기화(자정 자동 리셋)
+        rec = {"date": today, "start_pct": current, "last_pct": current,
+               "used_today": 0.0, "blocked": False}
+        changed = True
+    else:
+        last = float(rec.get("last_pct", current))
+        delta = current - last
+        if delta > 0:                            # 양의 증분만 누적
+            rec["used_today"] = float(rec.get("used_today", 0.0)) + delta
+            changed = True
+        if rec.get("last_pct") != current:
+            rec["last_pct"] = current
+            changed = True
+    used = float(rec.get("used_today", 0.0))
+    if mode == "pause" and used >= cap and not rec.get("blocked"):
+        rec["blocked"] = True                    # sticky: 그날은 정지 유지
+        changed = True
+    blocked = bool(rec.get("blocked"))
+    if changed:
         st[backend] = rec
         _save_pace(cfg, st)
-    day_start = float(rec.get("day_start_pct", current_pct))
-    used = max(0.0, float(current_pct) - day_start)   # 롤링창 롤오프로 음수 가능 → 0 하한
-    cap = float(dp.get("pct_of_weekly", 0.2)) * 100.0
-    soft = cap * float(dp.get("soft_frac", 0.8))
-    mode = dp.get("mode", "warn")
     ovr = (cfg.yok3x.get("guard") or {}).get("daily_pace_override") or {}
     approved = ovr.get(backend) == today
-    if used >= cap:
-        level = "ok" if approved else ("stop" if mode == "pause" else "warn")
+    if approved:                                 # 승인된 날: 페이싱 판정 전체 우회(soft 포함)
+        level = "ok"
+    elif mode == "pause" and blocked:
+        level = "stop"
+    elif used >= cap:
+        level = "stop" if mode == "pause" else "warn"
     elif used >= soft:
         level = "warn"
     else:
         level = "ok"
-    return {"used": used, "cap": cap, "soft": soft, "day_start": day_start,
-            "current": float(current_pct), "level": level, "mode": mode, "approved": approved}
+    return {"used": used, "cap": cap, "soft": soft, "blocked": blocked,
+            "current": current, "level": level, "mode": mode, "approved": approved}
+
+
+def pace_block_active(cfg: Config, backend: str, today: str | None = None) -> bool:
+    """저장된 sticky pause 정지가 오늘 유효한가(probe 실패 중에도 정지 유지). 승인/자정 전까지 True."""
+    dp = _pace_cfg(cfg, backend)
+    if not dp.get("enabled") or dp.get("mode") != "pause":
+        return False
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    rec = _load_pace(cfg).get(backend)
+    if not isinstance(rec, dict) or rec.get("date") != today or not rec.get("blocked"):
+        return False
+    ovr = (cfg.yok3x.get("guard") or {}).get("daily_pace_override") or {}
+    return ovr.get(backend) != today
 
 
 def pace_approve(cfg: Config, backend: str, today: str | None = None) -> None:
-    """하루 페이싱 정지를 '오늘 하루' 해제(승인 재개). config 저장은 호출부 책임."""
+    """하루 페이싱 정지를 '오늘 하루' 해제(승인 재개). override가 그날의 판정을 우선한다."""
     today = today or datetime.now().strftime("%Y-%m-%d")
     cfg.yok3x.setdefault("guard", {}).setdefault("daily_pace_override", {})[backend] = today
 
@@ -217,14 +286,17 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
             if not reading.real and level == "stop" and ratio > 3.0:
                 level = "warn"
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
-            # 하루 페이싱(주간쿼터의 하루 소비 캡) — 절대 5h/7d 한도에 '덧붙여' 더 빡빡하면 채택.
-            pace = daily_pace_status(cfg, backend, _weekly_pct(reading))
-            if pace and _SEVERITY[pace["level"]] > _SEVERITY[level]:
-                level = pace["level"]
-                metric = "daily_pace"
-                tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
-                        + ("(승인됨)" if pace["approved"] else
-                           "(승인 필요)" if pace["mode"] == "pause" and pace["used"] >= pace["cap"] else ""))
+            # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
+            if reading.real:
+                pace = daily_pace_status(cfg, backend, _weekly_pct(reading))
+                if pace and pace["level"] != "ok":
+                    tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
+                            + ("(승인 필요)" if pace["level"] == "stop" else ""))   # 동일 severity라도 표시
+                    if _SEVERITY[pace["level"]] > _SEVERITY[level]:
+                        level = pace["level"]
+                        metric = "daily_pace"
+                        if pace["cap"]:
+                            ratio = min(pace["used"] / pace["cap"], 9.99)   # UI 오해 방지: pace 비율로
             return GuardVerdict(backend, ratio, metric, level,
                                 reading.detail + tag, source=reading.source,
                                 real=reading.real, reading=reading)
@@ -237,7 +309,11 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
                                     source=reading.source, real=False, reading=reading)
             # policy == "ledger"(기본) 또는 "allow" → 아래 원장 폴백으로
 
-    # 2) 원장(자체 일일 예산) 폴백
+    # 2) 원장 폴백 — 단, 하루 페이싱 sticky 정지가 걸려 있으면 측정 실패 중에도 정지 유지(승인/자정 전까지).
+    if g.get("enabled", True) and pace_block_active(cfg, backend):
+        return GuardVerdict(backend, 1.0, "daily_pace", "stop",
+                            "하루 페이싱 정지 유지(측정 실패 중) — `yok3x pace approve`로 오늘 재개",
+                            source="ledger")
     return _check_backend_ledger(cfg, backend)
 
 
