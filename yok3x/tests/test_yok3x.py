@@ -113,6 +113,34 @@ def test_inline_spec_label_defaults_untitled(mock_root):
     assert _recent_runs(cfg, 10)[0]["label"] == ""                      # 무제목(빈 라벨)
 
 
+# ----------------------------------------------- GUI 작업(task) CRUD
+def test_task_crud_save_load_delete(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "슬러그 함수 구현",
+            "producer": "claude-main", "reviewer": "codex-critic"}
+    r = gs._save_task(cfg, "슬러그 함수", spec)                     # 한글 이름 → 유니코드 slug
+    assert r["ok"] and r["name"] == "task-슬러그-함수.json"
+    assert r["name"] in gs._list_tasks(cfg)                        # 목록에 등장
+    loaded = gs._load_task(cfg, r["name"])
+    assert loaded["ok"] and loaded["spec"]["task"] == "슬러그 함수 구현"
+    assert loaded["spec"]["label"] == "슬러그 함수"                 # 라벨=이름(작업별 콘솔 연동)
+    assert gs._delete_task(cfg, r["name"])["ok"]
+    assert r["name"] not in gs._list_tasks(cfg)                    # 삭제됨
+
+
+def test_task_crud_rejects_path_traversal_and_bad_spec(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    assert gs._task_path(cfg, "../evil.json") is None             # 경로순회 차단
+    assert gs._task_path(cfg, "task-a/b.json") is None            # 슬래시 차단
+    assert gs._task_path(cfg, "notes.json") is None               # task- 접두 아님
+    assert "error" in gs._save_task(cfg, "빈작업", {"pattern": "producer-reviewer", "task": ""})  # 빈 task
+    assert "error" in gs._save_task(cfg, "잘못패턴", {"pattern": "bad", "task": "x"})              # 잘못된 pattern
+    assert "error" in gs._save_task(cfg, "!!!", {"pattern": "producer-reviewer", "task": "x"})     # slug 빈값
+    assert "error" in gs._load_task(cfg, "task-없는것.json")       # 없는 작업
+
+
 # ----------------------------------------------------------------- 가드 자동 정지
 def test_guard_stops_when_ledger_budget_exceeded(mock_root):
     cfg = Config.load(mock_root)

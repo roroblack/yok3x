@@ -256,8 +256,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
             <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · context_globs/rubric은 task.json 편집.</div>
           </details>
           <div class="ci-row" style="margin-top:9px;border-top:2px dashed rgba(31,30,26,.18);padding-top:9px">
-            <label>등록 태스크 <select id="c-regtask"></select></label>
-            <button class="btn" onclick="runRegistered()">실행</button>
+            <button class="btn" onclick="saveTask()" title="현재 폼(패턴·목표·워커·라벨)을 이름 붙여 저장. 이름=라벨 필드">💾 작업 저장</button>
+            <label>저장된 작업 <select id="c-regtask"></select></label>
+            <button class="btn" onclick="runRegistered()" title="선택한 작업 실행">▶ 실행</button>
+            <button class="btn" onclick="openTask()" title="선택한 작업을 폼으로 불러오기(편집)">열기</button>
+            <button class="btn" onclick="deleteTask()" title="선택한 작업 삭제">🗑</button>
             <span class="sub" id="c-runmsg" style="margin:0"></span>
           </div>
         </div>
@@ -724,21 +727,60 @@ function renderConsoleLog(s){
   if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
-async function sendTask(){
+function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목표 비면 null.
   const task=document.getElementById("c-task").value.trim();
-  if(!task){document.getElementById("c-runmsg").textContent="목표를 입력하라";return;}
+  if(!task){document.getElementById("c-runmsg").textContent="목표를 입력하라";return null;}
   const pat=activePattern(), prod=document.getElementById("c-producer").value, rev=document.getElementById("c-reviewer").value;
   const rounds=parseInt(document.getElementById("c-rounds").value)||2, score=parseFloat(document.getElementById("c-score").value)||8.0;
-  const iters=Math.max(1,parseInt(document.getElementById("c-iters").value)||1);
   const wd=document.getElementById("c-workdir").value.trim(), vf=document.getElementById("c-verify").value.trim();
   let spec;
   if(pat==="pipeline") spec={pattern:"pipeline",task,stages:[{worker:prod,kind:"build",task},{worker:rev,kind:"review",task:"앞 단계 산출물을 리뷰하고 SCORE와 수정안을 제시하라."}]};
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
-  spec.label=document.getElementById("c-label").value.trim();   // 작업별 콘솔 그룹 라벨(선택)
+  spec.label=document.getElementById("c-label").value.trim();
+  return spec;
+}
+async function sendTask(){
+  const spec=buildSpec(); if(!spec) return;
+  const iters=Math.max(1,parseInt(document.getElementById("c-iters").value)||1);
   await postRun({spec,iterations:iters},"c-runmsg");
   document.getElementById("c-task").value="";
+}
+async function saveTask(){
+  const spec=buildSpec(); if(!spec) return;
+  let name=document.getElementById("c-label").value.trim();
+  if(!name){name=(prompt("작업 이름(=라벨):","")||"").trim(); if(!name)return; document.getElementById("c-label").value=name; spec.label=name;}
+  try{const r=await fetch("/api/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,spec})});
+    const j=await r.json();
+    document.getElementById("c-runmsg").textContent=r.ok?("저장됨 ✓ "+j.name):("실패: "+(j.error||r.status));
+    load();}catch(e){document.getElementById("c-runmsg").textContent="요청 실패(`yok3x gui`로 실행)";}
+}
+async function openTask(){
+  const name=document.getElementById("c-regtask").value; if(!name||name==="(없음)")return;
+  try{const r=await fetch("/api/task?name="+encodeURIComponent(name)); const j=await r.json();
+    if(!r.ok){document.getElementById("c-runmsg").textContent="열기 실패: "+(j.error||r.status);return;}
+    const s=j.spec||{};
+    document.getElementById("c-task").value=s.task||"";
+    document.getElementById("c-label").value=s.label||"";
+    if(s.producer)document.getElementById("c-producer").value=s.producer;
+    if(s.reviewer)document.getElementById("c-reviewer").value=s.reviewer;
+    if(s.max_rounds)document.getElementById("c-rounds").value=s.max_rounds;
+    if(s.pass_score)document.getElementById("c-score").value=s.pass_score;
+    document.getElementById("c-workdir").value=s.workdir||"";
+    document.getElementById("c-verify").value=s.verify_cmd||"";
+    const pat=s.pattern||"producer-reviewer";
+    document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p===pat));
+    document.getElementById("c-runmsg").textContent="불러옴: "+name+" (수정 후 저장/실행)";
+  }catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
+}
+async function deleteTask(){
+  const name=document.getElementById("c-regtask").value; if(!name||name==="(없음)")return;
+  if(!confirm(name+" 삭제할까요?"))return;
+  try{const r=await fetch("/api/task/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const j=await r.json();
+    document.getElementById("c-runmsg").textContent=r.ok?"삭제됨 ✓":("실패: "+(j.error||r.status));
+    load();}catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
 }
 async function runRegistered(){
   const t=document.getElementById("c-regtask").value;

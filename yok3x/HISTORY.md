@@ -32,6 +32,15 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-14 — GUI 작업(task) 관리 CRUD (v3.8.0 계획 구현)
+
+- 저장된 작업 **저장/열기/편집/삭제** — guiserver: `_save_task`/`_load_task`/`_delete_task`(원자적
+  temp→replace), `_task_path`(형식·경로순회 방어, root 하위만), `_slug_task_name`(유니코드=한글 작업명),
+  `_validate_task_spec`. API `/api/task` GET(열기)·POST(저장)·`/api/task/delete`. spec 검증은 /api/run과 공유.
+- GUI: 콘솔에 [💾 작업 저장][▶ 실행][열기][🗑] + `buildSpec` 공용화. 저장 라벨=작업별 콘솔 연동.
+- codex 논의 반영(task-*.json·원자적쓰기·경로순회 방어·이름중복). 라이브 검증(한글 slug·경로순회 차단·
+  전체 CRUD 라운드트립), JS 에러 0. 신규 테스트 2. 외부 아이디어 채택 원장 `ADOPTIONS.md` 신설.
+
 ## 미출시(dev) · 2026-07-14 — 자기오염 루프 차단(계산기 실패 근본 수정) + lint 오탐 제거
 
 - **버그**: "간단한 계산기 만들어줘"가 워커에 빈 작업처럼 전달돼 실패. 원인은 **자기오염 피드백 루프** —

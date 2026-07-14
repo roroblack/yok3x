@@ -204,6 +204,79 @@ def _enqueue(cfg: Config, tf: str, iterations: int) -> dict:
     return {"ok": True, "queued": busy, "position": pos}
 
 
+import re as _re
+
+# task-<slug>.json — 유니코드 단어문자 허용(한글 작업명). [\w-]는 / \ . 를 포함하지 않아
+# 경로순회(../, 슬래시)가 원천 차단된다(+_task_path에서 parent==root 재확인).
+_TASK_NAME_RE = _re.compile(r"^task-[\w-]+\.json$", _re.UNICODE)
+_VALID_PATTERNS = ("producer-reviewer", "pipeline", "fanout", "fanout-fanin")
+
+
+def _slug_task_name(raw: str) -> str:
+    """사용자 입력 이름 → task-<slug>.json. 공백·구두점→하이픈, 유니코드 단어문자(한글 등) 유지."""
+    s = _re.sub(r"[^\w-]+", "-", str(raw or "").strip().lower(), flags=_re.UNICODE).strip("-_")
+    return f"task-{s}.json" if s else ""
+
+
+def _task_path(cfg: Config, name: str) -> Path | None:
+    """검증된 task 파일 경로. 형식 위반·경로순회(root 밖)면 None(보안)."""
+    if not isinstance(name, str) or not _TASK_NAME_RE.match(name):
+        return None
+    root = cfg.paths.root.resolve()
+    p = (cfg.paths.root / name).resolve()
+    if p.parent != root:                    # root 바로 아래만 허용(../ 등 차단)
+        return None
+    return p
+
+
+def _validate_task_spec(spec: dict) -> str:
+    if not isinstance(spec, dict):
+        return "spec이 객체가 아님"
+    if not str(spec.get("task", "")).strip():
+        return "task(목표)가 비었다"
+    if spec.get("pattern") not in _VALID_PATTERNS:
+        return "pattern이 잘못됨"
+    return ""
+
+
+def _save_task(cfg: Config, raw_name: str, spec: dict) -> dict:
+    name = _slug_task_name(raw_name)
+    if not name:
+        return {"error": "이름이 비었거나 유효한 문자가 없다(영소문자·숫자·하이픈)"}
+    p = _task_path(cfg, name)
+    if p is None:
+        return {"error": "잘못된 작업 이름/경로"}
+    err = _validate_task_spec(spec)
+    if err:
+        return {"error": err}
+    spec.setdefault("label", raw_name.strip())   # 라벨 기본=사용자 이름(작업별 콘솔 연동)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)                                # 원자적 교체
+    return {"ok": True, "name": name}
+
+
+def _load_task(cfg: Config, name: str) -> dict:
+    p = _task_path(cfg, name)
+    if p is None or not p.exists():
+        return {"error": "없는 작업"}
+    try:
+        return {"ok": True, "name": name, "spec": json.loads(p.read_text(encoding="utf-8-sig"))}
+    except Exception as e:
+        return {"error": f"JSON 파싱 실패: {e}"}
+
+
+def _delete_task(cfg: Config, name: str) -> dict:
+    p = _task_path(cfg, name)
+    if p is None or not p.exists():
+        return {"error": "없는 작업"}
+    try:
+        p.unlink()
+    except OSError as e:
+        return {"error": f"삭제 실패: {e}"}
+    return {"ok": True}
+
+
 def _write_inline_spec(cfg: Config, spec: dict) -> Path:
     spec.setdefault("label", "")   # 인라인은 label 키를 명시(없으면 무제목 — 임시파일명 폴백 방지)
     d = cfg.paths.yok3x_dir / "console"
@@ -371,6 +444,11 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                     self._json(200, build_state(cfg))
                 except Exception as e:
                     self._json(500, {"error": str(e)})
+            elif path == "/api/task":                 # 저장된 작업 열기(?name=task-x.json)
+                import urllib.parse as _up
+                q = _up.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+                r = _load_task(cfg, (q.get("name") or [""])[0])
+                self._json(200 if r.get("ok") else 400, r)
             else:
                 self._send(404, "not found", "text/plain; charset=utf-8")
 
@@ -407,6 +485,16 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                         return
                     tf = tfp
                 self._json(200, _enqueue(cfg, str(tf), iters))
+                return
+
+            if path == "/api/task":                   # 작업 저장/편집(name, spec)
+                r = _save_task(cfg, body.get("name", ""), body.get("spec") or {})
+                self._json(200 if r.get("ok") else 400, r)
+                return
+
+            if path == "/api/task/delete":            # 작업 삭제(name)
+                r = _delete_task(cfg, body.get("name", ""))
+                self._json(200 if r.get("ok") else 400, r)
                 return
 
             if path == "/api/config":
