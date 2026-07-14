@@ -223,6 +223,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       <div class="panel">
         <h2><span class="ic"></span> 작업 콘솔 <span id="runstatus" class="mono" style="font-size:11px;color:var(--ink2)"></span></h2>
         <p class="sub">작업을 입력하면 큐에 쌓여 순차 실행. yok3x 기법·할루시네이션 방지·가드 자동 적용.</p>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+          <label class="sub" style="margin:0">작업별 보기</label>
+          <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
+        </div>
         <div class="chat" id="console-log"><span class="sub">불러오는 중…</span></div>
 
         <div class="cinput">
@@ -237,6 +241,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
             <label>reviewer <select id="c-reviewer"></select></label>
           </div>
           <div class="ci-row">
+            <label>라벨 <input id="c-label" placeholder="작업별 콘솔 그룹(선택)" title="같은 라벨의 런들이 '작업별 보기'에서 묶입니다"></label>
             <label>max_rounds <input id="c-rounds" value="3"></label>
             <label>pass_score <input id="c-score" value="8.0"></label>
             <label>반복 <input id="c-iters" value="1"></label>
@@ -686,19 +691,37 @@ function renderConsole(s,rn){
     q.innerHTML=`<b>실행 큐</b> · 활성 ${rn.active?1:0} / 대기 ${(s.queue||[]).length}`+items.map(x=>`<div class="qitem">${x}</div>`).join("")
       + (rn.last?`<div class="qitem" style="color:var(--ink2)">직전: ${rn.last}</div>`:"");}
   // 채팅 트랜스크립트(최근 런 → 오래된 것 위)
-  const log=document.getElementById("console-log");
-  if(log){const runs=(s.runs||[]).slice(0,5).reverse();
-    log.innerHTML = runs.length ? runs.map(r=>`
-      <div class="you"><div class="b">${(r.task||r.run_id||"").slice(0,140)}
-        <div class="meta">${r.pattern||""} · ${r.run_id} · <span class="chip ${r.state}">${r.state}</span></div></div></div>
-      ${(r.stepdetail||[]).map(st=>`<div class="cstep"><div class="av">${st.worker}<br>${st.kind||""}</div>
-        <div class="cb"><div class="hd">#${st.index} <span class="chip ${st.status}">${st.status}</span>
-          ${st.score!=null?`<span class="score">SCORE ${st.score}</span>`:""}
-          ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,50)}</span>`:""}</div>
-          ${(st.summary||"").slice(0,120)}</div></div>`).join("")}`).join("")
-      : '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>';
-    if(rn.active) log.scrollTop=log.scrollHeight;
-  }
+  window._lastState=s; window._lastRn=rn;
+  populateConsoleFilter(s);
+  renderConsoleLog(s);
+}
+function labelOf(r){return ((r.label||"").trim())||"무제목";}
+function populateConsoleFilter(s){
+  const sel=document.getElementById("console-filter"); if(!sel) return;
+  const labels=[...new Set((s.runs||[]).map(labelOf))];
+  const key="all|"+labels.join("|"); if(sel.dataset.k===key) return;   // 목록 안 바뀌면 유지(선택 보존)
+  const cur=sel.value||"__all__";
+  sel.innerHTML=['<option value="__all__">전체</option>'].concat(labels.map(l=>`<option value="${l}">${l} (${(s.runs||[]).filter(r=>labelOf(r)===l).length})</option>`)).join("");
+  sel.dataset.k=key; sel.value=(cur==="__all__"||labels.includes(cur))?cur:"__all__";
+}
+function renderConsoleLog(s){
+  s=s||window._lastState; if(!s) return;
+  const log=document.getElementById("console-log"); if(!log) return;
+  const sel=document.getElementById("console-filter"); const filter=sel?sel.value:"__all__";
+  let runs=(s.runs||[]);
+  if(filter&&filter!=="__all__") runs=runs.filter(r=>labelOf(r)===filter);
+  runs=runs.slice(0,filter==="__all__"?5:20).reverse();
+  log.innerHTML = runs.length ? runs.map(r=>`
+    <div class="you"><div class="b">${(r.label?('<b>['+r.label+']</b> '):'')}${(r.task||r.run_id||"").slice(0,120)}
+      <div class="meta">${r.pattern||""} · ${r.run_id} · <span class="chip ${r.state}">${r.state}</span></div></div></div>
+    ${(r.stepdetail||[]).map(st=>`<div class="cstep"><div class="av">${st.worker}<br>${st.kind||""}</div>
+      <div class="cb"><div class="hd">#${st.index} <span class="chip ${st.status}">${st.status}</span>
+        ${st.score!=null?`<span class="score">SCORE ${st.score}</span>`:""}
+        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,50)}</span>`:""}</div>
+        ${(st.summary||"").slice(0,120)}</div></div>`).join("")}`).join("")
+    : (filter==="__all__" ? '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>'
+                          : '<div class="sub">이 작업의 실행 기록이 없다.</div>');
+  if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
 async function sendTask(){
@@ -713,6 +736,7 @@ async function sendTask(){
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
+  spec.label=document.getElementById("c-label").value.trim();   // 작업별 콘솔 그룹 라벨(선택)
   await postRun({spec,iterations:iters},"c-runmsg");
   document.getElementById("c-task").value="";
 }

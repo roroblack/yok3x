@@ -84,6 +84,35 @@ def test_three_patterns_run_to_done(mock_root, spec):
     assert run_task_file(cfg, tf, auto=True) == "done"
 
 
+# ----------------------------------------------- 작업(task)별 콘솔: label 흐름
+def test_run_label_flows_to_status_and_recent(mock_root):
+    from yok3x.guiserver import _recent_runs
+    cfg = Config.load(mock_root)
+    tf = mock_root / "t.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t", "label": "슬러그 함수",
+                              "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1},
+                             ensure_ascii=False), encoding="utf-8")
+    run_task_file(cfg, tf, auto=True)
+    runs = _recent_runs(cfg, 10)
+    assert runs and runs[0]["label"] == "슬러그 함수"                    # label 저장·노출
+    tf2 = mock_root / "task-foo.json"
+    tf2.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t2",
+                               "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1},
+                              ensure_ascii=False), encoding="utf-8")
+    run_task_file(cfg, tf2, auto=True)
+    assert "task-foo" in {r["label"] for r in _recent_runs(cfg, 10)}    # 라벨 없으면 파일명 폴백
+
+
+def test_inline_spec_label_defaults_untitled(mock_root):
+    from yok3x.guiserver import _write_inline_spec, _recent_runs
+    cfg = Config.load(mock_root)
+    tf = _write_inline_spec(cfg, {"pattern": "producer-reviewer", "task": "x",
+                                  "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1})
+    assert json.loads(tf.read_text(encoding="utf-8"))["label"] == ""    # 임시파일명 폴백 안 함
+    run_task_file(cfg, tf, auto=True)
+    assert _recent_runs(cfg, 10)[0]["label"] == ""                      # 무제목(빈 라벨)
+
+
 # ----------------------------------------------------------------- 가드 자동 정지
 def test_guard_stops_when_ledger_budget_exceeded(mock_root):
     cfg = Config.load(mock_root)

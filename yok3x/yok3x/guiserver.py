@@ -118,7 +118,7 @@ def build_state(cfg: Config) -> dict:
                            "cap_pct": round(float((g.get("daily_pace") or {}).get("pct_of_weekly", 0.14)) * 100),
                            "mode": (g.get("daily_pace") or {}).get("mode", "warn")}},
         "coach": usage.coach_messages(cfg),
-        "runs": _recent_runs(cfg),
+        "runs": _recent_runs(cfg, int(cfg.yok3x.get("runs_max", 20))),   # 작업별 그룹핑 위해 히스토리↑
         "tools": tools,
         "running": dict(_RUN_STATE),
         "queue": [Path(t).name for t, _ in _QUEUE],
@@ -152,6 +152,7 @@ def _recent_runs(cfg: Config, n: int = 6) -> list:
         runs.append({
             "run_id": data.get("run_id"), "pattern": data.get("pattern"),
             "state": data.get("state"), "task": data.get("task", ""),
+            "label": (data.get("label") or "").strip(),   # 작업 그룹 라벨(없으면 GUI가 무제목 처리)
             "steps": len(steps),
             "done": sum(1 for s in steps if s.get("status") == "done"),
             "last": steps[-1]["worker"] if steps else "-",
@@ -204,6 +205,7 @@ def _enqueue(cfg: Config, tf: str, iterations: int) -> dict:
 
 
 def _write_inline_spec(cfg: Config, spec: dict) -> Path:
+    spec.setdefault("label", "")   # 인라인은 label 키를 명시(없으면 무제목 — 임시파일명 폴백 방지)
     d = cfg.paths.yok3x_dir / "console"
     d.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")

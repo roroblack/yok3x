@@ -88,6 +88,7 @@ class Orchestrator:
         self._failovers = 0                        # P2: 이번 런 전환 횟수(상한 체크)
         self.pattern = "-"
         self.task_desc = ""   # 상태/채팅 표시용 작업 목표
+        self.label = ""       # 작업 그룹 라벨(콘솔 작업별 뷰). 비면 GUI가 무제목 처리
         # 태스크 옵션(코딩 기능): run_task_file이 세팅
         self.workdir: str | None = None      # 워커/검증 실행 디렉터리
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
@@ -122,6 +123,7 @@ class Orchestrator:
             "state": state,
             "pattern": self.pattern,
             "task": self.task_desc,
+            "label": self.label,
             "flavor": self.cfg.yok3x["flavor"],
             "updated": datetime.now().isoformat(timespec="seconds"),
             "steps": [s.__dict__ for s in self.steps],
@@ -569,6 +571,10 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     """task.json 실행. 반환: 종료 상태 문자열."""
     spec = json.loads(Path(task_file).read_text(encoding="utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
+    # 작업 그룹 라벨(콘솔 작업별 뷰용): label 키가 있으면 그 값(빈값 허용=무제목),
+    # 키 자체가 없으면(등록된 task 파일) 파일명으로 폴백.
+    _lbl = spec.get("label")
+    orch.label = (str(_lbl).strip() if _lbl is not None else Path(task_file).stem.strip())
     # 코딩 태스크 옵션. task가 workdir를 지정하면 우선, 없으면 전역 workspace를 상속.
     orch.workdir = spec.get("workdir") or cfg.yok3x.get("workspace") or None
     if orch.workdir and not Path(orch.workdir).is_dir():
