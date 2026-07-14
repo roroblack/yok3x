@@ -113,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("window", choices=["5h", "7d"])
     sp.add_argument("percent", type=float)
 
+    sp = sub.add_parser("pace", help="하루 페이싱(주간쿼터 하루 소비 캡) 상태/승인재개")
+    sp.add_argument("action", nargs="?", choices=["status", "approve"], default="status")
+    sp.add_argument("backend", nargs="?", help="approve 대상 backend(claude/codex)")
+
     a = p.parse_args(argv)
     cfg = Config.load(".")
 
@@ -197,7 +201,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.cmd == "profile":
-        from . import usage
         from .orchestrator import resolve_model
         profiles = cfg.yok3x.get("profiles", {})
         if a.mode is not None:
@@ -233,6 +236,29 @@ def main(argv: list[str] | None = None) -> int:
         cfg.save_yok3x()
         print(f"claude {a.window}: 현재 {toks:,}tok = {a.percent:.0f}% → {key} = {cap:,} 설정")
         print("이후 이 창 사용률은 이 상한 기준으로 정확히 계산된다.")
+        return 0
+
+    if a.cmd == "pace":
+        from . import limits
+        if a.action == "approve":
+            if not a.backend:
+                print("사용법: yok3x pace approve <backend>"); return 2
+            usage.pace_approve(cfg, a.backend)
+            cfg.save_yok3x()
+            print(f"{a.backend}: 하루 페이싱 정지를 오늘 하루 해제(승인). 자정에 자동 리셋.")
+            return 0
+        dp = cfg.yok3x.get("guard", {}).get("daily_pace", {})
+        print(f"하루 페이싱: {'ON' if dp.get('enabled') else 'OFF'}  "
+              f"캡={float(dp.get('pct_of_weekly', 0.2)) * 100:.0f}%p  mode={dp.get('mode', 'warn')}")
+        for b in usage.BACKEND_KEYS:
+            r = limits.probe(cfg, b)
+            wk = usage._weekly_pct(r)
+            st = usage.daily_pace_status(cfg, b, wk)
+            if st:
+                print(f"  {b:7s} 오늘소비 {st['used']:.0f}/{st['cap']:.0f}%p  "
+                      f"level={st['level']}{' (승인됨)' if st['approved'] else ''}")
+            else:
+                print(f"  {b:7s} (페이싱 off 또는 7d 실측 없음)")
         return 0
 
     if a.cmd == "knot":

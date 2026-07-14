@@ -293,6 +293,29 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["guard"]["hard_ratio"] = float(hard)
     if plan is not None:
         cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})["plan"] = plan
+    # 하루 페이싱 설정(enabled/pct_of_weekly/soft_frac/mode)
+    dp = body.get("daily_pace")
+    if isinstance(dp, dict):
+        cur = cfg.yok3x.setdefault("guard", {}).setdefault("daily_pace", {})
+        if "enabled" in dp:
+            cur["enabled"] = bool(dp["enabled"])
+        if dp.get("mode") in ("warn", "pause"):
+            cur["mode"] = dp["mode"]
+        for k in ("pct_of_weekly", "soft_frac"):
+            if k in dp:
+                try:
+                    v = float(dp[k])
+                except (TypeError, ValueError):
+                    return {"error": f"daily_pace.{k} 숫자 아님: {dp[k]}"}
+                if not 0.0 < v <= 1.0:
+                    return {"error": f"daily_pace.{k}는 0~1 범위: {v}"}
+                cur[k] = v
+    # 하루 페이싱 정지 승인(오늘 재개)
+    pace_approve = body.get("pace_approve")
+    if pace_approve:
+        if pace_approve not in cfg.yok3x.get("workers", {}) and pace_approve not in usage.BACKEND_KEYS:
+            return {"error": f"알 수 없는 backend(pace_approve): {pace_approve}"}
+        usage.pace_approve(cfg, pace_approve)
     cfg.save_yok3x()
     return {"ok": True}
 

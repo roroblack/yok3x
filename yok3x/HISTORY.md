@@ -32,6 +32,18 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-13 — 주간쿼터 하루 페이싱(일일 소비 캡) 백엔드 P1~P4+P6 (GUI 제외)
+
+- 주간(7d) 쿼터를 하루 단위로 페이싱: '오늘 소비 = 현재 7d% − 그날 아침 7d% 스냅샷(.yok3x/pace.json)'을
+  캡(pct_of_weekly·100 %p)과 비교. soft_frac에서 경고, 캡 도달 시 mode=warn(경고)/pause(정지+승인재개).
+- `usage.daily_pace_status`/`pace_approve`/`_weekly_pct` + `check_backend` 병합(절대 5h/7d에 '덧붙는' 층,
+  더 빡빡한 쪽 채택, metric=daily_pace). config `guard.daily_pace{enabled,pct_of_weekly,soft_frac,mode,
+  backends}` + `daily_pace_override`. CLI `yok3x pace status|approve <backend>`. guiserver `/api/config`
+  daily_pace 설정·pace_approve 수용(향후 GUI용). 자정 자동 리셋, override 1일 유효.
+- 부수 수정: cli.py profile 분기의 중복 `from . import usage`가 함수 전체에서 usage를 지역변수로 만들어
+  pace/limits 분기에서 UnboundLocalError 유발 → 제거(잠재버그 해소).
+- opt-in(기본 off), 라이브 7d 있는 backend(claude/codex) 대상. **GUI(P5)는 별도 승인**(§5.6). 신규 테스트 3.
+
 ## 미출시(dev) · 2026-07-13 — effort 설정 UI(에이전트 보드) + 보드 local backend (§5.6 승인)
 
 - 사용자 승인(option 1)으로 **에이전트 배치 보드에 워커별 effort 드롭다운** 추가(기본/low/medium/high).

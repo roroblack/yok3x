@@ -126,6 +126,79 @@ def _level(g: dict, ratio: float) -> str:
     return "ok"
 
 
+# ---------------------------------------------------------------- 하루 페이싱(주간쿼터 대비)
+
+_SEVERITY = {"ok": 0, "warn": 1, "stop": 2}
+
+
+def _pace_cfg(cfg: Config, backend: str) -> dict:
+    """전역 daily_pace + 백엔드별 override 병합."""
+    dp = dict((cfg.yok3x.get("guard") or {}).get("daily_pace") or {})
+    bo = (dp.get("backends") or {}).get(backend)
+    if isinstance(bo, dict):
+        dp.update(bo)
+    return dp
+
+
+def _weekly_pct(reading: "limits.LimitReading | None") -> float | None:
+    """실측 reading에서 주간(7d) 창의 used_percent. 없으면 None(페이싱 판정 불가)."""
+    for w in getattr(reading, "windows", None) or []:
+        if str(w.name).startswith("7d"):
+            return float(w.used_percent)
+    return None
+
+
+def _load_pace(cfg: Config) -> dict:
+    p = cfg.paths.yok3x_dir / "pace.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_pace(cfg: Config, state: dict) -> None:
+    cfg.ensure_dirs()
+    (cfg.paths.yok3x_dir / "pace.json").write_text(
+        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
+                      today: str | None = None) -> dict | None:
+    """하루 페이싱 상태. current_pct=현재 7d used_percent. enabled off / 7d 없으면 None.
+    '오늘 소비 = 현재 7d% − 그날 아침 스냅샷'을 캡(pct_of_weekly·100)과 비교해 level 산출."""
+    dp = _pace_cfg(cfg, backend)
+    if not dp.get("enabled") or current_pct is None:
+        return None
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    st = _load_pace(cfg)
+    rec = st.get(backend) or {}
+    if rec.get("date") != today:                 # 새 날 → 아침 스냅샷 저장(자정 자동 리셋)
+        rec = {"date": today, "day_start_pct": float(current_pct)}
+        st[backend] = rec
+        _save_pace(cfg, st)
+    day_start = float(rec.get("day_start_pct", current_pct))
+    used = max(0.0, float(current_pct) - day_start)   # 롤링창 롤오프로 음수 가능 → 0 하한
+    cap = float(dp.get("pct_of_weekly", 0.2)) * 100.0
+    soft = cap * float(dp.get("soft_frac", 0.8))
+    mode = dp.get("mode", "warn")
+    ovr = (cfg.yok3x.get("guard") or {}).get("daily_pace_override") or {}
+    approved = ovr.get(backend) == today
+    if used >= cap:
+        level = "ok" if approved else ("stop" if mode == "pause" else "warn")
+    elif used >= soft:
+        level = "warn"
+    else:
+        level = "ok"
+    return {"used": used, "cap": cap, "soft": soft, "day_start": day_start,
+            "current": float(current_pct), "level": level, "mode": mode, "approved": approved}
+
+
+def pace_approve(cfg: Config, backend: str, today: str | None = None) -> None:
+    """하루 페이싱 정지를 '오늘 하루' 해제(승인 재개). config 저장은 호출부 책임."""
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    cfg.yok3x.setdefault("guard", {}).setdefault("daily_pace_override", {})[backend] = today
+
+
 def check_backend(cfg: Config, backend: str) -> GuardVerdict:
     """한도 판정. 실측 probe가 있으면 그것이 기준, 없으면 원장(일일 예산) 폴백."""
     g = cfg.yok3x["guard"]
@@ -144,6 +217,14 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
             if not reading.real and level == "stop" and ratio > 3.0:
                 level = "warn"
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
+            # 하루 페이싱(주간쿼터의 하루 소비 캡) — 절대 5h/7d 한도에 '덧붙여' 더 빡빡하면 채택.
+            pace = daily_pace_status(cfg, backend, _weekly_pct(reading))
+            if pace and _SEVERITY[pace["level"]] > _SEVERITY[level]:
+                level = pace["level"]
+                metric = "daily_pace"
+                tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
+                        + ("(승인됨)" if pace["approved"] else
+                           "(승인 필요)" if pace["mode"] == "pause" and pace["used"] >= pace["cap"] else ""))
             return GuardVerdict(backend, ratio, metric, level,
                                 reading.detail + tag, source=reading.source,
                                 real=reading.real, reading=reading)

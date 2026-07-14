@@ -71,7 +71,18 @@ DEFAULT_YOK3X = {
             # 로컬 서버가 실제로 떠 있을 때만 전환(도달성 확인). 품질↓라 리뷰어는 제외 권장.
             "offline_enabled": True,        # 클라우드 전멸 시 로컬로 강등(로컬 서버 있을 때만 발동)
             "offline_backend": "local"      # 강등 대상 backend(= backends.local, OpenAI 호환)
-        }
+        },
+        # 주간(7d) 쿼터의 '하루 페이싱' — 하루에 주간쿼터의 pct_of_weekly(%p)만 쓰도록 속도 제한.
+        # 오늘 소비 = 현재 7d% − 그날 아침 7d% 스냅샷(.yok3x/pace.json). 절대 5h/7d 한도에 '덧붙는' 층.
+        # 라이브 7d가 있는 backend(claude/codex)에 적용. opt-in.
+        "daily_pace": {
+            "enabled": False,               # 켜면 하루 소비 캡 적용
+            "pct_of_weekly": 0.2,           # 하루 상한 = 주간쿼터의 20%p
+            "soft_frac": 0.8,               # 캡의 80%에서 경고(그 이상은 mode에 따름)
+            "mode": "warn",                 # warn(경고만) | pause(정지 후 승인 재개)
+            "backends": {}                  # 백엔드별 override 예: {"claude":{"pct_of_weekly":0.15}}
+        },
+        "daily_pace_override": {}           # {backend: "YYYY-MM-DD"} 오늘이면 페이싱 정지 1일 해제
     },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
     # codex : app-server JSON-RPC 로 '지금 이 순간' 5h/7d used_percent 라이브 조회(진짜 실측).
