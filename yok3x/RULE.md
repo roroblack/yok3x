@@ -74,6 +74,12 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
 - 코드·기능·문서를 바꾸면 **매번 [HISTORY.md](HISTORY.md)에 한 줄 이상 기록**한다: 버전, 날짜/시간, 변경 요약.
 - 릴리스(zip)를 만들 때 버전을 올리고 HISTORY에 릴리스 항목을 남긴다.
 
+### 7.1 버그 리포트 (reports/bugs/)
+
+- **버그를 발견·수정할 때마다** `reports/bugs/BUG-NN-<slug>.md`를 만들고 인덱스(`reports/bugs/README.md`)
+  표에 추가한다. 형식: 증상 · 근본원인 · 진단 · 수정 · 검증 · 교훈 (+ 시점·심각도·커밋·상태).
+- 디버깅 세션의 내역을 이 폴더에 **꾸준히 누적**한다(잊지 말 것). HISTORY는 요약, bugs/는 상세 근본원인.
+
 ## 8. 릴리스 · 버전 보존
 
 - 정본 소스: `yok3x/`. 배포물: `release/yok3x-vX.Y.Z.zip`.
