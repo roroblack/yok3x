@@ -32,6 +32,14 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-15 — 토큰 자체갱신 라이브 검증: 엔드포인트/UA 수정(BUG-17)
+
+- 라이브 검증 결과 기본 `token_url`(console.anthropic.com…)이 **404**, User-Agent 없으면 **403**. 올바른
+  엔드포인트 `https://api.anthropic.com/v1/oauth/token`(usage와 같은 호스트) + UA·anthropic-beta 헤더로
+  **200 성공** 확인. config·`_refresh_claude_token` 수정. BUG-17 기록.
+- ⚠️ **운영 사고**: 검증용 수동 호출이 성공 응답의 회전 refresh_token을 저장하지 않아 저장 토큰이 무효화
+  → 사용자 `claude` 재로그인 1회 필요. 제품 코드는 원자적 저장하나 수동 검증이 규율을 어김(BUG-17 교훈).
+
 ## 미출시(dev) · 2026-07-15 — 조건부 라우팅(에스컬레이션) — LangGraph 조건부엣지 이식 (v4.0.0 계획)
 
 - producer-reviewer에 **에스컬레이션**: task spec `escalate={after_round, if_score_below, to_producer, to_reviewer}`.

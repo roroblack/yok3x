@@ -551,8 +551,12 @@ def _refresh_claude_token(conf: dict[str, Any], p: Path) -> str | None:
     st["last"] = now
     body = json.dumps({"grant_type": "refresh_token", "refresh_token": rt,
                        "client_id": client_id}).encode("utf-8")
-    req = urllib.request.Request(token_url, data=body,
-                                 headers={"Content-Type": "application/json"}, method="POST")
+    # User-Agent 없으면 엔드포인트 WAF가 403을 낸다(usage 프로브와 동일). anthropic-beta도 맞춘다.
+    req = urllib.request.Request(token_url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "User-Agent": conf.get("user_agent", "claude-cli/2.1 (external, cli)"),
+        "anthropic-beta": conf.get("oauth_beta", "oauth-2025-04-20"),
+    })
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))

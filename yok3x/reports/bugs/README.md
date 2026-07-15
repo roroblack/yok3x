@@ -21,6 +21,7 @@
 | [14](BUG-14-cli-usage-local-shadow.md) | cli.py `usage` 지역 섀도잉 → pace/limits UnboundLocalError | 중간 | `ffb85d8` | ✅ |
 | [15](BUG-15-claude-uncalibrated-1003pct.md) | claude 미보정 추정 1003% 오표시(429/토큰만료) | 중간 | `5811eb3` | ✅ |
 | [16](BUG-16-lint-false-broken-links.md) | knot lint 깨진 링크 오탐(자동 런 노트 [[..]]) | 낮음 | `0979ca6` | ✅ |
+| [17](BUG-17-token-refresh-wrong-endpoint-ua.md) | 토큰 자체갱신 엔드포인트 오류+UA 누락 → 항상 실패(라이브 검증서 발견) | 중간 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

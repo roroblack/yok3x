@@ -104,7 +104,7 @@ DEFAULT_YOK3X = {
             "auto_refresh": False,      # 기본 off(보수적) — 켜면 자체 갱신. Claude Code와 파일 공유 주의
             "refresh_margin_sec": 300,  # 만료 N초 전부터 갱신 시도
             "min_refresh_interval_sec": 60,  # 과다 갱신 방지 + 실패 시 지수 백오프 기준
-            "token_url": "https://console.anthropic.com/v1/oauth/token",
+            "token_url": "https://api.anthropic.com/v1/oauth/token",   # 라이브 검증됨(200)
             "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
             "plan": "max5x",            # 추정 폴백용 상한 프리셋: pro | max5x | max20x (기본 max5x)
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
