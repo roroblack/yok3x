@@ -68,6 +68,12 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              effort: str | None = None) -> BackendResult:
     template = spec["command"]
     has_prompt_arg = any("{prompt}" in str(a) for a in template)
+    # BUG-18 방어(BUG-10 재발 차단): 멀티라인 프롬프트를 argv({prompt})로 넘기면 Windows npm .cmd
+    # 심이 첫 줄바꿈에서 argv를 잘라 워커가 첫 줄([작업])만 받는다. 스테일 backends.json이 옛 {prompt}
+    # 형식이어도, 멀티라인이면 {prompt} 자리를 빼고 stdin으로 넘겨 잘림을 원천 차단한다.
+    if has_prompt_arg and "\n" in prompt:
+        template = [a for a in template if "{prompt}" not in str(a)]
+        has_prompt_arg = False
     cmd = [str(a).replace("{prompt}", prompt) for a in template]
     # 모델 다운그레이드(적응형 열화): model이 주어지고 model_arg 템플릿이 있으면 덧붙인다.
     if model and spec.get("model_arg"):

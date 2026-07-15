@@ -32,6 +32,17 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-15 — 계산기 실패 근본 수정: 스테일 backends.json {prompt} (BUG-18, BUG-10 재발)
+
+- 증상: "계산기 만들어줘"가 계속 실패(워커가 [작업]만 받음). 근본: 디스크 `backends.json`(07-11자)이 옛
+  `{prompt}`(argv) 형식이라 로드 시 고쳐진 DEFAULT를 덮어씀 → Windows .cmd 심이 멀티라인 argv를 첫
+  줄바꿈에서 잘라 워커가 첫 줄만 봄(BUG-10 재발, 다른 유입경로).
+- 수정: (1) `_run_cli` 방어 가드 — {prompt}가 argv에 있어도 **멀티라인이면 stdin으로** 넘겨 잘림 차단
+  (스테일/사용자 config에도 견고). (2) backends.json을 현재 DEFAULT로 재생성. (3) 잘못 설정된 전역
+  workspace(=yok3x 레포) 비움.
+- 라이브 검증: codex가 실제 계산기 코드 생성 + producer-reviewer 라운드1 score 6.5(claude 제작→codex 채점)
+  확인. cwd=레포여도 정상(가드 불필요 — 시도했다 테스트 오탐으로 제거). 회귀 테스트 1. BUG-18 기록.
+
 ## 미출시(dev) · 2026-07-15 — 토큰 자체갱신 라이브 검증: 엔드포인트/UA 수정(BUG-17)
 
 - 라이브 검증 결과 기본 `token_url`(console.anthropic.com…)이 **404**, User-Agent 없으면 **403**. 올바른

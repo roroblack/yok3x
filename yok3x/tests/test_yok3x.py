@@ -512,6 +512,23 @@ def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
     assert r2.ok and abs(r2.ratio() - 0.62) < 1e-6  # 현실적 추정은 유지
 
 
+# -------------------------------------- 멀티라인 프롬프트 argv 잘림 방어(BUG-18/BUG-10 재발)
+def test_multiline_prompt_uses_stdin_even_with_stale_prompt_arg(monkeypatch):
+    # 스테일 backends.json이 옛 {prompt}(argv) 형식이어도, 멀티라인이면 stdin으로 넘겨 .cmd 심 잘림 차단.
+    from yok3x import backends
+    cap = {}
+    class _P:
+        stdout = "ok"; stderr = ""; returncode = 0
+    monkeypatch.setattr(backends.subprocess, "run",
+                        lambda cmd, **kw: (cap.update(cmd=cmd, inp=kw.get("input")), _P())[1])
+    monkeypatch.setattr(backends.shutil, "which", lambda x: x)
+    spec = {"type": "cli", "command": ["tool", "exec", "{prompt}"], "parser": "raw"}
+    backends.run_backend("t", spec, "첫 줄\n둘째 줄")                 # 멀티라인
+    assert "{prompt}" not in str(cap["cmd"])                        # argv에 {prompt} 없음
+    assert "둘째 줄" not in str(cap["cmd"])                          # 프롬프트가 argv에 안 들어감
+    assert cap["inp"] == "첫 줄\n둘째 줄"                            # stdin으로 전체 전달
+
+
 # -------------------------------------- claude 토큰 자체 갱신(near-expiry)
 def _write_creds(path, access="old-at", refresh="rt-1", exp_ms=None):
     import time as _t
