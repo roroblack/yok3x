@@ -478,6 +478,55 @@ def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
     assert r2.ok and abs(r2.ratio() - 0.62) < 1e-6  # 현실적 추정은 유지
 
 
+# -------------------------------------- claude 토큰 자체 갱신(near-expiry)
+def _write_creds(path, access="old-at", refresh="rt-1", exp_ms=None):
+    import time as _t
+    if exp_ms is None:
+        exp_ms = int((_t.time() + 60) * 1000)   # 60초 뒤 만료(=임박)
+    path.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": access, "refreshToken": refresh, "expiresAt": exp_ms}}), encoding="utf-8")
+
+
+def test_token_refresh_near_expiry_updates_creds(tmp_path, monkeypatch):
+    creds = tmp_path / ".credentials.json"
+    _write_creds(creds)                          # 만료 임박
+    limits._REFRESH_STATE.clear()
+    payload = json.dumps({"access_token": "new-at", "refresh_token": "rt-2",
+                          "expires_in": 3600}).encode()
+    monkeypatch.setattr(limits.urllib.request, "urlopen", lambda req, timeout=0: _Resp(payload))
+    conf = {"credentials_path": str(creds), "auto_refresh": True, "refresh_margin_sec": 300,
+            "token_url": "https://x/token", "client_id": "cid"}
+    tok, err = limits._claude_oauth_token(conf)
+    assert tok == "new-at" and not err                       # 갱신된 토큰 반환
+    saved = json.loads(creds.read_text(encoding="utf-8"))["claudeAiOauth"]
+    assert saved["accessToken"] == "new-at" and saved["refreshToken"] == "rt-2"  # 회전 저장(원자적)
+
+
+def test_token_refresh_4xx_circuit_breaks(tmp_path, monkeypatch):
+    import urllib.error
+    creds = tmp_path / ".credentials.json"; _write_creds(creds)
+    limits._REFRESH_STATE.clear()
+    def boom(req, timeout=0):
+        raise urllib.error.HTTPError("u", 400, "invalid_grant", {}, None)
+    monkeypatch.setattr(limits.urllib.request, "urlopen", boom)
+    conf = {"credentials_path": str(creds), "auto_refresh": True, "refresh_margin_sec": 300,
+            "token_url": "https://x/token", "client_id": "cid"}
+    # 4xx → 갱신 실패, 기존(만료 임박이나 아직 유효) 토큰으로 폴백. 회로차단됨.
+    limits._claude_oauth_token(conf)
+    assert limits._REFRESH_STATE[str(creds)]["disabled"]     # 회로차단 기록
+    assert json.loads(creds.read_text(encoding="utf-8"))["claudeAiOauth"]["accessToken"] == "old-at"  # 안 씀
+
+
+def test_token_refresh_disabled_when_off_or_no_config(tmp_path, monkeypatch):
+    creds = tmp_path / ".credentials.json"; _write_creds(creds)
+    limits._REFRESH_STATE.clear()
+    called = {"n": 0}
+    monkeypatch.setattr(limits.urllib.request, "urlopen",
+                        lambda req, timeout=0: called.__setitem__("n", called["n"] + 1))
+    limits._claude_oauth_token({"credentials_path": str(creds), "auto_refresh": False})  # off
+    assert called["n"] == 0                                   # 갱신 시도 안 함
+
+
 # -------------------------------------- CLI 백엔드 stdin 데드락 방지(회귀 잠금)
 def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     # headless 실행 중 CLI가 대화형 입력을 기다려 데드락하지 않도록 stdin=DEVNULL,

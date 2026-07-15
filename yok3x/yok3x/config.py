@@ -98,6 +98,14 @@ DEFAULT_YOK3X = {
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
             "max_stale_sec": 900,       # 실측 일시 실패(429/만료) 시 마지막 실측을 유지할 최대 시간
                                         # (원장으로 깜빡이는 대신 '⚠N분 전 실측' 표시)
+            # 토큰 자체 갱신(opt-in): 만료 임박 시 refresh_token으로 access_token을 표준 OAuth 갱신 →
+            # claude 실측이 토큰 만료로 끊기지 않게. 실패는 fail-safe(기존 폴백). client_id/token_url은
+            # Claude Code 공개 OAuth 값(미검증 — 켜기 전 확인 권장). 회전 토큰은 credentials에 되씀.
+            "auto_refresh": False,      # 기본 off(보수적) — 켜면 자체 갱신. Claude Code와 파일 공유 주의
+            "refresh_margin_sec": 300,  # 만료 N초 전부터 갱신 시도
+            "min_refresh_interval_sec": 60,  # 과다 갱신 방지 + 실패 시 지수 백오프 기준
+            "token_url": "https://console.anthropic.com/v1/oauth/token",
+            "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
             "plan": "max5x",            # 추정 폴백용 상한 프리셋: pro | max5x | max20x (기본 max5x)
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
             "limit_7d_tokens": 0,

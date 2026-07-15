@@ -32,6 +32,17 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-14 — claude OAuth 토큰 자체 갱신(near-expiry, opt-in) (v3.9.0 계획 구현)
+
+- claude 실측이 토큰 만료(~1h)로 끊기던 문제 해소용. 만료 임박(<`refresh_margin_sec` 300s) 시 refreshToken
+  으로 표준 OAuth 갱신 → access_token 재발급, credentials.json **원자적 갱신**(재로드 병합·백업·temp→replace).
+- codex 리뷰(SCORE 7/10, 위험 중간) 반영: **4xx invalid_grant는 회로차단**(재인증 안내), 429/5xx/네트워크만
+  지수 백오프 재시도. 회전 refresh_token 되씀(Claude Code와 파일 동기화). 실패는 **fail-safe**(기존 폴백).
+- config `limits.claude.auto_refresh`(기본 **false=opt-in**, 보수적)·`refresh_margin_sec`·`min_refresh_interval_sec`·
+  `token_url`·`client_id`(Claude Code 공개값, 하드코딩 금지 §5.5로 설정화). 목 테스트 3.
+- **⚠ 라이브 미검증(의도적)**: 회전 토큰이 실제 Claude Code 인증을 건드릴 위험이라 목으로만 검증.
+  token_url/client_id 기본값 미검증 — 켜기 전 확인. 분석: 자체갱신은 차단 대상 아님(표준 OAuth).
+
 ## 미출시(dev) · 2026-07-14 — GUI 작업(task) 관리 CRUD (v3.8.0 계획 구현)
 
 - 저장된 작업 **저장/열기/편집/삭제** — guiserver: `_save_task`/`_load_task`/`_delete_task`(원자적

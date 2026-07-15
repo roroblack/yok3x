@@ -493,8 +493,97 @@ _CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _OAUTH_LIVE_CACHE: dict[str, tuple[float, LimitReading]] = {}
 
 
+# 토큰 자체 갱신 상태(경로별): 백오프·회로차단용. 데이터를 지어내지 않는다 — 실패 시 폴백.
+_REFRESH_STATE: dict[str, dict] = {}
+
+
+def _read_oauth(p: Path) -> dict:
+    try:
+        return (json.loads(p.read_text(encoding="utf-8-sig")) or {}).get("claudeAiOauth") or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_oauth_atomic(p: Path, updates: dict) -> bool:
+    """credentials.json의 claudeAiOauth를 원자적으로 갱신(재로드 병합 + 기존 백업). 성공 True."""
+    try:
+        full = json.loads(p.read_text(encoding="utf-8-sig")) if p.exists() else {}
+        if not isinstance(full, dict):
+            full = {}
+        try:                                    # 복구용 백업(회전 직후 크래시 대비)
+            p.with_suffix(".json.bak").write_text(
+                json.dumps(full, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        oauth = full.get("claudeAiOauth") or {}
+        oauth.update(updates)
+        full["claudeAiOauth"] = oauth
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(full, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(p)                          # 원자적 교체
+        return True
+    except OSError:
+        return False
+
+
+def _refresh_claude_token(conf: dict[str, Any], p: Path) -> str | None:
+    """near-expiry면 refresh_token으로 access_token 갱신. 성공 시 새 토큰, 실패/불가면 None(폴백).
+    4xx 영구오류는 회로차단, 429/5xx/네트워크만 백오프 재시도. Claude Code와 파일 공유 → 재로드 병합."""
+    st = _REFRESH_STATE.setdefault(str(p), {"last": 0.0, "fails": 0, "disabled": ""})
+    if st["disabled"]:
+        return None
+    now = time.time()
+    min_interval = float(conf.get("min_refresh_interval_sec", 60))
+    wait = min_interval * (2 ** min(st["fails"], 5)) if st["fails"] else min_interval
+    if now - st["last"] < wait:                 # 폭주 방지 + 지수 백오프
+        return None
+    oauth = _read_oauth(p)                       # 재로드 — 다른 클라이언트가 이미 갱신했을 수 있음
+    exp = oauth.get("expiresAt")
+    margin = float(conf.get("refresh_margin_sec", 300))
+    if exp and float(exp) / 1000.0 - now > margin:
+        return oauth.get("accessToken")         # 이미 충분히 유효(Claude Code가 갱신함) → 그대로
+    rt = oauth.get("refreshToken")
+    client_id = (conf.get("client_id") or "").strip()
+    token_url = (conf.get("token_url") or "").strip()
+    if not rt or not client_id or not token_url:
+        st["disabled"] = "refresh 설정 없음(refreshToken/client_id/token_url) — 추측 안 함"
+        return None
+    st["last"] = now
+    body = json.dumps({"grant_type": "refresh_token", "refresh_token": rt,
+                       "client_id": client_id}).encode("utf-8")
+    req = urllib.request.Request(token_url, data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500 and e.code != 429:   # invalid_grant 등 영구오류 → 회로차단(재인증 필요)
+            st["disabled"] = f"refresh 4xx({e.code}) — `claude` 재로그인 필요"
+        else:
+            st["fails"] += 1                        # 429/5xx → 백오프 재시도
+        return None
+    except Exception:
+        st["fails"] += 1
+        return None
+    new_at = data.get("access_token")
+    if not new_at:
+        st["fails"] += 1
+        return None
+    ok = _write_oauth_atomic(p, {
+        "accessToken": new_at,
+        "refreshToken": data.get("refresh_token") or rt,   # 회전 시 새 값, 아니면 유지
+        "expiresAt": int((now + int(data.get("expires_in", 3600))) * 1000),
+    })
+    if not ok:
+        st["fails"] += 1
+        return None
+    st["fails"] = 0
+    return new_at
+
+
 def _claude_oauth_token(conf: dict[str, Any]) -> tuple[str | None, str]:
-    """~/.claude/.credentials.json 의 구독 OAuth 액세스 토큰. (토큰, 오류사유)."""
+    """~/.claude/.credentials.json 의 구독 OAuth 액세스 토큰. (토큰, 오류사유).
+    auto_refresh on이고 만료 임박이면 refresh_token으로 자체 갱신 시도(실패=기존 동작 폴백)."""
     p = Path(conf.get("credentials_path")
              or (Path.home() / ".claude" / ".credentials.json")).expanduser()
     if not p.exists():
@@ -503,10 +592,15 @@ def _claude_oauth_token(conf: dict[str, Any]) -> tuple[str | None, str]:
         oauth = (json.loads(p.read_text(encoding="utf-8-sig")) or {}).get("claudeAiOauth") or {}
     except (OSError, json.JSONDecodeError) as e:
         return None, f"credentials 읽기 실패: {type(e).__name__}"
+    exp = oauth.get("expiresAt")   # ms epoch
+    near = bool(exp) and float(exp) / 1000.0 - time.time() < float(conf.get("refresh_margin_sec", 300))
+    if conf.get("auto_refresh") and near:
+        new = _refresh_claude_token(conf, p)
+        if new:
+            return new, ""
     tok = oauth.get("accessToken")
     if not tok:
         return None, "accessToken 없음(구독 로그인 필요)"
-    exp = oauth.get("expiresAt")   # ms epoch
     if exp and float(exp) / 1000.0 < time.time():
         return None, "OAuth 토큰 만료(claude로 한 번 요청하면 자동 갱신)"
     return tok, ""
