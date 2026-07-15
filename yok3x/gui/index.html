@@ -223,9 +223,14 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       <div class="panel">
         <h2><span class="ic"></span> 작업 콘솔 <span id="runstatus" class="mono" style="font-size:11px;color:var(--ink2)"></span></h2>
         <p class="sub">작업을 입력하면 큐에 쌓여 순차 실행. yok3x 기법·할루시네이션 방지·가드 자동 적용.</p>
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
           <label class="sub" style="margin:0">작업별 보기</label>
           <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
+          <button class="btn" onclick="openTask()" title="선택한 💾 저장 작업을 아래 폼으로 불러오기(편집)">열기</button>
+          <button class="btn" onclick="runRegistered()" title="선택한 💾 저장 작업 실행">▶ 실행</button>
+          <button class="btn" onclick="deleteTask()" title="선택한 💾 저장 작업 삭제">🗑</button>
+          <button class="btn" onclick="saveTask()" title="아래 폼(패턴·목표·워커·라벨)을 이름 붙여 저장">💾 새 작업 저장</button>
+          <span class="sub" id="c-runmsg" style="margin:0"></span>
         </div>
         <div class="chat" id="console-log"><span class="sub">불러오는 중…</span></div>
 
@@ -255,14 +260,6 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
             </div>
             <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · context_globs/rubric은 task.json 편집.</div>
           </details>
-          <div class="ci-row" style="margin-top:9px;border-top:2px dashed rgba(31,30,26,.18);padding-top:9px">
-            <button class="btn" onclick="saveTask()" title="현재 폼(패턴·목표·워커·라벨)을 이름 붙여 저장. 이름=라벨 필드">💾 작업 저장</button>
-            <label>저장된 작업 <select id="c-regtask"></select></label>
-            <button class="btn" onclick="runRegistered()" title="선택한 작업 실행">▶ 실행</button>
-            <button class="btn" onclick="openTask()" title="선택한 작업을 폼으로 불러오기(편집)">열기</button>
-            <button class="btn" onclick="deleteTask()" title="선택한 작업 삭제">🗑</button>
-            <span class="sub" id="c-runmsg" style="margin:0"></span>
-          </div>
         </div>
 
         <div class="usagestrip">
@@ -642,8 +639,6 @@ function renderConsole(s,rn){
   // producer/reviewer/regtask/flavor 드롭다운
   fillSel("c-producer",workers,workers[0]);
   fillSel("c-reviewer",workers.filter(w=>w!=="claude-main").concat(workers),undefined);
-  const rt=document.getElementById("c-regtask");
-  if(rt){const sv=s.saved_tasks||[]; rt.innerHTML=sv.length?sv.map(t=>`<option value="${t.name}">${t.label}</option>`).join(""):"<option value=''>(저장된 작업 없음)</option>";}
   const fl=document.getElementById("c-flavor"); if(fl) fl.innerHTML=opts(s.flavors||[],s.flavor);
   // 워크스페이스: 입력 중(포커스)이 아니면 서버 값으로 채움. 런별 workdir placeholder에도 반영
   const ws=document.getElementById("c-workspace");
@@ -768,8 +763,15 @@ async function saveTask(){
     document.getElementById("c-runmsg").textContent=r.ok?("저장됨 ✓ "+j.name):("실패: "+(j.error||r.status));
     load();}catch(e){document.getElementById("c-runmsg").textContent="요청 실패(`yok3x gui`로 실행)";}
 }
+function selectedSavedTaskName(){   // 작업별 보기에서 선택한 라벨 → 저장된 작업 파일명(저장분 아니면 null)
+  const label=document.getElementById("console-filter").value;
+  if(!label||label==="__all__") return null;
+  const t=((window._lastState||{}).saved_tasks||[]).find(x=>(x.label||"").trim()===label);
+  return t?t.name:null;
+}
 async function openTask(){
-  const name=document.getElementById("c-regtask").value; if(!name||name==="(없음)")return;
+  const name=selectedSavedTaskName();
+  if(!name){document.getElementById("c-runmsg").textContent="위 드롭다운에서 💾 저장된 작업을 선택하세요";return;}
   try{const r=await fetch("/api/task?name="+encodeURIComponent(name)); const j=await r.json();
     if(!r.ok){document.getElementById("c-runmsg").textContent="열기 실패: "+(j.error||r.status);return;}
     const s=j.spec||{};
@@ -787,7 +789,8 @@ async function openTask(){
   }catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
 }
 async function deleteTask(){
-  const name=document.getElementById("c-regtask").value; if(!name||name==="(없음)")return;
+  const name=selectedSavedTaskName();
+  if(!name){document.getElementById("c-runmsg").textContent="위 드롭다운에서 💾 저장된 작업을 선택하세요";return;}
   if(!confirm(name+" 삭제할까요?"))return;
   try{const r=await fetch("/api/task/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
     const j=await r.json();
@@ -795,9 +798,9 @@ async function deleteTask(){
     load();}catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
 }
 async function runRegistered(){
-  const t=document.getElementById("c-regtask").value;
-  if(!t||t==="(없음)"){document.getElementById("c-runmsg").textContent="등록 태스크 없음";return;}
-  await postRun({task:t},"c-runmsg");
+  const name=selectedSavedTaskName();
+  if(!name){document.getElementById("c-runmsg").textContent="위 드롭다운에서 💾 저장된 작업을 선택하세요";return;}
+  await postRun({task:name},"c-runmsg");
 }
 async function postRun(payload,msgId){
   try{const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
