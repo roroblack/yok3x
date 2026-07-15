@@ -113,6 +113,30 @@ def test_inline_spec_label_defaults_untitled(mock_root):
     assert _recent_runs(cfg, 10)[0]["label"] == ""                      # 무제목(빈 라벨)
 
 
+# ----------------------------------------------- 조건부 라우팅(에스컬레이션)
+def test_conditional_routing_escalates_on_low_score(mock_root, monkeypatch):
+    from yok3x.backends import BackendResult
+    cfg = Config.load(mock_root)
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None, effort=None:
+                        BackendResult(backend=n, ok=True, text="SCORE: 3\n결함 반복"))
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.escalate = {"after_round": 2, "if_score_below": 6, "to_reviewer": "gemini"}
+    o.run_producer_reviewer("계산기", "claude-main", "codex-critic", max_rounds=4)
+    workers = [s.worker for s in o.steps]
+    assert "codex-critic" in workers            # 전환 전 리뷰어
+    assert "gemini" in workers                  # 낮은 점수 지속 → 리뷰어가 gemini로 에스컬레이션(1회)
+
+
+def test_conditional_routing_invalid_target_fails(mock_root):
+    from yok3x.orchestrator import RunAborted
+    cfg = Config.load(mock_root)
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.escalate = {"to_reviewer": "nonexistent-worker"}   # 오타/부재
+    with pytest.raises(RunAborted):                       # 조용한 폴백 아니라 명확한 실패(codex 리뷰)
+        o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=2)
+
+
 # ----------------------------------------------- GUI 작업(task) CRUD
 def test_task_crud_save_load_delete(mock_root):
     from yok3x import guiserver as gs

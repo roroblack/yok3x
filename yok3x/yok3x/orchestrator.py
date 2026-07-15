@@ -96,6 +96,7 @@ class Orchestrator:
         self.context_globs: list[str] = []   # 레포 컨텍스트 주입 glob
         self.rubric: str = ""                # 채점표 파일 경로
         self.adversarial: bool = cfg.yok3x.get("adversarial_review", False)  # ARIS AD1 적대적 검수
+        self.escalate: dict = {}   # 조건부 라우팅: 낮은 점수 지속 시 워커 전환(task spec의 escalate)
 
     # ------------------------------------------------------------ infra
 
@@ -449,6 +450,12 @@ class Orchestrator:
             reviewer = self._ensure_cross_family(producer, reviewer)
             self._log("[adversarial] 적대적 검수 모드 — 리뷰어가 반증 우선")
         self._save_status("running", {"task": task})
+        # 조건부 라우팅(에스컬레이션) 대상 사전검증 — 부재/오타는 조용히 폴백 말고 명확히 실패(codex 리뷰).
+        escalated = False
+        for role in ("to_producer", "to_reviewer"):
+            w = self.escalate.get(role)
+            if w and w not in self.cfg.yok3x.get("workers", {}):
+                raise RunAborted(f"escalate.{role} 없는 워커: {w}")
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
         prev_sig = None
@@ -488,6 +495,23 @@ class Orchestrator:
             if passed:
                 self._log(f"[review] 통과 기준({pass_score}) + 검증 충족 — 종료")
                 break
+
+            # 조건부 라우팅(에스컬레이션, LangGraph 조건부엣지 이식): 낮은 점수가 지속되면 다음
+            # 라운드부터 워커를 1회 전환한다. 통과 아닐 때만, prev_sig 초기화(워커가 바뀌면 스톨
+            # 비교가 무효 — codex 리뷰 반영). 대상은 시작 전 검증(부재 시 spec 오류로 실패).
+            esc = self.escalate
+            if (esc and not escalated and rnd >= int(esc.get("after_round", 2))
+                    and score is not None and score < float(esc.get("if_score_below", 6))):
+                if esc.get("to_producer"):
+                    producer = esc["to_producer"]
+                if esc.get("to_reviewer"):
+                    reviewer = (self._ensure_cross_family(producer, esc["to_reviewer"])
+                                if self.adversarial else esc["to_reviewer"])
+                escalated = True
+                prev_sig = None            # 워커 전환 → 스톨 시그니처 초기화(오탐 방지)
+                artifact += f"\n\n<!-- 검수 r{rnd} -->\n{rev.text}" if rev.ok else ""
+                self._log(f"[escalate] round {rnd} score={score} → producer={producer}, reviewer={reviewer}")
+                continue                   # 새 워커로 다음 라운드(이번 라운드 스톨 판정 건너뜀)
 
             # 스톨 감지: 점수 + 리뷰어가 지적한 결함이 직전 라운드와 동일하면
             # 수렴 실패로 조기 종료(리뷰어가 같은 결함을 되풀이 = 생산자가 못 고침).
@@ -590,6 +614,7 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     orch.rubric = spec.get("rubric", "") or ""
     if "adversarial" in spec:                       # task가 명시하면 우선, 없으면 config 기본
         orch.adversarial = bool(spec.get("adversarial"))
+    orch.escalate = spec.get("escalate") or {}      # 조건부 라우팅(에스컬레이션) 규칙
     pattern = spec.get("pattern", "producer-reviewer")
     task = spec["task"]
     orch.task_desc = task
