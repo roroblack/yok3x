@@ -642,7 +642,8 @@ function renderConsole(s,rn){
   // producer/reviewer/regtask/flavor 드롭다운
   fillSel("c-producer",workers,workers[0]);
   fillSel("c-reviewer",workers.filter(w=>w!=="claude-main").concat(workers),undefined);
-  const rt=document.getElementById("c-regtask"); if(rt) rt.innerHTML=(s.tasks||[]).map(t=>`<option>${t}</option>`).join("")||"<option>(없음)</option>";
+  const rt=document.getElementById("c-regtask");
+  if(rt){const sv=s.saved_tasks||[]; rt.innerHTML=sv.length?sv.map(t=>`<option value="${t.name}">${t.label}</option>`).join(""):"<option value=''>(저장된 작업 없음)</option>";}
   const fl=document.getElementById("c-flavor"); if(fl) fl.innerHTML=opts(s.flavors||[],s.flavor);
   // 워크스페이스: 입력 중(포커스)이 아니면 서버 값으로 채움. 런별 workdir placeholder에도 반영
   const ws=document.getElementById("c-workspace");
@@ -699,12 +700,21 @@ function renderConsole(s,rn){
   renderConsoleLog(s);
 }
 function labelOf(r){return ((r.label||"").trim())||"무제목";}
+function taskLabels(s){   // 작업 정체성 = 저장된 작업 라벨 ∪ 런 라벨 (둘을 통합)
+  const saved=(s.saved_tasks||[]).map(t=>(t.label||"").trim()).filter(Boolean);
+  const runs=(s.runs||[]).map(labelOf);
+  return [...new Set([...saved, ...runs])];
+}
 function populateConsoleFilter(s){
   const sel=document.getElementById("console-filter"); if(!sel) return;
-  const labels=[...new Set((s.runs||[]).map(labelOf))];
-  const key="all|"+labels.join("|"); if(sel.dataset.k===key) return;   // 목록 안 바뀌면 유지(선택 보존)
+  const labels=taskLabels(s);
+  const savedSet=new Set((s.saved_tasks||[]).map(t=>(t.label||"").trim()).filter(Boolean));
+  const key="all|"+labels.map(l=>l+(savedSet.has(l)?"*":"")).join("|"); if(sel.dataset.k===key) return;
   const cur=sel.value||"__all__";
-  sel.innerHTML=['<option value="__all__">전체</option>'].concat(labels.map(l=>`<option value="${l}">${l} (${(s.runs||[]).filter(r=>labelOf(r)===l).length})</option>`)).join("");
+  sel.innerHTML=['<option value="__all__">전체</option>'].concat(labels.map(l=>{
+    const n=(s.runs||[]).filter(r=>labelOf(r)===l).length;
+    return `<option value="${l}">${savedSet.has(l)?"💾 ":""}${l} (${n})</option>`;   // 💾=저장된 작업
+  })).join("");
   sel.dataset.k=key; sel.value=(cur==="__all__"||labels.includes(cur))?cur:"__all__";
 }
 function renderConsoleLog(s){
@@ -723,7 +733,9 @@ function renderConsoleLog(s){
         ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,50)}</span>`:""}</div>
         ${(st.summary||"").slice(0,120)}</div></div>`).join("")}`).join("")
     : (filter==="__all__" ? '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>'
-                          : '<div class="sub">이 작업의 실행 기록이 없다.</div>');
+        : (((s.saved_tasks||[]).some(t=>(t.label||"").trim()===filter))
+            ? '<div class="sub">💾 저장된 작업 · 아직 실행 없음. [열기]로 폼에 불러오거나 [실행]으로 돌려봐.</div>'
+            : '<div class="sub">이 작업의 실행 기록이 없다.</div>'));
   if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}

@@ -129,6 +129,16 @@ def test_task_crud_save_load_delete(mock_root):
     assert r["name"] not in gs._list_tasks(cfg)                    # 삭제됨
 
 
+def test_saved_tasks_expose_label_for_console_unification(mock_root):
+    # 저장된 작업이 label과 함께 노출돼 '작업별 보기'(런 라벨)와 통합된다.
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    gs._save_task(cfg, "계산기 앱", {"pattern": "producer-reviewer", "task": "계산기",
+                                    "producer": "claude-main", "reviewer": "codex-critic"})
+    saved = gs._saved_tasks(cfg)
+    assert any(t["name"] == "task-계산기-앱.json" and t["label"] == "계산기 앱" for t in saved)
+
+
 def test_task_crud_rejects_path_traversal_and_bad_spec(mock_root):
     from yok3x import guiserver as gs
     cfg = Config.load(mock_root)

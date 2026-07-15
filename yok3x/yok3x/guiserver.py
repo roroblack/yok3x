@@ -123,6 +123,7 @@ def build_state(cfg: Config) -> dict:
         "running": dict(_RUN_STATE),
         "queue": [Path(t).name for t, _ in _QUEUE],
         "tasks": _list_tasks(cfg),
+        "saved_tasks": _saved_tasks(cfg),   # [{name,label}] — 작업별 보기와 통합용
         "workers": workers,
         "routing": dict(cfg.yok3x.get("routing", {})),
     }
@@ -133,6 +134,24 @@ def _list_tasks(cfg: Config) -> list:
         return sorted(p.name for p in cfg.paths.root.glob("task-*.json"))
     except OSError:
         return []
+
+
+def _saved_tasks(cfg: Config) -> list:
+    """저장된 작업 = [{name, label}]. label(작업 이름)으로 '작업별 보기'와 런을 통합한다."""
+    out = []
+    try:
+        for p in sorted(cfg.paths.root.glob("task-*.json")):
+            label = p.stem[len("task-"):]           # 파일명 기본
+            try:
+                spec = json.loads(p.read_text(encoding="utf-8-sig"))
+                if isinstance(spec, dict) and str(spec.get("label", "")).strip():
+                    label = str(spec["label"]).strip()
+            except (OSError, json.JSONDecodeError):
+                pass
+            out.append({"name": p.name, "label": label})
+    except OSError:
+        pass
+    return out
 
 
 def _recent_runs(cfg: Config, n: int = 6) -> list:
