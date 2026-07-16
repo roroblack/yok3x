@@ -2,8 +2,10 @@ import json
 
 from yok3x.acquire import (
     QUESTION_CATEGORIES,
+    apply_verdicts,
     build_answerer_prompt,
     build_questioner_prompt,
+    core_claim,
     parse_answer,
     parse_questions,
     render_qa_context,
@@ -131,6 +133,42 @@ def test_parse_answer_failure_returns_none():
     assert parse_answer("객체가 아니다: [1, 2]") is None
 
 
+def test_core_claim_is_deterministic_and_changes_for_different_qa():
+    first = {
+        "category": "design", "question": "설정 계약은?", **_valid_answer(),
+    }
+    second = {**first, "question": "설정 위치는?"}
+
+    claim = core_claim(first)
+    assert claim == core_claim(first)
+    assert claim["claim"] == "Config.load가 설정을 읽는다."
+    assert claim["path"] == "yok3x/config.py"
+    assert claim["symbol"] == "Config.load"
+    assert len(claim["claim_id"]) == 8
+    assert claim["claim_id"] != core_claim(second)["claim_id"]
+
+
+def test_apply_verdicts_drops_contradicted_and_downgrades_partial():
+    qa_items = [
+        {"question": f"질문 {index}", **_valid_answer()}
+        for index in range(3)
+    ]
+    checks = [
+        {"evidence_check": {"path_exists": False, "symbol_found": None}},
+        {"evidence_check": {"path_exists": True, "symbol_found": False}},
+        {"evidence_check": {"path_exists": True, "symbol_found": True}},
+    ]
+
+    kept, dropped = apply_verdicts(qa_items, checks)
+    assert [item["verdict"] for item in kept] == ["partial", "confirmed"]
+    assert kept[0]["downgraded"] is True
+    assert kept[0]["answer"] == qa_items[1]["answer"]
+    assert dropped[0]["verdict"] == "contradicted"
+    assert dropped[0]["reason"] == "evidence path does not exist"
+    assert all("claim_id" in item and "evidence_check" in item for item in kept + dropped)
+    assert "verdict" not in qa_items[0]
+
+
 def test_render_qa_context_contains_qa_evidence_and_recheck_instruction():
     item = {
         "category": "design",
@@ -147,6 +185,23 @@ def test_render_qa_context_contains_qa_evidence_and_recheck_instruction():
     assert "대안가설: 기본값이 먼저 적용될 수 있음" in rendered
     assert "confirmed/partial/contradicted" in rendered
     assert "contradicted면 폐기" in rendered
+
+
+def test_render_qa_context_excludes_contradicted_and_marks_partial_as_location_hint():
+    contradicted = {
+        "question": "제외할 질문", **_valid_answer(), "verdict": "contradicted",
+    }
+    partial = {
+        "question": "남길 질문", **_valid_answer(), "verdict": "partial",
+        "downgraded": True,
+    }
+
+    rendered = render_qa_context("설정 오류", [contradicted, partial])
+    assert "제외할 질문" not in rendered
+    assert "남길 질문" in rendered
+    assert "이 QA는 위치 힌트로만 사용" in rendered
+    assert "기계검증 완료" in rendered
+    assert "path/symbol 존재 여부는 중복 확인하지 말고" in rendered
 
 
 def test_render_qa_context_honors_max_chars_and_marks_truncation():

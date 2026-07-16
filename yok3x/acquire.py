@@ -2,6 +2,8 @@
 """수정 전에 필요한 저장소 지식을 질문·검증·렌더링하는 순수 모듈."""
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import re
 
@@ -179,6 +181,59 @@ def _split_qa_item(item: dict) -> tuple[dict, dict]:
     return question, answer
 
 
+def core_claim(qa_item: dict) -> dict:
+    """QA의 첫 핵심 주장과 재현 가능한 식별자를 만든다."""
+    question, answer = _split_qa_item(qa_item)
+    question_text = str(question.get("question") or "").strip()
+    evidence = answer.get("evidence") or []
+    first_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
+    path = str(first_evidence.get("path") or "").strip()
+    symbol = str(first_evidence.get("symbol") or "").strip()
+
+    answer_text = str(answer.get("answer") or "").strip()
+    sentence_end = re.search(r"[.!?](?:\s|$)", answer_text)
+    claim = answer_text[:sentence_end.end()].strip() if sentence_end else answer_text
+    if not claim:
+        claim = str(first_evidence.get("observation") or "").strip()
+
+    # ref: ACQUIRE(Know-Before-Fix) S3a — 시간/난수 없이 같은 QA에 같은 ID를 부여한다.
+    claim_key = "\0".join((question_text, path, symbol))
+    claim_id = hashlib.sha1(claim_key.encode("utf-8")).hexdigest()[:8]
+    return {"claim_id": claim_id, "claim": claim, "path": path, "symbol": symbol}
+
+
+def apply_verdicts(qa_items: list[dict], checks: list[dict]
+                   ) -> tuple[list[dict], list[dict]]:
+    """호스트 evidence 검사 결과를 QA 판정으로 바꾸며 입력은 변경하지 않는다."""
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for item, check in zip(qa_items, checks):
+        enriched = copy.deepcopy(item)
+        claim = core_claim(enriched)
+        evidence_check = check.get("evidence_check", check) if isinstance(check, dict) else {}
+        evidence_check = {
+            "path_exists": evidence_check.get("path_exists"),
+            "symbol_found": evidence_check.get("symbol_found"),
+        }
+        enriched.update(claim)
+        enriched["evidence_check"] = evidence_check
+
+        if evidence_check["path_exists"] is False:
+            enriched["verdict"] = "contradicted"
+            enriched["reason"] = "evidence path does not exist"
+            dropped.append(enriched)
+        elif (evidence_check["path_exists"] is True
+              and evidence_check["symbol_found"] is False):
+            enriched["verdict"] = "partial"
+            enriched["downgraded"] = True
+            kept.append(enriched)
+        else:
+            # symbol이 없는 evidence는 확인할 심볼이 없으므로 경로 확인만으로 확정한다.
+            enriched["verdict"] = "confirmed"
+            kept.append(enriched)
+    return kept, dropped
+
+
 def render_qa_context(issue: str, qa_items: list[dict], max_chars: int = 4000) -> str:
     """검증된 QA만 Resolver가 재확인할 선수집 지식 블록으로 렌더링한다."""
     issue_summary = " ".join(str(issue).split())
@@ -191,6 +246,9 @@ def render_qa_context(issue: str, qa_items: list[dict], max_chars: int = 4000) -
     for item in qa_items:
         if not isinstance(item, dict):
             continue
+        verdict = item.get("verdict")
+        if verdict == "contradicted":
+            continue
         question, answer = _split_qa_item(item)
         valid, _ = validate_answer(answer)
         if not valid:
@@ -199,6 +257,10 @@ def render_qa_context(issue: str, qa_items: list[dict], max_chars: int = 4000) -
         category = question.get("category", "mechanism")
         category_name = QUESTION_CATEGORIES.get(category, QUESTION_CATEGORIES["mechanism"])
         lines.append(f"Q{number} ({category_name}): {question.get('question', '')}")
+        if verdict == "confirmed":
+            lines.append("  [confirmed · evidence 경로/심볼 호스트 기계검증 완료]")
+        elif verdict == "partial":
+            lines.append("  [partial · 이 QA는 위치 힌트로만 사용 · 경로 존재/심볼 불일치 기계검증 완료]")
         lines.append(f"A{number}: {answer['answer']}")
         for evidence in answer.get("evidence") or []:
             symbol = evidence.get("symbol")
@@ -214,6 +276,12 @@ def render_qa_context(issue: str, qa_items: list[dict], max_chars: int = 4000) -
         "[위 QA는 이슈별 일시 메모리다. 수정 전 QA마다 핵심 주장 하나를 직접 재확인하라"
         "(confirmed/partial/contradicted). contradicted면 폐기, partial이면 위치 힌트로만 사용하라.]"
     )
+    if any(item.get("verdict") in {"confirmed", "partial"}
+           for item in qa_items if isinstance(item, dict)):
+        lines.append(
+            "[기계검증 완료로 표시된 path/symbol 존재 여부는 중복 확인하지 말고, "
+            "핵심 주장과 실제 동작만 직접 재확인하라.]"
+        )
     rendered = "\n".join(lines)
     if len(rendered) <= max_chars:
         return rendered

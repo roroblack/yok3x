@@ -4,6 +4,17 @@
 
 ---
 
+## 미출시(dev) · 2026-07-16 — [로드맵 2 / ACQUIRE S3a] Resolver 수정 전 QA 재검증 (codex 구현·Claude 검토)
+
+- QA 오고정 회귀(논문 5건) 완화. **LLM 호출 증가 0** — 파일시스템 기계검증이라 무료·결정적.
+- `acquire.core_claim()` 결정적 SHA-1 claim_id + 핵심주장. `orchestrator.verify_evidence()`가 evidence의
+  path 존재·symbol 등장을 호스트에서 확인(행번호는 미검증 — 논문상 세부오류 대부분이 행번호).
+- `apply_verdicts()`: path없음→contradicted(폐기) / symbol없음→partial(위치힌트만) / 둘다→confirmed.
+  render는 contradicted 제외·partial 명시. acquire.json에 판정·dropped 이유 감사 저장. 실패 시 fail-safe.
+- 검토: 적대적 프로브 4종 통과(claim_id 결정성·경로/심볼 판정·verdict 규칙·렌더 제외), **108 passed**(신규 7).
+- 부속 판단: CLIP linear-probe 문의 → 문자 그대로는 부적용(표현공간 없음). 교훈("평가자를 객관신호로 검증")만
+  이식 — F0에 **심판 캘리브레이션**(SCORE vs verify_cmd 상관) 추가, 선형모델은 데이터 축적 후 stdlib로.
+
 ## 미출시(dev) · 2026-07-16 — [로드맵 1] A-lite 채팅 텔레메트리 (관찰가능성, 사용자 요청)
 
 - 체크리스트 v4.3.0의 1번(G5). 채팅 스텝 카드에 **에이전트별 계측 배지** `⏱작업시간·🔢토큰·💲비용` +

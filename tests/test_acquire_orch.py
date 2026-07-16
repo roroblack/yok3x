@@ -9,7 +9,7 @@ import pytest
 from yok3x import backends, knot, orchestrator, usage
 from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_BACKENDS, Config, scaffold
-from yok3x.orchestrator import Orchestrator, run_task_file
+from yok3x.orchestrator import Orchestrator, run_task_file, verify_evidence
 
 
 def _cfg(tmp_path):
@@ -33,9 +33,38 @@ def _answer(text: str, *, evidence: bool = True) -> str:
     }, ensure_ascii=False)
 
 
+def _write_evidence_repo(tmp_path):
+    source = tmp_path / "yok3x" / "orchestrator.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("class Orchestrator:\n    pass\n", encoding="utf-8")
+
+
+def test_verify_evidence_checks_path_and_symbol_with_host_filesystem(tmp_path):
+    _write_evidence_repo(tmp_path)
+    qa_items = [
+        {"question": "존재", "answer": json.loads(_answer("존재하는 근거"))},
+        {"question": "심볼 없음", "answer": json.loads(_answer("없는 심볼"))},
+        {"question": "경로 없음", "answer": json.loads(_answer("없는 경로"))},
+    ]
+    qa_items[1]["answer"]["evidence"][0]["symbol"] = "MissingSymbol"
+    qa_items[2]["answer"]["evidence"][0]["path"] = "missing.py"
+
+    checks = verify_evidence(qa_items, tmp_path)
+    assert checks[0]["evidence_check"] == {
+        "path_exists": True, "symbol_found": True,
+    }
+    assert checks[1]["evidence_check"] == {
+        "path_exists": True, "symbol_found": False,
+    }
+    assert checks[2]["evidence_check"] == {
+        "path_exists": False, "symbol_found": None,
+    }
+
+
 def test_acquire_calls_in_order_filters_and_saves_only_run_memory(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     orch = Orchestrator(cfg, auto=True)
+    _write_evidence_repo(tmp_path)
     monkeypatch.setattr(usage, "check_backend", lambda cfg, backend: _verdict())
     monkeypatch.setattr(knot, "save", lambda *a, **k: pytest.fail("QA를 knot에 저장하면 안 됨"))
     calls = []
@@ -67,6 +96,77 @@ def test_acquire_calls_in_order_filters_and_saves_only_run_memory(tmp_path, monk
     saved = json.loads((orch.run_dir / "acquire.json").read_text(encoding="utf-8"))
     assert saved["run_id"] == orch.run_id
     assert len(saved["questions"]) == 2 and saved["qa_items"] == qa_items
+    assert saved["dropped"] == []
+    assert saved["qa_items"][0]["verdict"] == "confirmed"
+    assert saved["qa_items"][0]["evidence_check"] == {
+        "path_exists": True, "symbol_found": True,
+    }
+
+
+def test_acquire_saves_dropped_reason_and_never_writes_knot(tmp_path, monkeypatch):
+    orch = Orchestrator(_cfg(tmp_path), auto=True)
+    _write_evidence_repo(tmp_path)
+    monkeypatch.setattr(usage, "check_backend", lambda cfg, backend: _verdict())
+    monkeypatch.setattr(knot, "save", lambda *a, **k: pytest.fail("QA knot 저장 금지"))
+    responses = iter([
+        BackendResult("mock", True, json.dumps([
+            {"category": "mechanism", "question": "존재하는 근거?"},
+            {"category": "locating", "question": "사라진 근거?"},
+        ], ensure_ascii=False)),
+        BackendResult("mock", True, _answer("확인된 답")),
+        BackendResult("mock", True, _answer("폐기할 답")),
+    ])
+
+    def fake_call(*args, **kwargs):
+        result = next(responses)
+        if "폐기할 답" in result.text:
+            payload = json.loads(result.text)
+            payload["evidence"][0]["path"] = "missing.py"
+            return BackendResult("mock", True, json.dumps(payload, ensure_ascii=False))
+        return result
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    context, qa_items = orch.acquire_preflight(
+        "이슈", "claude-main", ["codex-main"], qa_count=2, workdir=str(tmp_path))
+
+    assert len(qa_items) == 1 and "확인된 답" in context and "폐기할 답" not in context
+    saved = json.loads((orch.run_dir / "acquire.json").read_text(encoding="utf-8"))
+    assert saved["qa_items"][0]["verdict"] == "confirmed"
+    assert saved["dropped"][0]["verdict"] == "contradicted"
+    assert saved["dropped"][0]["reason"] == "evidence path does not exist"
+    assert saved["dropped"][0]["evidence_check"]["path_exists"] is False
+
+
+@pytest.mark.parametrize("failure", ["empty", "exception"])
+def test_acquire_recheck_failure_keeps_existing_flow(tmp_path, monkeypatch, failure):
+    orch = Orchestrator(_cfg(tmp_path), auto=True)
+    monkeypatch.setattr(usage, "check_backend", lambda cfg, backend: _verdict())
+    responses = iter([
+        BackendResult("mock", True, json.dumps([
+            {"category": "mechanism", "question": "질문?"},
+        ], ensure_ascii=False)),
+        BackendResult("mock", True, _answer("기존 QA 답")),
+    ])
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return next(responses)
+
+    def fake_verify(*args, **kwargs):
+        if failure == "exception":
+            raise OSError("읽기 실패")
+        return []
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    monkeypatch.setattr(orchestrator, "verify_evidence", fake_verify)
+    context, qa_items = orch.acquire_preflight(
+        "이슈", "claude-main", ["codex-main"], workdir=str(tmp_path))
+
+    assert len(calls) == 2
+    assert len(qa_items) == 1 and "기존 QA 답" in context
+    saved = json.loads((orch.run_dir / "acquire.json").read_text(encoding="utf-8"))
+    assert saved["qa_items"] == qa_items and saved["dropped"] == []
 
 
 def test_acquire_guard_stop_skips_all_calls(tmp_path, monkeypatch):

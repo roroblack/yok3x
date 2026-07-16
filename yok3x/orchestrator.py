@@ -32,6 +32,41 @@ ANTI_HALLUCINATION = (
     "존재하지 않는 파일·함수·API·플래그·라이브러리를 지어내지 마라. "
     "코드·경로·명령을 언급하면 실제 근거(존재 여부·출처)를 밝히고, 확신이 없으면 불확실하다고 표시하라.")
 
+
+def verify_evidence(qa_items: list[dict], workdir: str | Path | None) -> list[dict]:
+    """QA evidence의 경로와 심볼을 호스트 파일시스템에서 기계 확인한다."""
+    base = Path(workdir) if workdir is not None else Path.cwd()
+    checks: list[dict] = []
+    for qa_item in qa_items:
+        answer = qa_item.get("answer")
+        evidence_items = (answer.get("evidence") if isinstance(answer, dict)
+                          else qa_item.get("evidence")) or []
+        path_results: list[bool] = []
+        symbol_results: list[bool] = []
+        for evidence in evidence_items:
+            if not isinstance(evidence, dict):
+                path_results.append(False)
+                continue
+            relative_path = str(evidence.get("path") or "").strip()
+            evidence_path = base / relative_path
+            path_exists = bool(relative_path) and evidence_path.is_file()
+            path_results.append(path_exists)
+            symbol = str(evidence.get("symbol") or "").strip()
+            if path_exists and symbol:
+                text = evidence_path.read_text(encoding="utf-8", errors="replace")
+                symbol_results.append(symbol in text)
+
+        path_exists = bool(path_results) and all(path_results)
+        symbol_found = all(symbol_results) if symbol_results else None
+        checks.append({
+            "claim_id": acquire.core_claim(qa_item)["claim_id"],
+            "evidence_check": {
+                "path_exists": path_exists,
+                "symbol_found": symbol_found,
+            },
+        })
+    return checks
+
 # yok3x 기법 — 코딩 작업(생산자)에 계획→구현→자가검증 구조를 강제.
 YOK3X_TECHNIQUE = (
     "[yok3x 기법] 순서를 지켜라: (1) 계획 — 접근을 2~4줄로 먼저 요약. "
@@ -394,13 +429,15 @@ class Orchestrator:
 
     # ------------------------------------------------------------ ACQUIRE preflight
 
-    def _save_acquire(self, qa_items: list[dict], questions: list[dict]) -> None:
+    def _save_acquire(self, qa_items: list[dict], questions: list[dict],
+                      dropped: list[dict] | None = None) -> None:
         """이슈별 QA를 knot가 아닌 현재 run의 일시 메모리에만 저장한다."""
         self.run_dir.mkdir(parents=True, exist_ok=True)
         data = {
             "run_id": self.run_id,
             "questions": questions,
             "qa_items": qa_items,
+            "dropped": dropped or [],
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
         (self.run_dir / "acquire.json").write_text(
@@ -485,13 +522,35 @@ class Orchestrator:
             qa_items.append({"question": question, "answer": answer})
             self._log(f"[acquire] QA {index + 1} 검증 통과")
 
-        self._save_acquire(qa_items, questions)
         if not qa_items:
+            self._save_acquire(qa_items, questions)
             self._log("[acquire] 유효 QA 0개 — 빈 컨텍스트로 본 수리 계속")
             return "", []
-        context = acquire.render_qa_context(issue, qa_items)
-        self._log(f"[acquire] preflight 완료: 유효 QA {len(qa_items)}개")
-        return context, qa_items
+
+        kept = qa_items
+        dropped: list[dict] = []
+        try:
+            checks = verify_evidence(qa_items, workdir or self.workdir)
+            if len(checks) == len(qa_items) and checks:
+                kept, dropped = acquire.apply_verdicts(qa_items, checks)
+                confirmed = sum(item.get("verdict") == "confirmed" for item in kept)
+                partial = sum(item.get("verdict") == "partial" for item in kept)
+                self._log(
+                    f"[acquire] 재검증: confirmed {confirmed} · partial {partial} · "
+                    f"contradicted {len(dropped)}(폐기)")
+            else:
+                self._log("[acquire] 재검증 결과 없음 — 기존 QA로 본 수리 계속")
+        except Exception as exc:
+            # 재검증은 보조 안전장치다. 파일 I/O 실패가 본 수리를 막아서는 안 된다.
+            self._log(f"[acquire] 재검증 실패: {type(exc).__name__}: {exc} — 기존 QA로 본 수리 계속")
+
+        self._save_acquire(kept, questions, dropped)
+        if not kept:
+            self._log("[acquire] 재검증 통과 QA 0개 — 빈 컨텍스트로 본 수리 계속")
+            return "", []
+        context = acquire.render_qa_context(issue, kept)
+        self._log(f"[acquire] preflight 완료: 유효 QA {len(kept)}개")
+        return context, kept
 
     # ------------------------------------------------------------ patterns
 
