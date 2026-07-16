@@ -4,6 +4,13 @@
 
 ---
 
+## 문서 · 2026-07-16 — 멀티에이전트 적정성 리뷰 리포트 (사용자 요청)
+
+- `reports/v4.x-review-multiagent-adequacy`: 기반기술 적정, 다음 티어 격차 5개(G1 병렬성·G2 워커도구·
+  G3 앙상블·G4 체크포인트·G5 관찰가능성). 부속: effort ultracode=별도 모드(effort 아님), temp/top_p/top_k=
+  코딩 CLI 미지원(우리 누락 아님), few-shot=도입 권장, 채팅 토큰/시간/비용 표시=데이터 있어 구현 쉬움.
+- 권장 우선순위: ①관찰가능성 노출 ②병렬 fanout+앙상블 ③few-shot. temperature류 "안 먹는 노브"는 최후순위.
+
 ## 미출시(dev) · 2026-07-16 — [ACQUIRE S2] 오케스트레이터 preflight 연동 (codex 구현·Claude 검토)
 
 - `Orchestrator.acquire_preflight()`: Questioner→질문별 Answerer(**read-only**)→validate→유효 QA만 수집→
