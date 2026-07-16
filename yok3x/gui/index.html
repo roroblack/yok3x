@@ -146,8 +146,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .help .k{font-family:var(--font-code);background:var(--cream);border:2px solid var(--ink);border-radius:6px;padding:0 6px;font-size:12px}
 .help .tip{border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:9px 12px;font-size:12.5px;color:var(--ink2);margin:8px 0}
 /* 콘솔 */
-.cols{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+/* minmax(0,..) 필수: 안 쓰면 채팅 안 긴 토큰(run_id 등) min-content가 fr 트랙을 부풀려
+   콘솔 전체가 가로로 폭발(세로 채팅이 가로로 보이는 버그). overflow:auto로 내부 스크롤 처리 */
+.cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:14px}
 @media(max-width:900px){.cols{grid-template-columns:1fr}}
+.you .b,.cstep .cb,.cstep .av,.you .b .meta{overflow-wrap:anywhere}
 .chat{height:360px;overflow-y:auto;border:2.5px dashed var(--ink);border-radius:12px;background:var(--cream);padding:11px}
 .you{display:flex;justify-content:flex-end;margin-bottom:7px}
 .you .b{background:var(--blue);color:#fff;border:2.5px solid var(--ink);border-radius:14px 14px 3px 14px;padding:8px 12px;max-width:82%;box-shadow:var(--shadow-sm);font-size:13px}
@@ -486,6 +489,9 @@ function badge(t){ if(t.real) return '<span class="badge live">실측</span>';
   return '<span class="badge ledger">원장</span>'; }
 function fcls(l){return l==="stop"?"f-stop":l==="warn"?"f-warn":"f-ok"}
 // 창별 사용률 기준 색: soft(경고)·hard(정지) 임계 도달 시 색 전환 (Lovable식)
+// HTML 이스케이프 — 에이전트 산출물(summary·task 등)에 <태그>가 있으면 innerHTML DOM이 깨져
+// 콘솔이 가로로 붕괴되는 버그(계산기 HTML 생성 등). 모든 동적 텍스트는 esc() 통과 필수.
+function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function fclsPct(p,g){const h=((g&&g.hard)||1)*100,s=((g&&g.soft)||.8)*100;return p>=h?"f-stop":p>=s?"f-warn":"f-ok"}
 // 설정한 warn(soft)·stop(hard) % 위치에 세로 임계선. hard=100%면 테두리와 겹쳐 생략
 function marks(g){if(!g)return"";const s=Math.round(((g.soft)||.8)*100),h=Math.round(((g.hard)||1)*100);
@@ -552,14 +558,14 @@ function render(s){
     return `<div class="bub">${mm}</div>`;}).join("");
   // runs
   document.getElementById("runs").innerHTML=s.runs.length? s.runs.map(r=>`
-    <div class="run"><div class="rh"><span class="rid">${r.run_id}</span>
-      <span class="chip pat">${r.pattern||"-"}</span><span class="chip ${r.state}">${r.state}</span>
-      <span class="mono" style="font-size:11px">step ${r.done}/${r.steps}</span>
-      ${r.score!=null?`<span class="score">SCORE ${r.score}</span>`:""}</div>
-      ${(r.stepdetail||[]).map(st=>`<div class="step"><span class="n">#${st.index}</span><span class="wk">${st.worker}</span>
-        <span class="chip ${st.status}">${st.status}</span>
-        ${st.score!=null?`<span class="score">${st.score}</span>`:""}
-        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,60)}</span>`:""}</div>`).join("")}
+    <div class="run"><div class="rh"><span class="rid">${esc(r.run_id)}</span>
+      <span class="chip pat">${esc(r.pattern||"-")}</span><span class="chip ${esc(r.state)}">${esc(r.state)}</span>
+      <span class="mono" style="font-size:11px">step ${esc(r.done)}/${esc(r.steps)}</span>
+      ${r.score!=null?`<span class="score">SCORE ${esc(r.score)}</span>`:""}</div>
+      ${(r.stepdetail||[]).map(st=>`<div class="step"><span class="n">#${esc(st.index)}</span><span class="wk">${esc(st.worker)}</span>
+        <span class="chip ${esc(st.status)}">${esc(st.status)}</span>
+        ${st.score!=null?`<span class="score">${esc(st.score)}</span>`:""}
+        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${esc(st.issues.join("; ").slice(0,60))}</span>`:""}</div>`).join("")}
     </div>`).join("") : '<div class="note">아직 런 기록이 없다. <code>yok3x run task-producer-reviewer.json --auto</code> 실행.</div>';
   // 태스크 실행 목록 + 진행 상태
   const rn=s.running||{active:false};
@@ -737,7 +743,7 @@ function populateConsoleFilter(s){
   const cur=sel.value||"__all__";
   sel.innerHTML=['<option value="__all__">전체</option>'].concat(labels.map(l=>{
     const n=(s.runs||[]).filter(r=>labelOf(r)===l).length;
-    return `<option value="${l}">${savedSet.has(l)?"💾 ":""}${l} (${n})</option>`;   // 💾=저장된 작업
+    return `<option value="${esc(l)}">${savedSet.has(l)?"💾 ":""}${esc(l)} (${n})</option>`;   // 💾=저장된 작업
   })).join("");
   sel.dataset.k=key; sel.value=(cur==="__all__"||labels.includes(cur))?cur:"__all__";
 }
@@ -749,13 +755,13 @@ function renderConsoleLog(s){
   if(filter&&filter!=="__all__") runs=runs.filter(r=>labelOf(r)===filter);
   runs=runs.slice(0,filter==="__all__"?5:20).reverse();
   log.innerHTML = runs.length ? runs.map(r=>`
-    <div class="you"><div class="b">${(r.label?('<b>['+r.label+']</b> '):'')}${(r.task||r.run_id||"").slice(0,120)}
-      <div class="meta">${r.pattern||""} · ${r.run_id} · <span class="chip ${r.state}">${r.state}</span></div></div></div>
-    ${(r.stepdetail||[]).map(st=>`<div class="cstep"><div class="av">${st.worker}<br>${st.kind||""}</div>
-      <div class="cb"><div class="hd">#${st.index} <span class="chip ${st.status}">${st.status}</span>
-        ${st.score!=null?`<span class="score">SCORE ${st.score}</span>`:""}
-        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${st.issues.join("; ").slice(0,50)}</span>`:""}</div>
-        ${(st.summary||"").slice(0,120)}</div></div>`).join("")}`).join("")
+    <div class="you"><div class="b">${(r.label?('<b>['+esc(r.label)+']</b> '):'')}${esc((r.task||r.run_id||"").slice(0,120))}
+      <div class="meta">${esc(r.pattern||"")} · ${esc(r.run_id||"")} · <span class="chip ${esc(r.state)}">${esc(r.state)}</span></div></div></div>
+    ${(r.stepdetail||[]).map(st=>`<div class="cstep"><div class="av">${esc(st.worker)}<br>${esc(st.kind||"")}</div>
+      <div class="cb"><div class="hd">#${esc(st.index)} <span class="chip ${esc(st.status)}">${esc(st.status)}</span>
+        ${st.score!=null?`<span class="score">SCORE ${esc(st.score)}</span>`:""}
+        ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${esc(st.issues.join("; ").slice(0,50))}</span>`:""}</div>
+        ${esc((st.summary||"").slice(0,120))}</div></div>`).join("")}`).join("")
     : (filter==="__all__" ? '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>'
         : (((s.saved_tasks||[]).some(t=>(t.label||"").trim()===filter))
             ? '<div class="sub">💾 저장된 작업 · 아직 실행 없음. [열기]로 폼에 불러오거나 [실행]으로 돌려봐.</div>'
