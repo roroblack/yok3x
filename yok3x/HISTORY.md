@@ -32,6 +32,16 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-16 — 사용량 스트립 창별 색상·7d 예산눈금·claude effort 확장 (사용자 요청)
+
+- **[BUG-20] 창별 색상**: 5h가 warn(노랑)이면 툴 전체 level로 7d·Fable까지 노랑이 되던 버그.
+  `wlvl(used%,guard)`로 창 자기 % 기준 색칠(대시보드 게이지와 동일 원리).
+- **[BUG-20] 7d 예산 눈금**: `budgetRuler()` — cap_pct(주간의 하루치, 기본 14%) 배수마다 세로 눈금
+  (14%[강조]·28·42…). 페이싱 on/off 무관 항상. 콘솔 스트립+대시보드 7d에 적용(주간 창만).
+- **claude effort 확장**: claude CLI가 직접 알려준 유효값 `low/medium/high/xhigh/max`로 정정
+  (엑스트라=xhigh, 최대=max 누락분 추가). **ultracode는 effort 아님**(claude가 'Unknown'으로 무시 —
+  클라우드 워크플로 기능)이라 드롭다운 제외. guiserver 검증도 max 허용. 90 passed.
+
 ## 미출시(dev) · 2026-07-16 — [ACQUIRE S1] acquire.py 순수 모듈 (codex 구현·Claude 검토)
 
 - ACQUIRE(Know-Before-Fix) 이식 1단계: `yok3x/acquire.py` 순수 모듈(의존성0: json·re).

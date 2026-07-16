@@ -24,6 +24,7 @@
 | [17](BUG-17-token-refresh-wrong-endpoint-ua.md) | 토큰 자체갱신 엔드포인트 오류+UA 누락 → 항상 실패(라이브 검증서 발견) | 중간 | — | ✅ |
 | [18](BUG-18-stale-backends-prompt-argv.md) | **스테일 backends.json {prompt}(argv) → 멀티라인 잘림(계산기 실패, BUG-10 재발)** | **높음** | — | ✅ |
 | [19](BUG-19-console-html-injection-horizontal-blowout.md) | **콘솔 채팅 세로→가로 붕괴 — 에이전트 산출물 HTML이 이스케이프 없이 innerHTML DOM 파괴** | **높음** | — | ✅ |
+| [20](BUG-20-usage-strip-per-window-color-and-missing-budget-ruler.md) | 사용량 스트립 창별 색상 오류(5h warn→전체 warn) + 7d 예산 눈금 누락 | 중간 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

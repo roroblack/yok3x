@@ -92,6 +92,7 @@ code,.mono,.rid{font-family:var(--font-code)}
 .mk.pstart{border-left:2px dotted #3a6ea5}
 .mk.psoft{border-left:2px dashed #b9832b;opacity:.7}
 .mk.pcap{border-left:2px solid #2f7d3a}
+.mk.pday{border-left:1.5px dotted rgba(47,125,58,.5)}
 .mk.pband{background:rgba(47,125,58,.14);z-index:1;transform:none}
 .stat{font-family:var(--font-code);font-size:11px;color:var(--ink2);margin-top:8px;display:flex;gap:11px;flex-wrap:wrap}
 .stat b{color:var(--ink)}
@@ -508,6 +509,20 @@ function paceMarks(p){
   if(sf<cap-0.3)m+=`<span class="mk psoft" style="left:${sf}%" title="오늘 경고선 ${sf.toFixed(1)}%"></span>`;
   m+=`<span class="mk pcap" style="left:${cap}%" title="오늘 상한 ${cap.toFixed(1)}% (넘으면 ${p.blocked?'정지':'경고'})"></span>`;
   return m;}
+// 창별 색상 레벨(자기 used% 기준). 툴 전체 level을 모든 창에 쓰면 5h만 노랑이어도 7d까지 노랑이 되는 버그.
+function wlvl(p,g){const h=((g&&g.hard)||1)*100,so=((g&&g.soft)||.8)*100;return p>=h?"stop":p>=so?"warn":"";}
+// 7일 바에 '하루 페이싱 예산' 눈금 — cap_pct(주간의 하루치, 기본 14%)의 배수마다 세로 눈금.
+// 페이싱 on/off와 무관하게 항상 표시(예산 기준선). 14%=하루치, 28%=이틀치… 주간 창(7d)에만.
+function budgetRuler(s, wname){
+  if(wname!=="7d") return "";
+  const cap=Math.round((((s&&s.guard||{}).pace||{}).cap_pct)||14);
+  if(!cap || cap<=0 || cap>=100) return "";
+  let m="";
+  for(let x=cap, day=1; x<100; x+=cap, day++){
+    const cls = day===1 ? "mk pcap" : "mk pday";
+    m+=`<span class="${cls}" style="left:${x}%" title="${day}일치 예산 (일 ${cap}%p×${day}=${x}%)"></span>`;
+  }
+  return m;}
 function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":n}
 
 function render(s){
@@ -538,7 +553,7 @@ function render(s){
   // tools
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
     const wins=t.windows.length?t.windows.map(w=>{
-      const isWk=w.name==="7d", pm=isWk?paceMarks(t.pace):"";
+      const isWk=w.name==="7d", pm=isWk?(paceMarks(t.pace)||budgetRuler(s,w.name)):"";
       const pl=(isWk&&t.pace)?`<span class="rst" title="오늘 소비 / 하루 상한(주간 대비)">오늘 ${t.pace.used}%p / 상한 ${t.pace.cap}%p</span>`:`<span class="rst">리셋 ${w.reset}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
@@ -686,7 +701,7 @@ function renderConsole(s,rn){
   // 실시간 사용량 스트립
   const us=document.getElementById("c-usage");
   if(us) us.innerHTML=(s.tools||[]).map(t=>{
-    const wins=(t.windows||[]).map(w=>`<div class="us-win ${t.level==='stop'?'stop':t.level==='warn'?'warn':''}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}</div><b>${w.used_percent}%</b></div>`).join("")
+    const wins=(t.windows||[]).map(w=>`<div class="us-win ${wlvl(w.used_percent,s.guard)}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${budgetRuler(s,w.name)}</div><b>${w.used_percent}%</b></div>`).join("")
       || `<div class="us-win"><span>use</span><div class="g"><i style="width:${Math.round(t.ratio*100)}%"></i></div><b>${Math.round(t.ratio*100)}%</b></div>`;
     return `<div class="us-tool"><div class="nm"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}</span>${badge(t)}</div>${wins}</div>`;
   }).join("");
@@ -702,10 +717,11 @@ function renderConsole(s,rn){
     mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
     const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
     const hint=avail.length?`동적 조회됨(${avail.length}개)`:"목록 조회 불가(gemini 등) — 커스텀 입력";
-    // 추론 강도(effort) — 백엔드별 지원 레벨 다름(라이브 검증). codex: model_reasoning_effort
-    // (minimal/low/medium/high/xhigh 지원 — 에러메시지로 확인). claude: --effort(low/medium/high).
+    // 추론 강도(effort) — 백엔드별 지원 레벨 다름(claude CLI가 직접 알려준 유효값으로 검증):
+    // claude --effort: low/medium/high/xhigh/max (ultracode는 effort 아님 — 클라우드 워크플로라 제외).
+    // codex model_reasoning_effort: minimal/low/medium/high/xhigh (에러메시지로 확인).
     const eff=s.workers[w].effort||"";
-    const EFF_LEVELS={codex:["minimal","low","medium","high","xhigh"], claude:["low","medium","high"]};
+    const EFF_LEVELS={codex:["minimal","low","medium","high","xhigh"], claude:["low","medium","high","xhigh","max"]};
     const levels=EFF_LEVELS[be]||[];
     const effSupported=levels.length>0;
     const effOpts=['<option value="">effort 기본</option>'].concat(

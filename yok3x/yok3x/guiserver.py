@@ -347,8 +347,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     for w, e in worker_efforts.items():
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커(effort): {w}"}
-        if e and str(e) not in ("minimal", "low", "medium", "high", "xhigh"):
-            return {"error": f"effort 값 오류: {e} (minimal/low/medium/high/xhigh)"}
+        if e and str(e) not in ("minimal", "low", "medium", "high", "xhigh", "max"):
+            return {"error": f"effort 값 오류: {e} (minimal/low/medium/high/xhigh/max)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
     soft = body.get("soft_ratio")
