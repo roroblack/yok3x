@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "yok3x-gui",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["yok3x/yok3x.py", "gui", "--no-open", "--port", "8760"],
+      "port": 8760
+    },
+    {
+      "name": "harness-gui-snoopy",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "test_samples/harness-gui-snoopy", "run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "lovable",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "test_samples/lovable", "run", "dev"],
+      "port": 5173
+    }
+  ]
+}
