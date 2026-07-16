@@ -49,6 +49,7 @@ code,.mono,.rid{font-family:var(--font-code)}
 .btn{font-family:var(--font-body);font-weight:600;font-size:13px;cursor:pointer;border:2.5px solid var(--ink);
   border-radius:11px;background:var(--panel);padding:8px 14px;box-shadow:var(--shadow-sm)}
 .btn:active{transform:translate(2px,2px);box-shadow:1px 1px 0 var(--ink)}
+.btn[disabled]{opacity:.4;cursor:not-allowed;box-shadow:none;pointer-events:none}
 
 /* 탭 */
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
@@ -230,9 +231,9 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
           <label class="sub" style="margin:0">작업별 보기</label>
           <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
-          <button class="btn" onclick="openTask()" title="선택한 💾 저장 작업을 아래 폼으로 불러오기(편집)">열기</button>
-          <button class="btn" onclick="runRegistered()" title="선택한 💾 저장 작업 실행">▶ 실행</button>
-          <button class="btn" onclick="deleteTask()" title="선택한 💾 저장 작업 삭제">🗑</button>
+          <button class="btn" id="btn-opentask" onclick="openTask()" title="선택한 💾 저장 작업을 아래 폼으로 불러오기(편집)">열기</button>
+          <button class="btn" id="btn-runtask" onclick="runRegistered()" title="선택한 💾 저장 작업 실행">▶ 실행</button>
+          <button class="btn" id="btn-deltask" onclick="deleteTask()" title="선택한 💾 저장 작업 삭제">🗑</button>
           <button class="btn" onclick="saveTask()" title="아래 폼(패턴·목표·워커·라벨)을 이름 붙여 저장">💾 새 작업 저장</button>
           <span class="sub" id="c-runmsg" style="margin:0"></span>
         </div>
@@ -760,6 +761,14 @@ function renderConsoleLog(s){
             ? '<div class="sub">💾 저장된 작업 · 아직 실행 없음. [열기]로 폼에 불러오거나 [실행]으로 돌려봐.</div>'
             : '<div class="sub">이 작업의 실행 기록이 없다.</div>'));
   if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
+  syncTaskButtons();
+}
+// 열기/실행/🗑은 💾 저장된 작업이 선택됐을 때만 활성화(무제목=런 라벨엔 비활성 → '안 눌린다' 혼란 방지)
+function syncTaskButtons(){
+  const isSaved=!!selectedSavedTaskName();
+  ["btn-opentask","btn-runtask","btn-deltask"].forEach(id=>{
+    const b=document.getElementById(id); if(b) b.disabled=!isSaved;
+  });
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
 function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목표 비면 null.
