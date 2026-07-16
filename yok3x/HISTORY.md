@@ -32,6 +32,15 @@
 - 로컬 모델은 P3 폴백(클라우드 전멸+로컬 서버 도달 시)으로만 자동 사용됐고, 이제 GUI에서 끌 수 있음.
   라이브: 토글 라운드트립 ok(ON→OFF→ON), JS 에러 0.
 
+## 미출시(dev) · 2026-07-16 — [ACQUIRE S1] acquire.py 순수 모듈 (codex 구현·Claude 검토)
+
+- ACQUIRE(Know-Before-Fix) 이식 1단계: `yok3x/acquire.py` 순수 모듈(의존성0: json·re).
+  Questioner/Answerer 프롬프트 빌더, 관대한 JSON 추출(`raw_decode`), QA 스키마 검증
+  (evidence·unknowns 강제, 정직한 unknown 예외, confidence 교정), Resolver 컨텍스트 렌더(max_chars 준수).
+- **역할 분담 도그푸딩**: codex CLI가 구현(생산자), Claude가 검토(리뷰어).
+- 검토: 범위 준수(모듈+테스트만), 적대적 프로브 6종 통과(코드펜스 파싱·unknown예외·근거없는단언 거부·
+  confidence교정·max_chars·파싱실패 안전), 단위테스트 16개, **90 passed**(기존 74 유지). 계획서 v4.2.0.
+
 ## 미출시(dev) · 2026-07-16 — 콘솔 단일 컬럼(한줄배치) 복구 (사용자 요청)
 
 - BUG-19 수정으로 그동안 blowout에 가려져 있던 **우측 '에이전트 배치' 2컬럼이 드러나자**, 사용자가
