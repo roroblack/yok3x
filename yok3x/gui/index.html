@@ -88,6 +88,10 @@ code,.mono,.rid{font-family:var(--font-code)}
 .mk{position:absolute;top:0;bottom:0;width:0;z-index:2;pointer-events:none;transform:translateX(-1px)}
 .mk.soft{border-left:2px dashed #b9832b}
 .mk.hard{border-left:2px solid var(--red)}
+.mk.pstart{border-left:2px dotted #3a6ea5}
+.mk.psoft{border-left:2px dashed #b9832b;opacity:.7}
+.mk.pcap{border-left:2px solid #2f7d3a}
+.mk.pband{background:rgba(47,125,58,.14);z-index:1;transform:none}
 .stat{font-family:var(--font-code);font-size:11px;color:var(--ink2);margin-top:8px;display:flex;gap:11px;flex-wrap:wrap}
 .stat b{color:var(--ink)}
 
@@ -487,6 +491,18 @@ function marks(g){if(!g)return"";const s=Math.round(((g.soft)||.8)*100),h=Math.r
   let m=`<span class="mk soft" style="left:${s}%" title="warn ${s}%"></span>`;
   if(h<100)m+=`<span class="mk hard" style="left:${h}%" title="stop ${h}%"></span>`;
   return m;}
+// 7일 바 위 '오늘 하루 페이싱 예산' 눈금선: 아침기준선→오늘상한(cap) 구간을 띠로, soft/cap 임계선.
+// 주간 한도(가로축) 대비 하루에 얼마나 갉아먹는지/남았는지 한눈에.
+function paceMarks(p){
+  if(!p||p.start==null||!p.cap)return"";
+  const clamp=v=>Math.max(0,Math.min(100,v));
+  const st=clamp(p.start), cap=clamp(p.start+p.cap), sf=clamp(p.start+(p.soft!=null?p.soft:p.cap));
+  const bandW=Math.max(0,cap-st);
+  let m=`<span class="mk pband" style="left:${st}%;width:${bandW}%" title="오늘 페이싱 예산 구간(주간의 ${Math.round(p.cap)}%p)"></span>`;
+  m+=`<span class="mk pstart" style="left:${st}%" title="오늘 아침 기준 ${st.toFixed(1)}%"></span>`;
+  if(sf<cap-0.3)m+=`<span class="mk psoft" style="left:${sf}%" title="오늘 경고선 ${sf.toFixed(1)}%"></span>`;
+  m+=`<span class="mk pcap" style="left:${cap}%" title="오늘 상한 ${cap.toFixed(1)}% (넘으면 ${p.blocked?'정지':'경고'})"></span>`;
+  return m;}
 function fmtTok(n){return n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":n}
 
 function render(s){
@@ -516,10 +532,13 @@ function render(s){
   document.querySelectorAll('#planseg button').forEach(b=>b.classList.toggle('on',b.dataset.plan===(s.plan||"")));
   // tools
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
-    const wins=t.windows.length?t.windows.map(w=>`
-      <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":w.name==="7d"?"7일":w.name}</span><span class="rst">리셋 ${w.reset}</span></div>
-      <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}</div>
-      <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`).join("")
+    const wins=t.windows.length?t.windows.map(w=>{
+      const isWk=w.name==="7d", pm=isWk?paceMarks(t.pace):"";
+      const pl=(isWk&&t.pace)?`<span class="rst" title="오늘 소비 / 하루 상한(주간 대비)">오늘 ${t.pace.used}%p / 상한 ${t.pace.cap}%p</span>`:`<span class="rst">리셋 ${w.reset}</span>`;
+      return `
+      <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
+      <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>
+      <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`;}).join("")
       : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fclsPct(t.ratio*100,s.guard)}" style="width:${Math.round(t.ratio*100)}%"></i>${marks(s.guard)}</div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
     const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
     return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>

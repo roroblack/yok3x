@@ -86,6 +86,8 @@ def build_state(cfg: Config) -> dict:
             ps = usage.daily_pace_status(cfg, b, usage._weekly_pct(v.reading))
             if ps:
                 pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
+                        "soft": round(ps["soft"], 1),
+                        "start": round(ps["current"] - ps["used"], 1),  # 오늘 아침 7d 기준선
                         "level": ps["level"], "blocked": ps["blocked"], "approved": ps["approved"]}
         tools.append({
             "backend": b, "level": v.level, "ratio": round(v.ratio, 3),
