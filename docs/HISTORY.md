@@ -4,6 +4,14 @@
 
 ---
 
+## 문서 · 2026-07-16 — docs/ 유형별 분리(plans/reports) + RAG·TOOL·메모리 평가 (사용자 요청)
+
+- **plans/ 분리**: 계획서 13개(`vX.Y.Z-plan-*`)를 `docs/reports/` → `docs/plans/`로. reports/는 회고
+  (평가·분석·감사·리뷰) + `bugs/` 유지. **HISTORY는 단일 파일 유지**(방대해지면 롤링 아카이브, 항목 분할 X).
+- RULE §7.2 신설(문서 폴더 구조·유형→위치 매핑). ADOPTIONS 참조에 `plans/`·`reports/` 접두어.
+- 평가 리포트 추가: `reports/v4.x-assessment-rag-tools-memory-2026-07-16.md` — 별도 벡터 RAG=미채택(knot이
+  이미 의존성0 RAG-lite), TOOL=MCP 로드맵+ACQUIRE read-only 프로필, 메모리=2계층 이미 존재(분리+수동 승급 핵심).
+
 ## 구조 · 2026-07-16 — 저장소 평탄화 + docs/ 통합 (사용자 요청)
 
 - **3겹 중첩 제거**: `test_workspace/yok3x/yok3x/yok3x/`(패키지)를 한 칸 올려 **git 루트 == 프로젝트 루트**로.

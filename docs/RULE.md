@@ -80,6 +80,22 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
   표에 추가한다. 형식: 증상 · 근본원인 · 진단 · 수정 · 검증 · 교훈 (+ 시점·심각도·커밋·상태).
 - 디버깅 세션의 내역을 이 폴더에 **꾸준히 누적**한다(잊지 말 것). HISTORY는 요약, bugs/는 상세 근본원인.
 
+### 7.2 문서 폴더 구조 (docs/)
+
+문서는 **유형별 폴더**로 나눈다. 매 작업마다 해당 유형 파일을 만들거나 갱신한다.
+
+| 위치 | 무엇 | 시점 |
+|------|------|------|
+| `docs/plans/` | 계획서·제안서(`vX.Y.Z-plan-*`) | **작업 전**(미래지향) |
+| `docs/reports/` | 평가·분석·감사·리뷰·완료보고(`*-assessment-*`·`*-analysis-*`·`*-audit-*` 등) | **작업 후/에 대해**(회고) |
+| `docs/reports/bugs/` | 버그 리포트(`BUG-NN-*` + README 인덱스) — §7.1 | 버그 수정 시 |
+| `docs/HISTORY.md` | 변경 이력(단일 파일) — §7 | 매 변경 |
+| `docs/RULE.md`·`docs/ADOPTIONS.md` | 규칙·채택 원장(루트 유지) | 규칙/채택 변경 시 |
+
+- **README.md는 저장소 루트 유지**(pyproject `readme=` + GitHub 관례). docs/로 옮기지 않는다.
+- HISTORY는 **폴더로 쪼개지 않는다**(통독·grep 편의). 방대해지면 낡은 항목만 `docs/history/HISTORY-vN.md`로
+  **롤링 아카이브**하고 HISTORY.md는 최신만 유지(항목별 분할 금지).
+
 ## 8. 릴리스 · 버전 보존
 
 - 정본 소스: **저장소 루트**(패키지 `yok3x/` + `gui/`·`tests/`·`docs/`·`pyproject.toml`·`yok3x.py`). 배포물: `release/yok3x-vX.Y.Z.zip`.
