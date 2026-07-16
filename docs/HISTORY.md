@@ -4,6 +4,12 @@
 
 ---
 
+## 계획 · 2026-07-16 — 통합 실행 로드맵 체크리스트 (codex 공동검토, 사용자 요청)
+
+- `plans/v4.3.0-plan-roadmap-checklist`: 흩어진 백로그(리뷰 G1~G5·ACQUIRE S3/S4·부속)를 단일 우선순위
+  체크리스트로 통합. codex 검토 반영 — **공통 실행상태 계약 선정의** + 순서 `F0→A-lite→B→C→F→E→G→D→H`.
+  C(병렬)의 동시성 함정 10여 개(TOCTOU·예약·lockfile·취소·all-settled) 명시. 이 파일 기준으로 진행.
+
 ## 문서 · 2026-07-16 — 멀티에이전트 적정성 리뷰 리포트 (사용자 요청)
 
 - `reports/v4.x-review-multiagent-adequacy`: 기반기술 적정, 다음 티어 격차 5개(G1 병렬성·G2 워커도구·
