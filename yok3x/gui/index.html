@@ -145,11 +145,9 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .help pre{font-family:var(--font-code);font-size:12px;background:var(--cream);border:2px solid var(--ink);border-radius:8px;padding:9px 11px;overflow-x:auto;margin:6px 0}
 .help .k{font-family:var(--font-code);background:var(--cream);border:2px solid var(--ink);border-radius:6px;padding:0 6px;font-size:12px}
 .help .tip{border:2.5px dashed var(--ink);border-radius:10px;background:var(--tint-warn);padding:9px 12px;font-size:12.5px;color:var(--ink2);margin:8px 0}
-/* 콘솔 */
-/* minmax(0,..) 필수: 안 쓰면 채팅 안 긴 토큰(run_id 등) min-content가 fr 트랙을 부풀려
-   콘솔 전체가 가로로 폭발(세로 채팅이 가로로 보이는 버그). overflow:auto로 내부 스크롤 처리 */
-.cols{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:14px}
-@media(max-width:900px){.cols{grid-template-columns:1fr}}
+/* 콘솔 — 단일 컬럼(한줄배치): 작업 콘솔 풀폭 위, 에이전트 배치 아래로 세로 적층.
+   (예전 좌우 2컬럼은 우측 패널이 좁고, 그리드 stretch로 아래 빈공간이 생겨 되돌림) */
+.cols{display:flex;flex-direction:column;gap:14px}
 .you .b,.cstep .cb,.cstep .av,.you .b .meta{overflow-wrap:anywhere}
 .chat{height:360px;overflow-y:auto;border:2.5px dashed var(--ink);border-radius:12px;background:var(--cream);padding:11px}
 .you{display:flex;justify-content:flex-end;margin-bottom:7px}
