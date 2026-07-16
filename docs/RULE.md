@@ -46,7 +46,7 @@
   - 폴백: 외부 자원(CLI·파일·네트워크) 실패 시 **명시적 열화 경로**가 사용자에게 표시되는 경우만 (예: 실측 실패 → `⚠stale`/`원장` 배지). 조용히 값을 지어내는 폴백 금지.
   - 하드코딩: 프로토콜 상수(API 필드명·창 크기 300/10080분 등)·안전 상한(타임아웃)은 허용. **사용자 환경마다 다른 값**(예산·한도·경로·모델명)은 반드시 설정(yok3x.json)으로 뺀다.
 - **적용할 때는 별도 리포트를 만들어 제출한다**: 어디에 · 왜 필요한지 · 실패 시 어떻게 표시되는지 · 설정으로 뺄 수 없는 이유. 리포트 없는 폴백/하드코딩 추가 금지.
-- 기존 폴백/하드코딩 현황은 최신 `reports/*-fallback-hardcoding-audit-*.md` 레지스트리에서 추적한다.
+- 기존 폴백/하드코딩 현황은 최신 `docs/reports/*-fallback-hardcoding-audit-*.md` 레지스트리에서 추적한다.
 
 ## 5.6 GUI · UI/UX 변경은 사용자 명령 없이 금지 (필수)
 
@@ -74,15 +74,15 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
 - 코드·기능·문서를 바꾸면 **매번 [HISTORY.md](HISTORY.md)에 한 줄 이상 기록**한다: 버전, 날짜/시간, 변경 요약.
 - 릴리스(zip)를 만들 때 버전을 올리고 HISTORY에 릴리스 항목을 남긴다.
 
-### 7.1 버그 리포트 (reports/bugs/)
+### 7.1 버그 리포트 (docs/reports/bugs/)
 
-- **버그를 발견·수정할 때마다** `reports/bugs/BUG-NN-<slug>.md`를 만들고 인덱스(`reports/bugs/README.md`)
+- **버그를 발견·수정할 때마다** `docs/reports/bugs/BUG-NN-<slug>.md`를 만들고 인덱스(`docs/reports/bugs/README.md`)
   표에 추가한다. 형식: 증상 · 근본원인 · 진단 · 수정 · 검증 · 교훈 (+ 시점·심각도·커밋·상태).
 - 디버깅 세션의 내역을 이 폴더에 **꾸준히 누적**한다(잊지 말 것). HISTORY는 요약, bugs/는 상세 근본원인.
 
 ## 8. 릴리스 · 버전 보존
 
-- 정본 소스: `yok3x/`. 배포물: `release/yok3x-vX.Y.Z.zip`.
+- 정본 소스: **저장소 루트**(패키지 `yok3x/` + `gui/`·`tests/`·`docs/`·`pyproject.toml`·`yok3x.py`). 배포물: `release/yok3x-vX.Y.Z.zip`.
 - zip 만들기 전 `__pycache__`·런타임 산출물(`.yok3x/`·생성된 `yok3x.json` 등) 제거.
 - Windows 스모크 테스트(`init/setup/run/gui/limits`) 통과 후 패키징.
 - **이전 버전 zip을 삭제하지 않는다.** 새 릴리스를 만들면 이전 릴리스 zip을 `backup/versions/`로 옮기고 `backup/versions/VERSIONS.md`에 항목을 추가한다(내부 `__version__`으로 검증). 리브랜딩 등 대규모 변경 전에는 정본 폴더 전체를 `backup/`에 스냅샷한다.
@@ -96,6 +96,6 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
 3. **위험 작업 전**: 리네임·대량 삭제·구조 변경 등 되돌리기 어려운 작업 **직전** → 스냅샷.
 4. **시간**: 활발히 작업한 날은 그날 마지막 작업 후 1회 → 스냅샷(선택).
 
-스냅샷 방법: 정본 `yok3x/` 폴더를 `backup/yok3x-<버전>-<날짜시간>/`로 복사(`__pycache__`·런타임 제외). 버전 zip은 `backup/versions/`(추적됨, GitHub 보존), 폴더 스냅샷은 `backup/`(로컬). 스냅샷 시 HISTORY에 한 줄 남긴다.
+스냅샷 방법: 정본 소스 트리(패키지 `yok3x/`·`gui/`·`tests/`·`docs/`·`pyproject.toml`·`yok3x.py`)를 `backup/yok3x-<버전>-<날짜시간>/`로 복사(`__pycache__`·런타임·`backup/`·`release/` 제외). 버전 zip은 `backup/versions/`(추적됨, GitHub 보존), 폴더 스냅샷은 `backup/`(로컬). 스냅샷 시 HISTORY에 한 줄 남긴다.
 
 > 요지: "일정 이상 쌓이면"(HISTORY 5개/patch 3회/minor 버전/위험작업 전) = 백업 시점. 판단이 애매하면 백업하는 쪽으로.

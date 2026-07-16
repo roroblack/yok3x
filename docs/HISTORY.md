@@ -4,6 +4,21 @@
 
 ---
 
+## 구조 · 2026-07-16 — 저장소 평탄화 + docs/ 통합 (사용자 요청)
+
+- **3겹 중첩 제거**: `test_workspace/yok3x/yok3x/yok3x/`(패키지)를 한 칸 올려 **git 루트 == 프로젝트 루트**로.
+  이제 `.git`과 `pyproject.toml`이 같은 층, `yok3x`는 표준 2겹(프로젝트/패키지). `git mv`로 이력 보존(72 rename).
+- **docs/ 신설**: `RULE.md`·`HISTORY.md`·`ADOPTIONS.md` → `docs/`. `reports/`(옛 루트 v2.3~3.1 11개 +
+  구 `yok3x/reports/` 현재분) → `docs/reports/`로 병합(파일명 무충돌, `bugs/` 포함). README는 pyproject
+  `readme=` + GitHub 관례로 **루트 유지**. `backup/`·`release/`·`test_samples/`는 아티팩트라 루트 유지.
+- 참조 갱신: `launch.json`(`yok3x/yok3x.py`→`yok3x.py`), RULE §5.5·§7.1·§8 경로 문구, 메모리(버그리포트 경로).
+  pyproject는 전부 상대경로라 **무수정**(packages=["yok3x"]·testpaths=["tests"]·readme 그대로 동작).
+- 검증: `import yok3x` OK(3.6.0) · `python -m pytest` **90 passed**(새 루트) · 런처 동작. 사전 백업:
+  `test_workspace/yok3x-backup-pre-restructure-20260716_144033.tar.gz`(git 이력 포함).
+- HISTORY의 과거 항목에 적힌 옛 경로(`reports/…`)는 당시 기록이라 **그대로 보존**(현재 위치는 `docs/reports/…`).
+
+---
+
 ## v3.5.0 · 2026-07-13 — 릴리스: CLI 모델 동적조회 · P3 오프라인 폴백 · effort · knot consolidation
 
 - 이번 사이클 성과를 v3.5.0으로 묶음: **CLI 모델 동적조회**(claude `/v1/models`·codex 캐시·gemini 번들
