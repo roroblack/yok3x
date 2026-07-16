@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -1004,3 +1005,136 @@ def test_task_file_with_bom_runs(mock_root):
     tf = mock_root / "task.json"
     tf.write_text("﻿" + json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     assert run_task_file(cfg, tf, auto=True) == "done"
+
+
+# ------------------------------------------------ C-1 준비/실행 분리 + 원자적 상태 저장
+def test_prepare_call_has_no_execution_side_effects(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = ""
+    orch = Orchestrator(cfg, auto=False)
+    monkeypatch.setattr(
+        usage, "check_backend",
+        lambda *a, **k: pytest.fail("prepare_call에서 가드를 호출하면 안 됨"))
+    monkeypatch.setattr(
+        orch, "_gate",
+        lambda *a, **k: pytest.fail("prepare_call에서 게이트를 호출하면 안 됨"))
+
+    spec = orch.prepare_call("claude-main", "준비만", "build")
+
+    assert isinstance(spec, orchestrator.CallSpec)
+    assert orch._step_i == 0 and orch.steps == []
+    assert not orch.run_dir.exists()
+    assert not Path(spec.run_cwd).exists()
+
+
+def test_prepare_call_is_deterministic(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = ""
+    orch = Orchestrator(cfg, auto=True)
+
+    first = orch.prepare_call("claude-main", "같은 작업", "critic", "추가 문맥")
+    second = orch.prepare_call("claude-main", "같은 작업", "critic", "추가 문맥")
+
+    assert first == second
+    assert (first.backend, first.model, first.prompt, first.run_cwd) == (
+        second.backend, second.model, second.prompt, second.run_cwd)
+
+
+def test_prepare_call_reflects_cwd_read_only_and_task_kind(tmp_path):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = ""
+    orch = Orchestrator(cfg, auto=True)
+    cwd = str(tmp_path / "target")
+
+    spec = orch.prepare_call(
+        "codex-main", "읽기 조사", task_kind="critic",
+        extra_context="근거", cwd=cwd, read_only=True)
+
+    assert spec.worker == "codex-main" and spec.task == "읽기 조사"
+    assert spec.task_kind == "critic" and spec.extra_context == "근거"
+    assert spec.cwd == cwd and spec.run_cwd == cwd and spec.read_only is True
+    assert spec.index is None
+
+
+def test_call_worker_keeps_guard_gate_and_artifact_flow(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["active_profile"] = ""
+    events = []
+    verdict = usage.GuardVerdict("claude", 0.1, "5h", "ok", "여유")
+    monkeypatch.setattr(
+        usage, "check_backend",
+        lambda cfg, backend: events.append(("guard", backend)) or verdict)
+    monkeypatch.setattr(usage, "record", lambda *a, **k: events.append(("record",)))
+
+    def fake_backend(name, backend_spec, prompt, **kwargs):
+        events.append(("backend", name, prompt, kwargs))
+        return BackendResult(
+            backend=name, ok=True, text="SCORE: 8\n완료",
+            total_tokens=12, cost_usd=0.25, duration_ms=34)
+
+    monkeypatch.setattr(orchestrator, "run_backend", fake_backend)
+    orch = Orchestrator(
+        cfg, auto=False,
+        ask=lambda message: events.append(("gate", message)) or "y")
+
+    result = orch.call_worker(
+        "claude-main", "회귀 작업", "critic",
+        extra_context="검토 대상", cwd=str(tmp_path), read_only=True)
+
+    assert result.ok and orch._step_i == 1
+    assert [event[0] for event in events] == ["guard", "gate", "backend", "record"]
+    assert orch.steps[0].status == "done" and orch.steps[0].score == 8.0
+    assert orch.steps[0].tokens == 12 and orch.steps[0].cost_usd == 0.25
+    step = json.loads((orch.run_dir / "step_01_claude-main.json").read_text(encoding="utf-8"))
+    status = json.loads((orch.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert step["task"] == "회귀 작업" and step["usage"]["duration_ms"] == 34
+    assert status["state"] == "running" and status["steps"][0]["status"] == "done"
+    backend_event = events[2]
+    assert backend_event[3]["read_only"] is True and backend_event[3]["cwd"] == str(tmp_path)
+
+
+def test_save_status_uses_atomic_replace_without_temp_residue(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    orch = Orchestrator(cfg, auto=True)
+    real_replace = orchestrator.os.replace
+    replaced = []
+
+    def spy_replace(source, destination):
+        source, destination = Path(source), Path(destination)
+        assert source.exists() and source.parent == destination.parent
+        assert source.name.startswith(".status.json.") and source.suffix == ".tmp"
+        replaced.append((source, destination))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(orchestrator.os, "replace", spy_replace)
+    orch._save_status("running", {"marker": "원자적"})
+
+    status_path = orch.run_dir / "status.json"
+    assert replaced and replaced[0][1] == status_path
+    assert json.loads(status_path.read_text(encoding="utf-8"))["marker"] == "원자적"
+    assert list(orch.run_dir.glob("*.tmp")) == []
+    assert list(orch.run_dir.glob(".status.json.*")) == []
+
+
+def test_save_acquire_uses_atomic_replace_without_temp_residue(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    orch = Orchestrator(cfg, auto=True)
+    real_replace = orchestrator.os.replace
+    replaced = []
+
+    def spy_replace(source, destination):
+        source, destination = Path(source), Path(destination)
+        assert source.exists() and source.parent == destination.parent
+        assert source.name.startswith(".acquire.json.") and source.suffix == ".tmp"
+        replaced.append(destination)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(orchestrator.os, "replace", spy_replace)
+    orch._save_acquire([{"answer": "a"}], [{"question": "q"}])
+
+    acquire_path = orch.run_dir / "acquire.json"
+    assert replaced == [acquire_path]
+    saved = json.loads(acquire_path.read_text(encoding="utf-8"))
+    assert saved["qa_items"] == [{"answer": "a"}]
+    assert list(orch.run_dir.glob("*.tmp")) == []
+    assert list(orch.run_dir.glob(".acquire.json.*")) == []

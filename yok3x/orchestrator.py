@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -92,6 +94,42 @@ _OVERCONFIDENCE = ("반드시 동작", "무조건 동작", "100% 정확", "완�
                    "definitely works", "guaranteed to work", "never fails")
 
 
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """같은 디렉터리의 임시 파일을 완성한 뒤 JSON 파일을 원자적으로 교체한다."""
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False) as tmp:
+            json.dump(data, tmp, ensure_ascii=False, indent=2)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+@dataclass
+class CallSpec:
+    worker: str
+    task: str
+    task_kind: str = "general"
+    extra_context: str = ""
+    cwd: str | None = None
+    read_only: bool = False
+    # 준비 단계에서 결정되는 값. 가드 폴오버·열화는 실행 시점 상태를 따른다.
+    backend: str = ""
+    model: str | None = None
+    prompt: str = ""
+    run_cwd: str = ""
+    index: int | None = None
+    route_reason: str = ""
+
+
 @dataclass
 class StepLog:
     index: int
@@ -145,15 +183,20 @@ class Orchestrator:
         with (self.run_dir / "run.log").open("a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}\n")
 
+    def _isolated_cwd_path(self) -> str:
+        """파일을 만들지 않고 이번 런의 격리 실행 경로만 결정한다."""
+        return getattr(
+            self, "_iso_dir",
+            str(Path(tempfile.gettempdir()) / f"yok3x_iso_{self.run_id}"))
+
     def _isolated_cwd(self) -> str:
         """workdir 없는 워커용 빈 실행 디렉터리. claude/codex CLI는 실행 cwd의 git·파일
         컨텍스트를 자동 주입하는데, 레포 안에서 돌리면 워커가 프롬프트의 [작업] 대신
         레포 파일(brief.md·계획서 등)을 '진짜 작업'으로 오인해 헤맨다. 빈 dir에서 실행해
         차단한다. 런당 한 번 만들어 재사용."""
-        d = getattr(self, "_iso_dir", None)
-        if not d:
-            import tempfile
-            d = self._iso_dir = tempfile.mkdtemp(prefix="yok3x_iso_")
+        d = self._isolated_cwd_path()
+        Path(d).mkdir(parents=True, exist_ok=True)
+        self._iso_dir = d
         return d
 
     def _save_status(self, state: str, extra: dict | None = None) -> None:
@@ -170,8 +213,7 @@ class Orchestrator:
         }
         if extra:
             data.update(extra)
-        (self.run_dir / "status.json").write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(self.run_dir / "status.json", data)
 
     def _gate(self, description: str) -> bool:
         """승인 게이트. False면 해당 단계 건너뜀, 'q'면 런 중단."""
@@ -290,53 +332,27 @@ class Orchestrator:
 
     # ------------------------------------------------------------ worker call
 
-    def call_worker(self, worker: str, task: str, task_kind: str = "general",
-                    extra_context: str = "", cwd: str | None = None,
-                    read_only: bool = False) -> BackendResult:
-        self._step_i += 1
-        idx = self._step_i
+    def prepare_call(self, worker: str, task: str, task_kind: str = "general",
+                     extra_context: str = "", cwd: str | None = None,
+                     read_only: bool = False) -> CallSpec:
+        """라우팅·프롬프트·실행 경로를 부작용 없이 미리 확정한다."""
         cfg = self.cfg
-
         w = cfg.worker(worker)
-        # 1) 유효 backend·model 결정. base = 워커의 backend + 수동 지정 모델(workers[].model,
-        #    있으면. 없으면 CLI 기본). 프로파일 라우팅(S1/S2)이 켜져 있으면 그것이 override(auto),
-        #    이어서 sticky 폴오버 → 적응형 열화 순. 즉 프로파일 off면 수동 모델이 그대로 쓰인다.
+
+        # 유효 backend·model 결정. 프로파일 라우팅 뒤 sticky 폴오버를 적용한다.
+        # 요금 가드에 따른 폴오버·열화는 시점 의존 상태이므로 execute_call에 남긴다.
         backend, model_override = w["backend"], (w.get("model") or None)
         rb, rm, route_reason = resolve_model(cfg, task_kind,
                                              available=lambda b: usage.backend_available(cfg, b))
         if rb and rb in cfg.backends:
             backend, model_override = rb, rm
-            self._log(f"[route] {task_kind} → {route_reason} ({backend}{'/' + rm if rm else ''})")
+        else:
+            route_reason = ""
         _sticky = self._failover_map.get(worker)
         if _sticky and _sticky in cfg.backends:
             backend, model_override = _sticky, None
 
-        # 2) 요금 가드 + P2 백엔드 폴오버(on/off, 기본 off). off면 stop→루프 정지(현행 동작).
-        #    on이면 failover_ratio↑/stop에서 여유 있는 다른 도구로 전환(런당 상한·sticky 히스테리시스).
-        verdict = usage.check_backend(cfg, backend)
-        if verdict.level == "warn":
-            self._log(f"[guard] 경고: {verdict.backend} {verdict.metric} {verdict.ratio:.0%} ({verdict.detail})")
-        _deg = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
-        if verdict.level == "stop" or verdict.ratio >= float(_deg.get("failover_ratio", 0.97)):
-            alt = usage.failover_backend(cfg, worker, backend, self._failovers)
-            if alt:
-                self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")
-                self._failover_map[worker] = alt
-                self._failovers += 1
-                backend, model_override, verdict = alt, None, usage.check_backend(cfg, alt)
-            elif verdict.level == "stop":
-                self.steps.append(StepLog(idx, worker, task_kind, "blocked",
-                                          f"guard stop: {verdict.backend} {verdict.detail}"))
-                self._save_status("stopped_by_guard")
-                raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
-                                 f"{verdict.ratio:.0%} ({verdict.detail})")
-
-        # 3) 승인 게이트
-        if not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}"):
-            self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
-            return BackendResult(backend="-", ok=False, error="skipped by gate")
-
-        # 4) 프롬프트 조립. 코드생성 워커(build/revise/general)는 [작업]을 '맨 앞'에 두고
+        # 프롬프트 조립. 코드생성 워커(build/revise/general)는 [작업]을 '맨 앞'에 두고
         # '지금 구현·되묻지 마라'를 명시한다 — 헤드리스 claude가 역할 설명을 '작업 없음'으로
         # 오인해 명확화만 되묻는 실패모드(체계적)를 막기 위함. critic/review는 산출물
         # (extra_context) 뒤에 채점 지시를 두는 기존 순서 유지.
@@ -379,23 +395,72 @@ class Orchestrator:
             parts.append(f"[작업]\n{task}")
         prompt = "\n\n".join(parts)
 
-        # 5) 적응형 열화 P1(최종 backend·verdict 기준). 라우팅/폴오버 후 backend의 lite로 낮춤.
+        run_cwd = cwd or self.workdir or self._isolated_cwd_path()
+        return CallSpec(
+            worker=worker, task=task, task_kind=task_kind,
+            extra_context=extra_context, cwd=cwd, read_only=read_only,
+            backend=backend, model=model_override, prompt=prompt,
+            run_cwd=run_cwd, route_reason=route_reason)
+
+    def execute_call(self, spec: CallSpec) -> BackendResult:
+        """준비된 호출에 단계번호·가드·승인·실행·기록을 적용한다."""
+        self._step_i += 1
+        idx = self._step_i
+        spec.index = idx
+        cfg = self.cfg
+        worker, task, task_kind = spec.worker, spec.task, spec.task_kind
+        backend, model_override = spec.backend, spec.model
+        w = cfg.worker(worker)
+
+        if spec.route_reason:
+            self._log(
+                f"[route] {task_kind} → {spec.route_reason} "
+                f"({backend}{'/' + model_override if model_override else ''})")
+
+        # 요금 가드 + P2 백엔드 폴오버(on/off, 기본 off). off면 stop→루프 정지(현행 동작).
+        # on이면 failover_ratio↑/stop에서 여유 있는 다른 도구로 전환(런당 상한·sticky 히스테리시스).
+        verdict = usage.check_backend(cfg, backend)
+        if verdict.level == "warn":
+            self._log(f"[guard] 경고: {verdict.backend} {verdict.metric} {verdict.ratio:.0%} ({verdict.detail})")
+        _deg = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
+        if verdict.level == "stop" or verdict.ratio >= float(_deg.get("failover_ratio", 0.97)):
+            alt = usage.failover_backend(cfg, worker, backend, self._failovers)
+            if alt:
+                self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")
+                self._failover_map[worker] = alt
+                self._failovers += 1
+                backend, model_override, verdict = alt, None, usage.check_backend(cfg, alt)
+            elif verdict.level == "stop":
+                self.steps.append(StepLog(idx, worker, task_kind, "blocked",
+                                          f"guard stop: {verdict.backend} {verdict.detail}"))
+                self._save_status("stopped_by_guard")
+                raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
+                                 f"{verdict.ratio:.0%} ({verdict.detail})")
+
+        # 승인 게이트
+        if not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}"):
+            self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
+            return BackendResult(backend="-", ok=False, error="skipped by gate")
+
+        # 적응형 열화 P1(최종 backend·verdict 기준). 라우팅/폴오버 후 backend의 lite로 낮춤.
         action, lite = usage.degrade_plan(cfg, worker, verdict, backend=backend)
         if action == "downgrade" and lite:
             model_override = lite
             self._log(f"[degrade] {worker} 사용률 {verdict.ratio:.0%} → 모델 다운그레이드: {lite}")
 
-        # 4) 실행 + 사용량 기록. workdir가 있으면 그 디렉터리에서, 없으면 빈 격리 dir에서
+        # 실행 + 사용량 기록. workdir가 있으면 그 디렉터리에서, 없으면 빈 격리 dir에서
         # 실행한다(레포 컨텍스트가 워커를 오염시키는 것을 방지 — _isolated_cwd 참조).
-        run_cwd = cwd or self.workdir or self._isolated_cwd()
+        run_cwd = spec.run_cwd
+        if run_cwd == self._isolated_cwd_path():
+            self._isolated_cwd()
         # 추론 강도(effort): 워커별 지정 > 전역 기본 default_effort. backend가 effort_arg를 지원할 때만
         # 실제 전달(claude/codex). 폴오버로 backend가 바뀌면 그 backend의 effort_arg 유무에 따름.
         effort = w.get("effort") or cfg.yok3x.get("default_effort") or None
         self._log(f"[run] step {idx} → {worker} ({backend}{'·' + effort if effort else ''})")
         backend_kwargs = {"cwd": run_cwd, "model": model_override, "effort": effort}
-        if read_only:
+        if spec.read_only:
             backend_kwargs["read_only"] = True
-        res = run_backend(backend, cfg.backends[backend], prompt, **backend_kwargs)
+        res = run_backend(backend, cfg.backends[backend], spec.prompt, **backend_kwargs)
         usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그
@@ -427,6 +492,12 @@ class Orchestrator:
             self._log(f"[check] step {idx} 이슈: {'; '.join(checklist)}")
         return res
 
+    def call_worker(self, worker: str, task: str, task_kind: str = "general",
+                    extra_context: str = "", cwd: str | None = None,
+                    read_only: bool = False) -> BackendResult:
+        return self.execute_call(self.prepare_call(
+            worker, task, task_kind, extra_context, cwd, read_only))
+
     # ------------------------------------------------------------ ACQUIRE preflight
 
     def _save_acquire(self, qa_items: list[dict], questions: list[dict],
@@ -440,8 +511,7 @@ class Orchestrator:
             "dropped": dropped or [],
             "updated": datetime.now().isoformat(timespec="seconds"),
         }
-        (self.run_dir / "acquire.json").write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _atomic_write_json(self.run_dir / "acquire.json", data)
         self._log(f"[acquire] 저장: 질문 {len(questions)}개, 유효 QA {len(qa_items)}개")
 
     def acquire_preflight(self, issue: str, questioner: str, answerers: list[str],
