@@ -43,13 +43,14 @@ class BackendResult:
 
 def run_backend(name: str, spec: dict[str, Any], prompt: str,
                 cwd: str | None = None, model: str | None = None,
-                effort: str | None = None) -> BackendResult:
+                effort: str | None = None, read_only: bool = False) -> BackendResult:
     btype = spec.get("type", "cli")
     t0 = time.time()
     if btype == "mock":
         res = _run_mock(name, spec, prompt)
     elif btype == "cli":
-        res = _run_cli(name, spec, prompt, cwd=cwd, model=model, effort=effort)
+        res = _run_cli(name, spec, prompt, cwd=cwd, model=model, effort=effort,
+                       read_only=read_only)
     elif btype in ("openai_http", "native", "local"):
         res = _run_openai_http(name, spec, prompt, model=model)
     elif btype == "mcp":
@@ -65,7 +66,7 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
 
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              cwd: str | None = None, model: str | None = None,
-             effort: str | None = None) -> BackendResult:
+             effort: str | None = None, read_only: bool = False) -> BackendResult:
     template = spec["command"]
     has_prompt_arg = any("{prompt}" in str(a) for a in template)
     # BUG-18 방어(BUG-10 재발 차단): 멀티라인 프롬프트를 argv({prompt})로 넘기면 Windows npm .cmd
@@ -82,6 +83,16 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
     # claude=--effort <level>, codex=-c model_reasoning_effort=<level>. gemini는 미지원(무시).
     if effort and spec.get("effort_arg"):
         cmd += [str(a).replace("{effort}", effort) for a in spec["effort_arg"]]
+    # ACQUIRE Answerer는 저장소를 조사하되 수정할 수 없어야 한다. backend별 선택 템플릿이
+    # 있을 때만 덧붙이고, 없는 커스텀 backend는 기존 argv를 그대로 쓴다.
+    if read_only and spec.get("read_only_arg"):
+        read_only_args = [str(a) for a in spec["read_only_arg"]]
+        # claude 기본 프로필은 일반 워커가 레포를 뒤지지 못하게 모든 도구를 막는다.
+        # 조사 프로필의 --disallowedTools가 그 값을 대체해야 Read/Glob/Grep/Bash를 쓸 수 있다.
+        if "--disallowedTools" in read_only_args and "--disallowedTools" in cmd:
+            old = cmd.index("--disallowedTools")
+            del cmd[old:old + 2]
+        cmd += read_only_args
     # Windows: claude/codex/gemini는 npm .cmd 심 — CreateProcess가 PATHEXT를
     # 해석하지 않으므로 shutil.which로 실제 경로(claude.cmd 등)로 치환한다.
     resolved = shutil.which(cmd[0])

@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import knot, usage
+from . import acquire, knot, usage
 from .backends import BackendResult, run_backend
 from .config import Config
 
@@ -252,7 +252,8 @@ class Orchestrator:
     # ------------------------------------------------------------ worker call
 
     def call_worker(self, worker: str, task: str, task_kind: str = "general",
-                    extra_context: str = "", cwd: str | None = None) -> BackendResult:
+                    extra_context: str = "", cwd: str | None = None,
+                    read_only: bool = False) -> BackendResult:
         self._step_i += 1
         idx = self._step_i
         cfg = self.cfg
@@ -352,8 +353,10 @@ class Orchestrator:
         # 실제 전달(claude/codex). 폴오버로 backend가 바뀌면 그 backend의 effort_arg 유무에 따름.
         effort = w.get("effort") or cfg.yok3x.get("default_effort") or None
         self._log(f"[run] step {idx} → {worker} ({backend}{'·' + effort if effort else ''})")
-        res = run_backend(backend, cfg.backends[backend], prompt,
-                          cwd=run_cwd, model=model_override, effort=effort)
+        backend_kwargs = {"cwd": run_cwd, "model": model_override, "effort": effort}
+        if read_only:
+            backend_kwargs["read_only"] = True
+        res = run_backend(backend, cfg.backends[backend], prompt, **backend_kwargs)
         usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그
@@ -380,9 +383,111 @@ class Orchestrator:
             self._log(f"[check] step {idx} 이슈: {'; '.join(checklist)}")
         return res
 
+    # ------------------------------------------------------------ ACQUIRE preflight
+
+    def _save_acquire(self, qa_items: list[dict], questions: list[dict]) -> None:
+        """이슈별 QA를 knot가 아닌 현재 run의 일시 메모리에만 저장한다."""
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "run_id": self.run_id,
+            "questions": questions,
+            "qa_items": qa_items,
+            "updated": datetime.now().isoformat(timespec="seconds"),
+        }
+        (self.run_dir / "acquire.json").write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._log(f"[acquire] 저장: 질문 {len(questions)}개, 유효 QA {len(qa_items)}개")
+
+    def acquire_preflight(self, issue: str, questioner: str, answerers: list[str],
+                          qa_count: int = 2, workdir: str | None = None
+                          ) -> tuple[str, list[dict]]:
+        """수리 전에 필요한 저장소 지식을 독립 QA로 수집한다.
+
+        실패하거나 비용 가드가 멈춘 경우 본 수리를 막지 않고 빈 컨텍스트를 반환한다.
+        """
+        try:
+            count = max(0, int(qa_count))
+        except (TypeError, ValueError):
+            self._log(f"[acquire] 잘못된 qa_count({qa_count!r}) — preflight 생략")
+            return "", []
+        if (not isinstance(questioner, str) or not questioner.strip()
+                or not isinstance(answerers, (list, tuple))
+                or not answerers
+                or not all(isinstance(worker, str) and worker.strip() for worker in answerers)
+                or count == 0):
+            self._log("[acquire] questioner/answerers/qa_count 부족 — preflight 생략")
+            return "", []
+        answerers = list(answerers)
+
+        # ref: ACQUIRE(Know-Before-Fix), 이슈 해결 전 QA 지식 수집 — 비용 가드가
+        # stop이면 조사보다 본 수리를 우선한다. 중복 워커는 한 번만 확인한다.
+        for worker in dict.fromkeys([questioner, *answerers]):
+            try:
+                backend = self.cfg.worker(worker)["backend"]
+                verdict = usage.check_backend(self.cfg, backend)
+            except (KeyError, TypeError, ValueError) as exc:
+                self._log(f"[acquire] 워커/가드 확인 실패({worker}): {exc} — preflight 생략")
+                return "", []
+            if verdict.level == "stop":
+                self._log(f"[acquire] 가드 stop({worker}/{backend}) — preflight 생략, 본 수리 우선")
+                return "", []
+
+        self._log(f"[acquire] Questioner 시작: {questioner}, 목표 질문 {count}개")
+        try:
+            question_result = self.call_worker(
+                questioner, acquire.build_questioner_prompt(issue, count),
+                task_kind="general", cwd=workdir)
+        except RunAborted:
+            raise
+        except Exception as exc:
+            self._log(f"[acquire] Questioner 호출 실패: {type(exc).__name__}: {exc}")
+            return "", []
+        if not question_result.ok:
+            self._log(f"[acquire] Questioner 실패: {question_result.error or '응답 없음'}")
+            return "", []
+        questions = acquire.parse_questions(question_result.text, count)
+        if not questions:
+            self._log("[acquire] 질문 파싱 결과 0개 — preflight 종료")
+            return "", []
+        self._log(f"[acquire] 질문 {len(questions)}개 파싱 완료")
+
+        qa_items: list[dict] = []
+        for index, question in enumerate(questions):
+            answerer = answerers[index % len(answerers)]
+            self._log(f"[acquire] Answerer {index + 1}/{len(questions)} 시작: {answerer}")
+            try:
+                answer_result = self.call_worker(
+                    answerer, acquire.build_answerer_prompt(issue, question),
+                    task_kind="general", cwd=workdir, read_only=True)
+            except RunAborted:
+                raise
+            except Exception as exc:
+                self._log(f"[acquire] Answerer 호출 실패({answerer}): {type(exc).__name__}: {exc}")
+                continue
+            if not answer_result.ok:
+                self._log(f"[acquire] Answerer 실패({answerer}): "
+                          f"{answer_result.error or '응답 없음'}")
+                continue
+            answer = acquire.parse_answer(answer_result.text)
+            valid, reason = acquire.validate_answer(answer) if answer is not None else (False, "JSON 파싱 실패")
+            if not valid:
+                self._log(f"[acquire] QA {index + 1} 제외: {reason}")
+                continue
+            qa_items.append({"question": question, "answer": answer})
+            self._log(f"[acquire] QA {index + 1} 검증 통과")
+
+        self._save_acquire(qa_items, questions)
+        if not qa_items:
+            self._log("[acquire] 유효 QA 0개 — 빈 컨텍스트로 본 수리 계속")
+            return "", []
+        context = acquire.render_qa_context(issue, qa_items)
+        self._log(f"[acquire] preflight 완료: 유효 QA {len(qa_items)}개")
+        return context, qa_items
+
     # ------------------------------------------------------------ patterns
 
-    def run_pipeline(self, task: str, stages: list[dict[str, str]]) -> None:
+    def run_pipeline(self, task: str, stages: list[dict[str, str]],
+                     initial_context: str = "") -> None:
         """Pipeline: 이전 단계 출력이 다음 단계 입력이 된다."""
         self.pattern = "pipeline"
         self._save_status("running", {"task": task})
@@ -391,6 +496,8 @@ class Orchestrator:
         for i, st in enumerate(stages):
             t = st.get("task", task)
             blocks = []
+            if i == 0 and initial_context:
+                blocks.append(initial_context)
             if i == 0 and repo:
                 blocks.append(repo)
             if prev:
@@ -404,13 +511,16 @@ class Orchestrator:
             prev += f"\n\n[검증 결과] exit={'0' if ok else 'nonzero'}\n{out[:800]}"
         self._finish(task, prev)
 
-    def run_fanout(self, task: str, workers: list[str], join_worker: str | None = None) -> None:
+    def run_fanout(self, task: str, workers: list[str], join_worker: str | None = None,
+                   initial_context: str = "") -> None:
         """Fan-out/Fan-in: 여러 워커에 같은 작업 → 결과 취합."""
         self.pattern = "fanout-fanin"
         self._save_status("running", {"task": task})
         outs = []
-        for w in workers:
-            res = self.call_worker(w, task, "fanout")
+        for index, w in enumerate(workers):
+            # fanout에는 별도 build kind가 없으므로 첫 진입 워커에만 정적 QA를 1회 주입한다.
+            res = self.call_worker(w, task, "fanout",
+                                   extra_context=initial_context if index == 0 else "")
             if res.ok:
                 outs.append(f"### {w}\n{res.text}")
         merged = "\n\n".join(outs)
@@ -438,7 +548,8 @@ class Orchestrator:
         return reviewer
 
     def run_producer_reviewer(self, task: str, producer: str, reviewer: str,
-                              max_rounds: int = 2, pass_score: float = 8.0) -> None:
+                              max_rounds: int = 2, pass_score: float = 8.0,
+                              initial_context: str = "") -> None:
         """Producer-Reviewer: 한 모델이 만들고 다른 모델이 채점(멀티 에이전트 검수).
 
         코딩 강화: 레포 컨텍스트 주입 · 테스트/검증 게이트(객관) · rubric · 스톨 감지.
@@ -462,6 +573,8 @@ class Orchestrator:
         for rnd in range(1, max_rounds + 1):
             t = task if rnd == 1 else f"{task}\n\n검수 지적을 반영해 수정하라."
             blocks = []
+            if rnd == 1 and initial_context:
+                blocks.append(initial_context)
             if rnd == 1 and repo:
                 blocks.append(repo)
             if artifact:
@@ -619,15 +732,27 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     task = spec["task"]
     orch.task_desc = task
     try:
+        acquire_context = ""
+        acquire_spec = spec.get("acquire")
+        if "acquire" in spec:
+            if not isinstance(acquire_spec, dict):
+                orch._log("[acquire] task spec 형식 오류 — preflight 생략")
+            else:
+                acquire_context, _ = orch.acquire_preflight(
+                    task, acquire_spec.get("questioner", ""),
+                    acquire_spec.get("answerers", []) or [],
+                    acquire_spec.get("qa_count", 2), orch.workdir)
         if pattern == "pipeline":
-            orch.run_pipeline(task, spec["stages"])
+            orch.run_pipeline(task, spec["stages"], initial_context=acquire_context)
         elif pattern in ("fanout", "fanout-fanin"):
-            orch.run_fanout(task, spec["workers"], spec.get("join_worker"))
+            orch.run_fanout(task, spec["workers"], spec.get("join_worker"),
+                            initial_context=acquire_context)
         elif pattern == "producer-reviewer":
             orch.run_producer_reviewer(task, spec.get("producer", "claude-main"),
                                        spec.get("reviewer", "codex-critic"),
                                        int(spec.get("max_rounds", 2)),
-                                       float(spec.get("pass_score", 8.0)))
+                                       float(spec.get("pass_score", 8.0)),
+                                       initial_context=acquire_context)
         else:
             raise ValueError(f"unknown pattern: {pattern}")
         return "done"

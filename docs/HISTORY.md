@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-16 — [ACQUIRE S2] 오케스트레이터 preflight 연동 (codex 구현·Claude 검토)
+
+- `Orchestrator.acquire_preflight()`: Questioner→질문별 Answerer(**read-only**)→validate→유효 QA만 수집→
+  `render_qa_context`→첫 단계 `initial_context`로 1회 선주입. 실패/가드stop 시 빈 컨텍스트로 **본 수리 안 막음**.
+- **QA는 knot 아닌 `.yok3x/runs/<id>/acquire.json`(일시 메모리)에만** 저장 — BUG-13 자기오염 방지(실호출 없음 검증).
+- 호출별 `read_only` 프로필: claude=`--disallowedTools Edit,Write,MultiEdit,NotebookEdit`(Read/Grep 허용·Write 차단),
+  codex=`--sandbox read-only`, gemini=`--approval-mode plan`. `call_worker(read_only=)`·`backends`·`config` 배선.
+- task spec `acquire:{questioner,answerers,qa_count}` opt-in. 없으면 기존 흐름 무변경(회귀 테스트 확인).
+- 구현=codex CLI(생산자), 검토=Claude(리뷰어). 적대적 확인(read-only argv 교체·knot 미호출) 통과, **101 passed**(신규 7).
+
 ## 문서 · 2026-07-16 — docs/ 유형별 분리(plans/reports) + RAG·TOOL·메모리 평가 (사용자 요청)
 
 - **plans/ 분리**: 계획서 13개(`vX.Y.Z-plan-*`)를 `docs/reports/` → `docs/plans/`로. reports/는 회고

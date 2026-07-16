@@ -252,6 +252,8 @@ DEFAULT_BACKENDS = {
                     "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,TodoWrite,WebFetch"],
         "model_arg": ["--model", "{model}"],   # 다운그레이드 시 덧붙는 인자
         "effort_arg": ["--effort", "{effort}"],  # 추론 강도(low/medium/high) — 워커 effort 지정 시
+        # ACQUIRE 조사 시 Read/Glob/Grep/Bash는 허용하고 쓰기 도구만 차단한다.
+        "read_only_arg": ["--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit"],
         "parser": "claude_json",
         "timeout_sec": 600
     },
@@ -261,6 +263,7 @@ DEFAULT_BACKENDS = {
         "command": ["codex", "exec", "--json", "--skip-git-repo-check"],   # 프롬프트는 stdin
         "model_arg": ["--model", "{model}"],
         "effort_arg": ["-c", "model_reasoning_effort={effort}"],  # 추론 강도(minimal/low/medium/high)
+        "read_only_arg": ["--sandbox", "read-only"],
         "parser": "codex_jsonl",
         "timeout_sec": 600
     },
@@ -271,6 +274,7 @@ DEFAULT_BACKENDS = {
         # 임의 워크스페이스/격리 dir에서 돌리려면 필수(codex의 --skip-git-repo-check 격).
         "command": ["gemini", "--output-format", "json", "--skip-trust"],   # 프롬프트는 stdin
         "model_arg": ["--model", "{model}"],   # 프로파일/다운그레이드 시 모델 주입
+        "read_only_arg": ["--approval-mode", "plan"],
         "parser": "gemini_json",
         "timeout_sec": 600
     },
