@@ -182,7 +182,10 @@ def _recent_runs(cfg: Config, n: int = 6) -> list:
             "stepdetail": [{"index": s.get("index"), "worker": s.get("worker"),
                             "kind": s.get("task_kind"), "status": s.get("status"),
                             "score": s.get("score"), "summary": (s.get("summary") or "")[:160],
-                            "issues": s.get("checklist", [])} for s in steps[-8:]],
+                            "issues": s.get("checklist", []),
+                            # 관찰가능성(A-lite): 스텝별 계측. None이면 GUI가 '—'로 표시
+                            "tokens": s.get("tokens"), "cost_usd": s.get("cost_usd"),
+                            "duration_ms": s.get("duration_ms")} for s in steps[-8:]],
         })
     return runs
 

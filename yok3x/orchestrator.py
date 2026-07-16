@@ -66,6 +66,10 @@ class StepLog:
     summary: str = ""
     score: float | None = None
     checklist: list[str] = field(default_factory=list)
+    # 관찰가능성(A-lite): 스텝별 계측. None=측정불가(백엔드 미보고), 0=실제 0(무료/미과금)을 구분.
+    tokens: int | None = None
+    cost_usd: float | None = None
+    duration_ms: int | None = None
 
 
 class RunAborted(Exception):
@@ -368,7 +372,12 @@ class Orchestrator:
         self.steps.append(StepLog(idx, worker, task_kind,
                                   "done" if res.ok else "failed",
                                   summary=res.text[:200], score=score,
-                                  checklist=checklist))
+                                  checklist=checklist,
+                                  # duration은 항상 측정(서브프로세스 계측). tokens/cost는 백엔드가
+                                  # 보고할 때만(0/누락은 None=미측정으로 둬 GUI가 '—'로 정직 표시).
+                                  tokens=(res.total_tokens or None),
+                                  cost_usd=(res.cost_usd or None),
+                                  duration_ms=res.duration_ms))
         step_file = self.run_dir / f"step_{idx:02d}_{worker}.json"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         step_file.write_text(json.dumps({
