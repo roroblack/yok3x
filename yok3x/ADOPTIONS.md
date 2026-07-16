@@ -30,6 +30,7 @@ yok3x 원칙: **프레임워크는 안 들이고, 외부 연구·도구의 좋�
 | **LangGraph** | **조건부 라우팅**(출력/점수에 따라 다음 단계 동적 결정) | 지금 패턴은 정적(고정 순서). 스톨감지·열화의 자연스러운 일반화 | 상 | `v3.x-analysis-langgraph-mcp-2026-07-14.md` |
 | **LangGraph** | **체크포인트 재개**(중단된 런을 N단계부터 이어서) | 가드 stop·승인 대기·크래시 후 재개 불가. pace-approve와 궁합 | 중 | 〃 |
 | **MCP**(Model Context Protocol) | **워커에 실제 도구**(filesystem·git·DB·web) + 설정 주도 확장 | 워커가 텍스트 생산자라 파일을 못 만지는 한계 해소. 의존성0(JSON-RPC) 구현 가능. `backends.json`에 `type:mcp` 자리 있음 | 상(단, 승인 게이트 통합 전제) | 〃 |
+| **ACQUIRE**(Know-Before-Fix, 상하이교통대 2026-07-13) | **수정 전 지식 선수집** — Questioner가 지식결손을 질문 2개로 분해→읽기전용 Answerer들이 근거수집→QA를 Resolver에 정적 선주입 | 조기 가설 고정을 막는 순서 분리(해결책 선작성은 오히려 성능↓). SWE-bench +3.8~4.4%p | 상(조건부: opt-in A/B 검증 후 기본화, QA는 knot 저장 금지=BUG-13) | `v4.2.0-plan-acquire-know-before-fix-2026-07-16.md` |
 
 ## 규율
 - 새 외부 아이디어 이식 시: ① 이 표에 한 줄 ② `reports/`에 assessment/plan ③ 코드에 출처 주석 ④ HISTORY.
