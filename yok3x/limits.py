@@ -573,11 +573,21 @@ def _refresh_claude_token(conf: dict[str, Any], p: Path) -> str | None:
     if not new_at:
         st["fails"] += 1
         return None
-    ok = _write_oauth_atomic(p, {
+    updates = {
         "accessToken": new_at,
         "refreshToken": data.get("refresh_token") or rt,   # 회전 시 새 값, 아니면 유지
         "expiresAt": int((now + int(data.get("expires_in", 3600))) * 1000),
-    })
+    }
+    # 서버가 리프레시 토큰 수명을 주면 반영한다. 안 주면 기존 값을 그대로 둔다 — 추측해서 쓰면
+    # 상태 배지가 '재로그인 필요' 오경보를 낸다(§5.5: 근거 없는 값 만들지 않음). 갱신 자체는
+    # 이 값과 무관하게 동작하므로(저장된 refreshToken만 쓰면 됨) 이건 표시 정확도 문제다.
+    rt_exp_in = data.get("refresh_token_expires_in")
+    if rt_exp_in:
+        try:
+            updates["refreshTokenExpiresAt"] = int((now + int(rt_exp_in)) * 1000)
+        except (TypeError, ValueError):
+            pass
+    ok = _write_oauth_atomic(p, updates)
     if not ok:
         st["fails"] += 1
         return None
