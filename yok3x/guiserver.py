@@ -261,10 +261,11 @@ def _task_path(cfg: Config, name: str) -> Path | None:
     return p
 
 
-def _validate_task_spec(spec: dict, cfg: Config | None = None) -> str:
+def _validate_task_spec(spec: dict, cfg: Config | None = None,
+                        allow_draft: bool = False) -> str:
     if not isinstance(spec, dict):
         return "spec이 객체가 아님"
-    if not str(spec.get("task", "")).strip():
+    if not allow_draft and not str(spec.get("task", "")).strip():
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
@@ -289,14 +290,16 @@ def _validate_task_spec(spec: dict, cfg: Config | None = None) -> str:
     return ""
 
 
-def _save_task(cfg: Config, raw_name: str, spec: dict) -> dict:
+def _save_task(cfg: Config, raw_name: str, spec: dict, create_only: bool = False) -> dict:
     name = _slug_task_name(raw_name)
     if not name:
         return {"error": "이름이 비었거나 유효한 문자가 없다(영소문자·숫자·하이픈)"}
     p = _task_path(cfg, name)
     if p is None:
         return {"error": "잘못된 작업 이름/경로"}
-    err = _validate_task_spec(spec, cfg)
+    if create_only and p.exists():
+        return {"error": "같은 이름의 작업이 이미 있다"}
+    err = _validate_task_spec(spec, cfg, allow_draft=True)
     if err:
         return {"error": err}
     spec.setdefault("label", raw_name.strip())   # 라벨 기본=사용자 이름(작업별 콘솔 연동)
@@ -325,6 +328,76 @@ def _delete_task(cfg: Config, name: str) -> dict:
     except OSError as e:
         return {"error": f"삭제 실패: {e}"}
     return {"ok": True}
+
+
+def _rename_task(cfg: Config, old_name: str, new_raw_name: str) -> dict:
+    """작업 파일과 label을 함께 변경한다. 새 파일 저장 성공 전에는 원본을 건드리지 않는다."""
+    old_path = _task_path(cfg, old_name)
+    if old_path is None or not old_path.exists():
+        return {"error": "없는 작업"}
+
+    new_label = str(new_raw_name or "").strip()
+    new_name = _slug_task_name(new_label)
+    if not new_name:
+        return {"error": "이름이 비었거나 유효한 문자가 없다(영소문자·숫자·하이픈)"}
+    new_path = _task_path(cfg, new_name)
+    if new_path is None:
+        return {"error": "잘못된 작업 이름/경로"}
+    if new_path.exists():
+        return {"error": "같은 이름의 작업이 이미 있다"}
+
+    loaded = _load_task(cfg, old_name)
+    if not loaded.get("ok"):
+        return loaded
+    if not isinstance(loaded.get("spec"), dict):
+        return {"error": "spec이 객체가 아님"}
+    spec = dict(loaded["spec"])
+    spec["label"] = new_label
+    tmp = new_path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(new_path)                 # 새 파일을 먼저 완성해 원본 유실 방지
+    except (OSError, TypeError, ValueError) as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {"error": f"이름 변경 저장 실패: {e}"}
+
+    try:
+        old_path.unlink()                     # 새 파일 저장 성공 뒤에만 원본 삭제
+    except OSError as e:
+        try:
+            new_path.unlink()                 # 가능한 한 변경 전 상태로 되돌림
+        except OSError:
+            pass
+        return {"error": f"이름 변경 삭제 실패: {e}"}
+    return {"ok": True, "name": new_name, "label": new_label}
+
+
+_DRAFT_RUN_ERROR = "목표가 비었다 — 작업을 열어 목표를 입력하라"
+
+
+def _saved_task_for_run(cfg: Config, name: str) -> tuple[Path | None, str]:
+    """등록 작업 실행 직전 draft 여부를 확인한다. 기존 정상 작업의 실행 형식은 유지한다."""
+    p = _task_path(cfg, name)
+    if p is None or not p.exists() or name not in _list_tasks(cfg):
+        return None, "unknown task"
+    try:
+        spec = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return p, ""                         # 기존처럼 실행부가 원래 오류를 보고하게 둔다
+    if isinstance(spec, dict) and not str(spec.get("task", "")).strip():
+        return None, _DRAFT_RUN_ERROR
+    return p, ""
+
+
+def _enqueue_saved_task(cfg: Config, name: str, iterations: int) -> dict:
+    """등록 작업을 검증한 뒤에만 실행 큐에 넣는다."""
+    p, err = _saved_task_for_run(cfg, name)
+    if err:
+        return {"error": err}
+    return _enqueue(cfg, str(p), iterations)
 
 
 def _write_inline_spec(cfg: Config, spec: dict) -> Path:
@@ -529,21 +602,25 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                     tf = _write_inline_spec(cfg, spec)
                 else:  # 등록된 task 파일
                     task = str(body.get("task", "")).strip()
-                    tfp = cfg.paths.root / task
-                    if not task or task not in _list_tasks(cfg) or not tfp.exists():
-                        self._json(400, {"error": "unknown task"})
-                        return
-                    tf = tfp
+                    r = _enqueue_saved_task(cfg, task, iters)
+                    self._json(200 if r.get("ok") else 400, r)
+                    return
                 self._json(200, _enqueue(cfg, str(tf), iters))
                 return
 
             if path == "/api/task":                   # 작업 저장/편집(name, spec)
-                r = _save_task(cfg, body.get("name", ""), body.get("spec") or {})
+                r = _save_task(cfg, body.get("name", ""), body.get("spec") or {},
+                               create_only=bool(body.get("create_only", False)))
                 self._json(200 if r.get("ok") else 400, r)
                 return
 
             if path == "/api/task/delete":            # 작업 삭제(name)
                 r = _delete_task(cfg, body.get("name", ""))
+                self._json(200 if r.get("ok") else 400, r)
+                return
+
+            if path == "/api/task/rename":            # 작업 이름 변경(name, new_name)
+                r = _rename_task(cfg, body.get("name", ""), body.get("new_name", ""))
                 self._json(200 if r.get("ok") else 400, r)
                 return
 

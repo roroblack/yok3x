@@ -248,6 +248,81 @@ def test_task_crud_save_load_delete(mock_root):
     assert r["name"] not in gs._list_tasks(cfg)                    # 삭제됨
 
 
+def test_validate_task_spec_allows_empty_goal_only_for_draft(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "", "agents": {}}
+
+    assert gs._validate_task_spec(spec, cfg, allow_draft=True) == ""
+    assert "목표" in gs._validate_task_spec(spec, cfg)              # 실행 검증은 계속 엄격함
+
+
+def test_draft_task_save_list_and_load_roundtrip(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    spec = {"label": "새 초안", "pattern": "producer-reviewer", "task": "", "agents": {}}
+
+    saved = gs._save_task(cfg, "새 초안", spec)
+    loaded = gs._load_task(cfg, saved["name"])
+
+    assert saved["ok"] and loaded["ok"]
+    assert {"name": saved["name"], "label": "새 초안"} in gs._saved_tasks(cfg)
+    assert loaded["spec"] == spec
+
+
+def test_draft_registered_run_is_rejected_before_enqueue(mock_root, monkeypatch):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    saved = gs._save_task(cfg, "실행 전 초안",
+                          {"pattern": "producer-reviewer", "task": "", "agents": {}})
+    enqueued = []
+    monkeypatch.setattr(gs, "_enqueue", lambda *args: enqueued.append(args) or {"ok": True})
+
+    result = gs._enqueue_saved_task(cfg, saved["name"], 1)
+
+    assert result == {"error": "목표가 비었다 — 작업을 열어 목표를 입력하라"}
+    assert enqueued == []                                                # 런/큐 시작 전 차단
+
+
+def test_rename_task_preserves_spec_and_updates_label(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "계산기 구현",
+            "producer": "claude-main", "reviewer": "codex-critic",
+            "agents": {"claude-main": {"backend": "codex", "effort": "high"}},
+            "workdir": "C:/work/project", "verify_cmd": "python -m pytest -q"}
+    saved = gs._save_task(cfg, "기존 이름", spec)
+
+    renamed = gs._rename_task(cfg, saved["name"], "바뀐 이름")
+    loaded = gs._load_task(cfg, renamed["name"])
+
+    assert renamed == {"ok": True, "name": "task-바뀐-이름.json", "label": "바뀐 이름"}
+    assert not (mock_root / saved["name"]).exists()
+    assert (mock_root / renamed["name"]).exists()
+    assert loaded["spec"] == {**spec, "label": "바뀐 이름"}       # 목표·패턴·배치·workdir 보존
+
+
+def test_rename_task_rejects_duplicate_and_preserves_original(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    first = gs._save_task(cfg, "첫 작업", {"pattern": "producer-reviewer", "task": "첫 목표"})
+    second = gs._save_task(cfg, "둘째 작업", {"pattern": "pipeline", "task": "둘째 목표"})
+    before = (mock_root / first["name"]).read_text(encoding="utf-8")
+
+    result = gs._rename_task(cfg, first["name"], "둘째 작업")
+
+    assert "error" in result and "이미" in result["error"]
+    assert (mock_root / first["name"]).read_text(encoding="utf-8") == before
+    assert (mock_root / second["name"]).exists()
+
+
+def test_rename_task_rejects_missing_source(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+
+    assert gs._rename_task(cfg, "task-없는-작업.json", "새 이름") == {"error": "없는 작업"}
+
+
 def test_saved_tasks_expose_label_for_console_unification(mock_root):
     # 저장된 작업이 label과 함께 노출돼 '작업별 보기'(런 라벨)와 통합된다.
     from yok3x import guiserver as gs
@@ -264,7 +339,7 @@ def test_task_crud_rejects_path_traversal_and_bad_spec(mock_root):
     assert gs._task_path(cfg, "../evil.json") is None             # 경로순회 차단
     assert gs._task_path(cfg, "task-a/b.json") is None            # 슬래시 차단
     assert gs._task_path(cfg, "notes.json") is None               # task- 접두 아님
-    assert "error" in gs._save_task(cfg, "빈작업", {"pattern": "producer-reviewer", "task": ""})  # 빈 task
+    assert "목표" in gs._validate_task_spec({"pattern": "producer-reviewer", "task": ""})        # 빈 task
     assert "error" in gs._save_task(cfg, "잘못패턴", {"pattern": "bad", "task": "x"})              # 잘못된 pattern
     assert "error" in gs._save_task(cfg, "!!!", {"pattern": "producer-reviewer", "task": "x"})     # slug 빈값
     assert "error" in gs._load_task(cfg, "task-없는것.json")       # 없는 작업

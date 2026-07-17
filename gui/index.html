@@ -239,10 +239,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
           <label class="sub" style="margin:0">작업별 보기</label>
           <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
-          <button class="btn ico" onclick="newTask()" title="새 작업 — 아래 폼을 비우고 새로 작성(전역 에이전트 배치로 초기화)">➕</button>
+          <button class="btn ico" onclick="newTask()" title="새 작업 — 이름을 입력해 빈 작업을 만들고 목표 작성 시작">➕</button>
           <button class="btn ico" id="btn-opentask" onclick="openTask()" title="열기 — 선택한 💾 저장 작업을 아래 폼으로 불러오기(편집)">📂</button>
           <button class="btn ico" id="btn-runtask" onclick="runRegistered()" title="실행 — 선택한 💾 저장 작업 실행">▶</button>
           <button class="btn ico" onclick="saveTask()" title="저장 — 아래 폼(패턴·목표·워커·라벨)을 이름 붙여 저장">💾</button>
+          <button class="btn ico" id="btn-renametask" onclick="renameTask()" title="이름 수정 — 선택한 💾 저장 작업 이름 변경">✏️</button>
           <button class="btn ico" id="btn-deltask" onclick="deleteTask()" title="삭제 — 선택한 💾 저장 작업 삭제">🗑</button>
           <span class="sub" id="c-runmsg" style="margin:0"></span>
         </div>
@@ -874,10 +875,10 @@ function renderConsoleLog(s){
   if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
   syncTaskButtons();
 }
-// 열기/실행/🗑은 💾 저장된 작업이 선택됐을 때만 활성화(무제목=런 라벨엔 비활성 → '안 눌린다' 혼란 방지)
+// 열기/실행/이름 수정/🗑은 💾 저장된 작업이 선택됐을 때만 활성화(런 라벨엔 비활성)
 function syncTaskButtons(){
   const isSaved=!!selectedSavedTaskName();
-  ["btn-opentask","btn-runtask","btn-deltask"].forEach(id=>{
+  ["btn-opentask","btn-runtask","btn-renametask","btn-deltask"].forEach(id=>{
     const b=document.getElementById(id); if(b) b.disabled=!isSaved;
   });
 }
@@ -918,18 +919,33 @@ function selectedSavedTaskName(){   // 작업별 보기에서 선택한 라벨 �
   const t=((window._lastState||{}).saved_tasks||[]).find(x=>(x.label||"").trim()===label);
   return t?t.name:null;
 }
-// 새 작업 — 폼을 비워 새로 작성하게 한다. 저장된 작업을 [열기]로 불러온 뒤엔 폼이 그 작업으로
-// 채워져 있어, 이걸 누르지 않으면 새 작업을 시작할 방법이 없었다(사용자 지적).
-function newTask(){
+function resetTaskForm(label){
   const set=(id,v)=>{const e=document.getElementById(id); if(e) e.value=v;};
-  set("c-task",""); set("c-label",""); set("c-workdir",""); set("c-verify","");
+  set("c-task",""); set("c-label",label||""); set("c-workdir",""); set("c-verify","");
   syncWorkdirClear();
   set("c-rounds",2); set("c-score",8.0);
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
   setTaskAgents({});
-  const sel=document.getElementById("console-filter"); if(sel){sel.value="__all__"; renderConsoleLog(window._lastState);}
-  document.getElementById("c-runmsg").textContent="새 작업 — 목표를 입력하고 [💾]로 저장하거나 바로 전송";
-  const t=document.getElementById("c-task"); if(t) t.focus();
+}
+function selectSavedTaskLabel(label){
+  const sel=document.getElementById("console-filter");
+  if(sel){sel.value=label; renderConsoleLog(window._lastState);}
+}
+// 새 작업 — 이름을 받은 즉시 빈 draft를 저장해 작업별 보기에서 독립적으로 이어갈 수 있게 한다.
+async function newTask(){
+  const entered=prompt("새 작업 이름:"); if(entered===null)return;
+  const name=entered.trim(); if(!name)return;
+  const spec={label:name,task:"",pattern:"producer-reviewer",agents:{}};
+  try{
+    const r=await fetch("/api/task",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,spec,create_only:true})});
+    const j=await r.json();
+    if(!r.ok){document.getElementById("c-runmsg").textContent="생성 실패: "+(j.error||r.status);return;}
+    await load();
+    selectSavedTaskLabel(name);
+    resetTaskForm(name);
+    document.getElementById("c-runmsg").textContent=`새 작업 '${name}' 생성됨 · 목표를 입력하고 [💾]로 저장`;
+    const t=document.getElementById("c-task"); if(t)t.focus();
+  }catch(e){document.getElementById("c-runmsg").textContent="요청 실패(`yok3x gui`로 실행)";}
 }
 async function openTask(){
   const name=selectedSavedTaskName();
@@ -959,6 +975,22 @@ async function deleteTask(){
     const j=await r.json();
     document.getElementById("c-runmsg").textContent=r.ok?"삭제됨 ✓":("실패: "+(j.error||r.status));
     load();}catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
+}
+async function renameTask(){
+  const oldName=selectedSavedTaskName();
+  if(!oldName){document.getElementById("c-runmsg").textContent="위 드롭다운에서 💾 저장된 작업을 선택하세요";return;}
+  const current=document.getElementById("console-filter").value;
+  const entered=prompt("새 이름:",current); if(entered===null)return;
+  const newName=entered.trim(); if(!newName)return;
+  try{
+    const r=await fetch("/api/task/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:oldName,new_name:newName})});
+    const j=await r.json();
+    if(!r.ok){document.getElementById("c-runmsg").textContent="이름 수정 실패: "+(j.error||r.status);return;}
+    await load();
+    selectSavedTaskLabel(j.label||newName);
+    await openTask();
+    document.getElementById("c-runmsg").textContent=`이름 수정됨 ✓ ${j.label||newName}`;
+  }catch(e){document.getElementById("c-runmsg").textContent="요청 실패";}
 }
 async function runRegistered(){
   const name=selectedSavedTaskName();
