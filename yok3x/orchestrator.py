@@ -17,14 +17,16 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from . import acquire, knot, reserve, usage
-from .backends import BackendResult, run_backend
+from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 
 SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
@@ -149,7 +151,10 @@ class StepLog:
 
 
 class RunAborted(Exception):
-    pass
+    def __init__(self, message: str, results: list[BackendResult | None] | None = None):
+        super().__init__(message)
+        # 병렬 중단 때 이미 완료된 입력 순서 결과를 호출자가 회수할 수 있게 한다.
+        self.results = results
 
 
 class Orchestrator:
@@ -164,6 +169,12 @@ class Orchestrator:
         self.run_dir = cfg.paths.runs / self.run_id
         self.steps: list[StepLog] = []
         self._step_i = 0
+        # 병렬 워커가 공유하는 런 상태·파일 기록은 한 임계구역에서 직렬화한다.
+        # _log/_save_status가 중첩 호출될 수 있어 재진입 락을 쓴다.
+        self._state_lock = threading.RLock()
+        self._active_process_lock = threading.Lock()
+        self._active_processes: set[Any] = set()
+        self._parallel_local = threading.local()
         self._failover_map: dict[str, str] = {}   # P2: 이번 런에서 폴오버한 워커→대체 backend(sticky)
         self._failovers = 0                        # P2: 이번 런 전환 횟수(상한 체크)
         self.pattern = "-"
@@ -189,10 +200,11 @@ class Orchestrator:
         return worker
 
     def _log(self, msg: str) -> None:
-        print(msg, flush=True)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        with (self.run_dir / "run.log").open("a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}\n")
+        with self._state_lock:
+            print(msg, flush=True)
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            with (self.run_dir / "run.log").open("a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}\n")
 
     def _isolated_cwd_path(self) -> str:
         """파일을 만들지 않고 이번 런의 격리 실행 경로만 결정한다."""
@@ -211,20 +223,39 @@ class Orchestrator:
         return d
 
     def _save_status(self, state: str, extra: dict | None = None) -> None:
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        data = {
-            "run_id": self.run_id,
-            "state": state,
-            "pattern": self.pattern,
-            "task": self.task_desc,
-            "label": self.label,
-            "flavor": self.cfg.yok3x["flavor"],
-            "updated": datetime.now().isoformat(timespec="seconds"),
-            "steps": [s.__dict__ for s in self.steps],
-        }
-        if extra:
-            data.update(extra)
-        _atomic_write_json(self.run_dir / "status.json", data)
+        with self._state_lock:
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            data = {
+                "run_id": self.run_id,
+                "state": state,
+                "pattern": self.pattern,
+                "task": self.task_desc,
+                "label": self.label,
+                "flavor": self.cfg.yok3x["flavor"],
+                "updated": datetime.now().isoformat(timespec="seconds"),
+                "steps": [s.__dict__ for s in self.steps],
+            }
+            if extra:
+                data.update(extra)
+            _atomic_write_json(self.run_dir / "status.json", data)
+
+    def _register_process(self, proc: Any, abort_event: threading.Event) -> None:
+        """병렬 CLI 프로세스를 등록하고 중단과 경합해 늦게 뜬 프로세스도 즉시 종료한다."""
+        with self._active_process_lock:
+            self._active_processes.add(proc)
+        if abort_event.is_set():
+            terminate_process(proc)
+
+    def _unregister_process(self, proc: Any) -> None:
+        with self._active_process_lock:
+            self._active_processes.discard(proc)
+
+    def _terminate_active_processes(self) -> None:
+        """Future.cancel()로 멈출 수 없는 실행 중 CLI 프로세스 트리를 실제 종료한다."""
+        with self._active_process_lock:
+            active = list(self._active_processes)
+        for proc in active:
+            terminate_process(proc)
 
     def _gate(self, description: str) -> bool:
         """승인 게이트. False면 해당 단계 건너뜀, 'q'면 런 중단."""
@@ -485,9 +516,14 @@ class Orchestrator:
 
     def execute_call(self, spec: CallSpec) -> BackendResult:
         """준비된 호출에 단계번호·가드·승인·실행·기록을 적용한다."""
-        self._step_i += 1
-        idx = self._step_i
-        spec.index = idx
+        with self._state_lock:
+            if spec.index is None:
+                self._step_i += 1
+                spec.index = self._step_i
+            else:
+                # 병렬 경로는 제어 스레드에서 index를 선할당한다.
+                self._step_i = max(self._step_i, spec.index)
+            idx = spec.index
         cfg = self.cfg
         worker, task, task_kind = spec.worker, spec.task, spec.task_kind
         backend, model_override = spec.backend, spec.model
@@ -507,21 +543,24 @@ class Orchestrator:
         if verdict.level == "stop" or verdict.ratio >= float(_deg.get("failover_ratio", 0.97)):
             alt = usage.failover_backend(cfg, worker, backend, self._failovers)
             if alt:
-                self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")
-                self._failover_map[worker] = alt
-                self._failovers += 1
+                with self._state_lock:
+                    self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")
+                    self._failover_map[worker] = alt
+                    self._failovers += 1
                 backend, model_override, verdict = alt, None, usage.check_backend(cfg, alt)
             elif verdict.level == "stop":
-                self.steps.append(StepLog(idx, worker, task_kind, "blocked",
-                                          f"guard stop: {verdict.backend} {verdict.detail}"))
-                self._save_status("stopped_by_guard")
+                with self._state_lock:
+                    self.steps.append(StepLog(idx, worker, task_kind, "blocked",
+                                              f"guard stop: {verdict.backend} {verdict.detail}"))
+                    self._save_status("stopped_by_guard")
                 raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
                                  f"{verdict.ratio:.0%} ({verdict.detail})")
 
         # 승인 게이트
         if (not spec.batch_approved
                 and not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}")):
-            self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
+            with self._state_lock:
+                self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
             return BackendResult(backend="-", ok=False, error="skipped by gate")
 
         # 적응형 열화 P1(최종 backend·verdict 기준). 라우팅/폴오버 후 backend의 lite로 낮춤.
@@ -542,8 +581,15 @@ class Orchestrator:
         backend_kwargs = {"cwd": run_cwd, "model": model_override, "effort": effort}
         if spec.read_only:
             backend_kwargs["read_only"] = True
+        abort_event = getattr(self._parallel_local, "abort_event", None)
+        if abort_event is not None:
+            # 병렬 경로에서만 Popen 핸들을 노출한다. 단일 호출은 기존 subprocess.run 계약 유지.
+            backend_kwargs.update(
+                process_started=lambda proc: self._register_process(proc, abort_event),
+                process_finished=self._unregister_process,
+                cancel_event=abort_event,
+            )
         res = run_backend(backend, cfg.backends[backend], spec.prompt, **backend_kwargs)
-        usage.record(cfg, worker, task_kind, res)
 
         # 5) 검증 체크리스트 + 파일 로그
         checklist = self._checklist(res)
@@ -551,28 +597,128 @@ class Orchestrator:
         m = SCORE_RE.search(res.text)
         if m:
             score = float(m.group(1))
-        self.steps.append(StepLog(idx, worker, task_kind,
-                                  "done" if res.ok else "failed",
-                                  summary=res.text[:200], score=score,
-                                  checklist=checklist,
-                                  # duration은 항상 측정(서브프로세스 계측). tokens/cost는 백엔드가
-                                  # 보고할 때만(0/누락은 None=미측정으로 둬 GUI가 '—'로 정직 표시).
-                                  tokens=(res.total_tokens or None),
-                                  cost_usd=(res.cost_usd or None),
-                                  duration_ms=res.duration_ms))
-        step_file = self.run_dir / f"step_{idx:02d}_{worker}.json"
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        step_file.write_text(json.dumps({
-            "worker": worker, "task_kind": task_kind, "task": task,
-            "ok": res.ok, "error": res.error, "text": res.text,
-            "score": score, "checklist": checklist,
-            "usage": {"cost_usd": res.cost_usd, "total_tokens": res.total_tokens,
-                      "duration_ms": res.duration_ms},
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._save_status("running")
+        with self._state_lock:
+            usage.record(cfg, worker, task_kind, res)
+            self.steps.append(StepLog(idx, worker, task_kind,
+                                      "done" if res.ok else "failed",
+                                      summary=res.text[:200], score=score,
+                                      checklist=checklist,
+                                      # duration은 항상 측정(서브프로세스 계측). tokens/cost는 백엔드가
+                                      # 보고할 때만(0/누락은 None=미측정으로 둬 GUI가 '—'로 정직 표시).
+                                      tokens=(res.total_tokens or None),
+                                      cost_usd=(res.cost_usd or None),
+                                      duration_ms=res.duration_ms))
+            step_file = self.run_dir / f"step_{idx:02d}_{worker}.json"
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(step_file, {
+                "worker": worker, "task_kind": task_kind, "task": task,
+                "ok": res.ok, "error": res.error, "text": res.text,
+                "score": score, "checklist": checklist,
+                "usage": {"cost_usd": res.cost_usd, "total_tokens": res.total_tokens,
+                          "duration_ms": res.duration_ms},
+            })
+            self._save_status("running")
         if checklist:
             self._log(f"[check] step {idx} 이슈: {'; '.join(checklist)}")
         return res
+
+    def call_workers_parallel(self, specs: list[CallSpec]) -> list[BackendResult | None]:
+        """준비된 호출을 예약·배치승인 뒤 backend 상한을 지켜 병렬 실행한다.
+
+        반환 슬롯은 입력 순서를 유지하며 일반 예외 슬롯만 ``None``이 된다. 가드 중단은
+        실행 중 CLI 프로세스를 종료한 뒤 ``RunAborted``로 전파하고, 이미 완료된 결과는
+        예외의 ``results``에 같은 입력 순서로 보존한다.
+        """
+        if not specs:
+            return []
+
+        results: list[BackendResult | None] = [None] * len(specs)
+        # 예약 실패/승인 거부면 worker를 하나도 만들지 않는다.
+        if not self.reserve_and_approve(specs):
+            return results
+
+        abort_event = threading.Event()
+        executor: ThreadPoolExecutor | None = None
+        futures: dict[Future[BackendResult | None], int] = {}
+        try:
+            parallel_cfg = ((self.cfg.yok3x.get("guard") or {}).get("parallel") or {})
+            if not parallel_cfg.get("enabled", False):
+                # 기본 비활성: 기존 execute_call을 입력 순서대로 호출하는 정확한 순차 폴백.
+                for position, spec in enumerate(specs):
+                    results[position] = self.execute_call(spec)
+                return results
+
+            max_workers = max(1, int(parallel_cfg.get("max_workers", 4)))
+            max_per_backend = max(1, int(parallel_cfg.get("max_per_backend", 2)))
+
+            # worker가 _step_i를 경쟁하지 않도록 제어 스레드에서 연속 index를 확정한다.
+            with self._state_lock:
+                for spec in specs:
+                    self._step_i += 1
+                    spec.index = self._step_i
+
+            semaphores = {
+                backend: threading.Semaphore(max_per_backend)
+                for backend in {spec.backend for spec in specs}
+            }
+
+            def run_one(spec: CallSpec) -> BackendResult | None:
+                if abort_event.is_set():
+                    return None
+                semaphore = semaphores[spec.backend]
+                with semaphore:
+                    # semaphore 대기 중 중단됐으면 새 backend/CLI 호출을 시작하지 않는다.
+                    if abort_event.is_set():
+                        return None
+                    self._parallel_local.abort_event = abort_event
+                    try:
+                        return self.execute_call(spec)
+                    finally:
+                        try:
+                            del self._parallel_local.abort_event
+                        except AttributeError:
+                            pass
+
+            executor = ThreadPoolExecutor(max_workers=max_workers,
+                                          thread_name_prefix="yok3x-worker")
+            for position, spec in enumerate(specs):
+                futures[executor.submit(run_one, spec)] = position
+
+            pending = set(futures)
+            aborted: RunAborted | None = None
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    position = futures[future]
+                    if future.cancelled():
+                        continue
+                    try:
+                        results[position] = future.result()
+                    except RunAborted as exc:
+                        if aborted is None:
+                            aborted = exc
+                            abort_event.set()
+                            for other in pending:
+                                other.cancel()
+                            self._terminate_active_processes()
+                    except Exception as exc:
+                        # all-settled: 한 호출의 예외가 다른 성공 결과를 지우지 않는다.
+                        self._log(
+                            f"[parallel] 실패: step {specs[position].index} · "
+                            f"{type(exc).__name__}: {exc}")
+
+            if aborted is not None:
+                aborted.results = list(results)
+                raise aborted
+            return results
+        finally:
+            if abort_event.is_set():
+                self._terminate_active_processes()
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+            with self._state_lock:
+                self.steps.sort(key=lambda step: step.index)
+            reserve.release(self.cfg, self.run_id)
 
     def call_worker(self, worker: str, task: str, task_kind: str = "general",
                     extra_context: str = "", cwd: str | None = None,

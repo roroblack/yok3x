@@ -4,6 +4,21 @@
 
 ---
 
+## 미출시(dev) · 2026-07-17 — [로드맵 3 / C-3] 진짜 병렬 call_workers_parallel (codex 구현·Claude 검토)
+
+- **여기서 처음 스레드 도입**(C-1 준비/실행 분리, C-2 예약·락 위에). `guard.parallel.enabled` **기본 false**
+  — 꺼지면 순차 폴백으로 기존 동작 100% 동일. 호출부는 아직 안 바꿈(C-4/C-5에서 이식).
+- codex가 앞서 경고한 함정 전부 처리: 제어 스레드서 예약+배치승인+step index 선할당(worker는 실행만) ·
+  입력순서 반환 · all-settled(실패 슬롯만 None) · backend별 Semaphore · **취소 계약 실구현**(backends가
+  Popen을 쓰고 orchestrator가 실행 중 프로세스를 추적해 종료 — Future.cancel()로는 못 죽임) ·
+  finally에서 예약 해제.
+- 검토(적대적 프로브 9종): 입력순서 · all-settled · **worker thread 게이트 호출 0회** · step index 무결성/정렬 ·
+  예약 해제(성공·예외 모두) · 순차 폴백 · RunAborted 전파 시 완료분 보존 · backend별 상한 준수.
+  **실측 병렬성**: 4건×0.35s → **0.50s**(순차 1.40s), 동시최대 4 / per_backend=2면 동시최대 2, 0.82s.
+- ⚠ 리뷰 과정 기록: 첫 측정이 2.80s로 나와 병렬 결함을 의심했으나, `execute_call`의 `usage.check_backend`가
+  **실제 네트워크 probe**를 도는 것이 원인이었다(내 프로브 오염). 스텁 후 재측정해 병렬 정상 확인.
+- **164 passed**(신규 11).
+
 ## 미출시(dev) · 2026-07-17 — effort '기본'이 실제로 뭔지 표시 (사용자 요청)
 
 - **문제**: 드롭다운의 `effort 기본`이 **무슨 값인지 안 알려줌**. 실제로는 yok3x가 `--effort`/`-c` 플래그를

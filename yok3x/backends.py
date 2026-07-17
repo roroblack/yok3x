@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import signal
 import re
 import shlex
 import shutil
@@ -25,7 +26,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # effort를 지정하지 않으면 yok3x는 --effort/-c 플래그를 **아예 보내지 않는다** → 각 CLI의 자체 기본이
 # 적용된다. 그 '기본'이 무엇인지는 backend마다 출처가 달라, 알 수 있는 것만 실제로 읽어서 알려준다.
@@ -70,14 +71,18 @@ class BackendResult:
 
 def run_backend(name: str, spec: dict[str, Any], prompt: str,
                 cwd: str | None = None, model: str | None = None,
-                effort: str | None = None, read_only: bool = False) -> BackendResult:
+                effort: str | None = None, read_only: bool = False,
+                process_started: Callable[[Any], None] | None = None,
+                process_finished: Callable[[Any], None] | None = None,
+                cancel_event: Any | None = None) -> BackendResult:
     btype = spec.get("type", "cli")
     t0 = time.time()
     if btype == "mock":
-        res = _run_mock(name, spec, prompt)
+        res = _run_mock(name, spec, prompt, cancel_event=cancel_event)
     elif btype == "cli":
         res = _run_cli(name, spec, prompt, cwd=cwd, model=model, effort=effort,
-                       read_only=read_only)
+                       read_only=read_only, process_started=process_started,
+                       process_finished=process_finished, cancel_event=cancel_event)
     elif btype in ("openai_http", "native", "local"):
         res = _run_openai_http(name, spec, prompt, model=model)
     elif btype == "mcp":
@@ -91,9 +96,51 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
 
 # ---------------------------------------------------------------- CLI
 
+def terminate_process(proc: Any, grace_sec: float = 0.5) -> None:
+    """병렬 중단 시 CLI와 그 하위 프로세스를 종료한다(이미 끝났으면 no-op)."""
+    try:
+        if proc.poll() is not None:
+            return
+    except (AttributeError, OSError):
+        return
+
+    try:
+        if os.name == "nt":
+            # npm .cmd 심 아래 실제 node CLI까지 /T로 함께 종료한다.
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=max(1.0, grace_sec), check=False)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        try:
+            proc.terminate()
+        except OSError:
+            return
+
+    try:
+        proc.wait(timeout=grace_sec)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name != "nt":
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              cwd: str | None = None, model: str | None = None,
-             effort: str | None = None, read_only: bool = False) -> BackendResult:
+             effort: str | None = None, read_only: bool = False,
+             process_started: Callable[[Any], None] | None = None,
+             process_finished: Callable[[Any], None] | None = None,
+             cancel_event: Any | None = None) -> BackendResult:
     template = spec["command"]
     has_prompt_arg = any("{prompt}" in str(a) for a in template)
     # BUG-18 방어(BUG-10 재발 차단): 멀티라인 프롬프트를 argv({prompt})로 넘기면 Windows npm .cmd
@@ -133,18 +180,56 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
     # 즉시 EOF라 대화형 대기 데드락도 방지한다. {prompt}가 argv에 있으면(구식) DEVNULL 유지.
     # encoding=utf-8: Windows 기본(cp949)이 CLI의 UTF-8 JSON을 깨뜨리지 않게.
     stdin_kw = {"stdin": subprocess.DEVNULL} if has_prompt_arg else {"input": prompt}
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              cwd=cwd or None, encoding="utf-8", errors="replace",
-                              **stdin_kw)
-    except FileNotFoundError:
-        return BackendResult(backend=name, ok=False,
-                             error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
-                                   f"type을 'mock'으로 바꿔 드라이런 가능. (cmd: {shlex.join(cmd)})")
-    except subprocess.TimeoutExpired:
-        return BackendResult(backend=name, ok=False, error=f"timeout {timeout}s: {shlex.join(cmd)}")
+    if process_started is None and process_finished is None and cancel_event is None:
+        # 단일 호출의 오랜 계약은 그대로 둔다. 병렬 취소 추적이 필요할 때만 Popen을 쓴다.
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                                  cwd=cwd or None, encoding="utf-8", errors="replace",
+                                  **stdin_kw)
+        except FileNotFoundError:
+            return BackendResult(backend=name, ok=False,
+                                 error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
+                                       f"type을 'mock'으로 바꿔 드라이런 가능. (cmd: {shlex.join(cmd)})")
+        except subprocess.TimeoutExpired:
+            return BackendResult(backend=name, ok=False, error=f"timeout {timeout}s: {shlex.join(cmd)}")
+    else:
+        if cancel_event is not None and cancel_event.is_set():
+            return BackendResult(backend=name, ok=False, error="cancelled before process start")
+        popen_kw: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "cwd": cwd or None,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdin": subprocess.DEVNULL if has_prompt_arg else subprocess.PIPE,
+        }
+        # 중단 시 CLI가 띄운 하위 프로세스까지 함께 종료할 수 있는 경계를 만든다.
+        if os.name == "nt":
+            popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kw["start_new_session"] = True
+        try:
+            proc = subprocess.Popen(cmd, **popen_kw)
+        except FileNotFoundError:
+            return BackendResult(backend=name, ok=False,
+                                 error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
+                                       f"type을 'mock'으로 바꿔 드라이런 가능. (cmd: {shlex.join(cmd)})")
+        if process_started is not None:
+            process_started(proc)
+        try:
+            out, err = proc.communicate(
+                input=None if has_prompt_arg else prompt, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process(proc)
+            return BackendResult(backend=name, ok=False,
+                                 error=f"timeout {timeout}s: {shlex.join(cmd)}")
+        finally:
+            if process_finished is not None:
+                process_finished(proc)
 
-    out, err = proc.stdout, proc.stderr
+    if process_started is None and process_finished is None and cancel_event is None:
+        out, err = proc.stdout, proc.stderr
     parser = spec.get("parser", "raw")
     try:
         if parser == "claude_json":
@@ -272,9 +357,13 @@ def _run_openai_http(name: str, spec: dict[str, Any], prompt: str,
 
 # ---------------------------------------------------------------- mock
 
-def _run_mock(name: str, spec: dict[str, Any], prompt: str) -> BackendResult:
+def _run_mock(name: str, spec: dict[str, Any], prompt: str,
+              cancel_event: Any | None = None) -> BackendResult:
     """외부 CLI 없이 전체 파이프라인을 검증하기 위한 결정적 시뮬레이터."""
-    time.sleep(float(spec.get("latency_sec", 0.05)))
+    latency = float(spec.get("latency_sec", 0.05))
+    if cancel_event is not None and cancel_event.wait(latency):
+        return BackendResult(backend=name, ok=False, error="cancelled")
+    time.sleep(latency if cancel_event is None else 0.0)
     h = hashlib.sha256(prompt.encode()).hexdigest()[:8]
     if "SCORE" in prompt or "채점" in prompt or "검수" in prompt or "검토" in prompt:
         score = 6 + int(h, 16) % 4  # 6~9

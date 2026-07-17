@@ -55,6 +55,13 @@ DEFAULT_YOK3X = {
         "hard_ratio": 1.0,          # 루프 자동 정지 임계
         "use_real_limits": True,    # 진짜 한도(limits.py 실측) 우선. 끄면 원장만 사용
         "on_probe_failure": "ledger",  # 실측 probe 실패 시: ledger(원장 폴백) | block(차단) | allow
+        # C-3 진짜 병렬 호출. 호출부 이식 전까지 기본 비활성이고, 활성 시에도 backend별
+        # semaphore로 동일 CLI가 한꺼번에 몰리지 않게 한다.
+        "parallel": {
+            "enabled": False,
+            "max_workers": 4,
+            "max_per_backend": 2,
+        },
         # C-2 배치 예약/추정. 값은 환경·모델에 맞게 yok3x.json에서 조절한다.
         # calls는 정확 예약, token/USD는 프롬프트 길이 기반 보수적 추정 상한이다.
         "reservation": {
