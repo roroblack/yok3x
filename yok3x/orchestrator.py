@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -22,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, knot, usage
+from . import acquire, knot, reserve, usage
 from .backends import BackendResult, run_backend
 from .config import Config
 
@@ -128,6 +129,8 @@ class CallSpec:
     run_cwd: str = ""
     index: int | None = None
     route_reason: str = ""
+    # 제어 스레드에서 배치 승인을 끝낸 spec만 True. worker에서 input()을 부르지 않게 한다.
+    batch_approved: bool = False
 
 
 @dataclass
@@ -332,6 +335,76 @@ class Orchestrator:
 
     # ------------------------------------------------------------ worker call
 
+    def estimate_call(self, spec: CallSpec) -> tuple[int, float]:
+        """프롬프트 길이 기반의 거친 토큰/비용 상한 추정.
+
+        실제 사용량이 아니며 모델별 tokenizer/가격을 정확히 흉내 내지 않는다. 조절값은
+        guard.reservation 설정에 있고 실제치는 실행 뒤 usage.record가 기록한다.
+        """
+        rcfg = ((self.cfg.yok3x.get("guard") or {}).get("reservation") or {})
+        chars_per_token = float(rcfg.get("chars_per_token", 2.0))
+        output_ratio = float(rcfg.get("output_token_ratio", 2.0))
+        usd_per_1k = float(rcfg.get("usd_per_1k_tokens", 0.03))
+        if chars_per_token <= 0 or output_ratio < 0 or usd_per_1k < 0:
+            raise ValueError("guard.reservation 추정 설정은 유효한 0 이상 값이어야 합니다")
+        input_est = max(1, math.ceil(len(spec.prompt) / chars_per_token))
+        est_tokens = max(1, math.ceil(input_est * (1.0 + output_ratio)))
+        return est_tokens, est_tokens * usd_per_1k / 1000.0
+
+    def _batch_description(self, specs: list[CallSpec]) -> str:
+        rows = [
+            f"  - worker={spec.worker} · backend={spec.backend} · task_kind={spec.task_kind}"
+            for spec in specs
+        ]
+        estimates = [self.estimate_call(spec) for spec in specs]
+        tokens = sum(item[0] for item in estimates)
+        usd = sum(item[1] for item in estimates)
+        rows.append(
+            f"  예상 상한: calls={len(specs)}(정확) · tokens≈{tokens:,}(추정) · USD≈${usd:.4f}(추정)")
+        return "batch\n" + "\n".join(rows)
+
+    def approve_batch(self, specs: list[CallSpec]) -> bool:
+        """배치 실행 전에 제어 스레드에서 한 번만 승인한다."""
+        description = self._batch_description(specs)
+        if self.auto:
+            self._log(f"[gate] auto-approve: {description}")
+            for spec in specs:
+                spec.batch_approved = True
+            return True
+        ans = self.ask(f"[gate] {description}\n진행? [y/N/q] ").strip().lower()
+        if ans == "q":
+            raise RunAborted("사용자 중단(q)")
+        ok = ans == "y"
+        self._log(f"[gate] {'승인' if ok else '거부'}: {description}")
+        if ok:
+            for spec in specs:
+                spec.batch_approved = True
+        return ok
+
+    def reserve_and_approve(self, specs: list[CallSpec]) -> bool:
+        """C-3 병렬 실행 전에 stale 정리→예약→배치 승인을 모두 끝낸다."""
+        rcfg = ((self.cfg.yok3x.get("guard") or {}).get("reservation") or {})
+        cleaned = reserve.cleanup_stale(
+            self.cfg, ttl=float(rcfg.get("pending_ttl_sec", 1800)))
+        if cleaned:
+            self._log(f"[reserve] stale pending {cleaned}개 정리")
+        estimates = [self.estimate_call(spec) for spec in specs]
+        est_tokens = sum(item[0] for item in estimates)
+        est_usd = sum(item[1] for item in estimates)
+        if not reserve.reserve(self.cfg, self.run_id, len(specs), est_tokens, est_usd):
+            self._log(
+                f"[reserve] 실패: calls={len(specs)}(정확) · "
+                f"tokens≈{est_tokens:,}(추정) · USD≈${est_usd:.4f}(추정)")
+            return False
+        try:
+            if not self.approve_batch(specs):
+                reserve.release(self.cfg, self.run_id)
+                return False
+        except BaseException:
+            reserve.release(self.cfg, self.run_id)
+            raise
+        return True
+
     def prepare_call(self, worker: str, task: str, task_kind: str = "general",
                      extra_context: str = "", cwd: str | None = None,
                      read_only: bool = False) -> CallSpec:
@@ -438,7 +511,8 @@ class Orchestrator:
                                  f"{verdict.ratio:.0%} ({verdict.detail})")
 
         # 승인 게이트
-        if not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}"):
+        if (not spec.batch_approved
+                and not self._gate(f"step {idx}: {worker} ← {task_kind} :: {task[:80]}")):
             self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
             return BackendResult(backend="-", ok=False, error="skipped by gate")
 

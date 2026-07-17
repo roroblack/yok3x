@@ -29,3 +29,4 @@ node_modules/
 _extracted/
 _protorun*/
 *.tmp
+.pytest-tmp*/

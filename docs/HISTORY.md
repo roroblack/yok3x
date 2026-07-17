@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-16 — [로드맵 3 / C-2] 예약·잠금·배치승인 (codex 구현·Claude 검토)
+
+- 병렬의 **안전 토대**. 스레드는 아직 미도입(C-3).
+- `yok3x/reserve.py`(신규, 의존성0): 프로세스간 **lockfile**(`O_CREAT|O_EXCL` 원자획득 + stale TTL 회수 —
+  GUI·CLI 동시 실행 경쟁 방지) + **예약 원장**(`reservations.json`, 원자적 쓰기) + `reserve/release/cleanup_stale`.
+- **TOCTOU 방어**(codex 최우선 지적): 개별 호출은 가드를 통과해도 **합산이 hard limit를 넘으면 예약 거절**.
+  실측 확인 — calls 각 150(<200) 통과·합 300>200 → 2차 False / USD 각 $3(<$5)·합 $6>$5 → 2차 False.
+- `approve_batch()`: **제어 스레드에서 1회 배치 승인**(worker thread `input()` 데드락 방지).
+  `reserve_and_approve()`: 승인 거부 시 **예약 해제**(누수 없음). `CallSpec.batch_approved`.
+- 설정 `guard.reservation`(TTL·락대기·토큰추정비율·hard_limits)로 분리(RULE §5.5). **calls=정확 예약,
+  토큰·USD=보수적 추정**임을 코드 주석에 명시.
+- 검토: 적대적 프로브 6종 통과(중복락 차단·stale락 회수·calls/USD TOCTOU 거절·release 후 재예약·
+  cleanup은 stale만). 스레드 코드 0 확인. **125 passed**(신규 11). `.pytest-tmp*/` gitignore 추가.
+
 ## 미출시(dev) · 2026-07-16 — [로드맵 3 / C-1] 준비·실행 분리 + 원자적 쓰기 (codex 구현·Claude 검토)
 
 - 진짜 병렬(C)의 **토대**. 동시성은 아직 도입 안 함(순수 리팩터, 동작 불변).

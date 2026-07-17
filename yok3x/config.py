@@ -55,6 +55,20 @@ DEFAULT_YOK3X = {
         "hard_ratio": 1.0,          # 루프 자동 정지 임계
         "use_real_limits": True,    # 진짜 한도(limits.py 실측) 우선. 끄면 원장만 사용
         "on_probe_failure": "ledger",  # 실측 probe 실패 시: ledger(원장 폴백) | block(차단) | allow
+        # C-2 배치 예약/추정. 값은 환경·모델에 맞게 yok3x.json에서 조절한다.
+        # calls는 정확 예약, token/USD는 프롬프트 길이 기반 보수적 추정 상한이다.
+        "reservation": {
+            "lock_ttl_sec": 300,
+            "pending_ttl_sec": 1800,
+            "lock_wait_sec": 5.0,
+            "lock_poll_sec": 0.05,
+            "chars_per_token": 2.0,
+            "output_token_ratio": 2.0,
+            "usd_per_1k_tokens": 0.03,
+            # 필요하면 배치 전체 hard 상한을 직접 지정한다: calls | est_tokens | est_usd.
+            # 비어 있으면 backend별 budgets 중 해당 지표의 가장 작은 양수 상한을 쓴다.
+            "hard_limits": {},
+        },
         # 한도 인근 적응형 열화(P1: 모델 다운그레이드). opt-in. 정지(hard) 전에 가벼운
         # 모델로 낮춰 남은 한도로 계속 진행. 모든 다운그레이드는 명시 로깅된다.
         "degrade": {
