@@ -239,6 +239,12 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
           <label class="sub" style="margin:0">작업별 보기</label>
           <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
+          <!-- 작업 이름(=spec.label). 저장 파일명·작업별 보기 그룹이 모두 이 값이라 CRUD 옆에 둔다.
+               저장된 작업을 연 상태에선 읽기전용 — 여기서 고치고 💾 하면 '이름 변경'이 아니라
+               '다른 이름으로 복제'가 돼 작업이 두 개가 된다. 이름 변경은 ✏️가 담당. -->
+          <label class="sub" style="margin:0;display:flex;align-items:center;gap:4px">작업 이름
+            <input id="c-label" style="width:150px;font-size:12px" placeholder="새 작업 이름"
+                   title="이 작업의 이름(저장 파일명·작업별 보기 그룹). 저장된 작업은 ✏️로 변경."></label>
           <button class="btn ico" onclick="newTask()" title="새 작업 — 이름을 입력해 빈 작업을 만들고 목표 작성 시작">➕</button>
           <button class="btn ico" id="btn-opentask" onclick="openTask()" title="열기 — 선택한 💾 저장 작업을 아래 폼으로 불러오기(편집)">📂</button>
           <button class="btn ico" id="btn-runtask" onclick="runRegistered()" title="실행 — 선택한 💾 저장 작업 실행">▶</button>
@@ -261,7 +267,6 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
             <label>reviewer <select id="c-reviewer"></select></label>
           </div>
           <div class="ci-row">
-            <label>라벨 <input id="c-label" placeholder="작업별 콘솔 그룹(선택)" title="같은 라벨의 런들이 '작업별 보기'에서 묶입니다"></label>
             <label>max_rounds <input id="c-rounds" value="3"></label>
             <label>pass_score <input id="c-score" value="8.0"></label>
             <label>반복 <input id="c-iters" value="1"></label>
@@ -881,6 +886,15 @@ function syncTaskButtons(){
   ["btn-opentask","btn-runtask","btn-renametask","btn-deltask"].forEach(id=>{
     const b=document.getElementById(id); if(b) b.disabled=!isSaved;
   });
+  // 저장된 작업이 선택돼 있으면 이름은 읽기전용 — 여기서 고치고 💾 하면 이름 변경이 아니라
+  // '다른 이름으로 복제'가 돼 작업이 두 개가 된다(BUG-21 계열 함정). 변경은 ✏️로.
+  const lb=document.getElementById("c-label");
+  if(lb){
+    lb.readOnly=isSaved;
+    lb.title=isSaved?"저장된 작업의 이름 — 변경은 ✏️로":"이 작업의 이름(저장 파일명·작업별 보기 그룹)";
+    lb.style.opacity=isSaved?".7":"";
+    lb.placeholder=isSaved?"":"새 작업 이름";
+  }
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
 function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목표 비면 null.
