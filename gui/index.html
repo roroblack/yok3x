@@ -583,7 +583,8 @@ function render(s){
   document.getElementById("tools").innerHTML=s.tools.map(t=>{
     const wins=t.windows.length?t.windows.map(w=>{
       const isWk=w.name==="7d", pm=isWk?(paceMarks(t.pace)||budgetRuler(s,w.name)):"";
-      const pl=(isWk&&t.pace)?`<span class="rst" title="오늘 소비 / 하루 상한(주간 대비)">오늘 ${t.pace.used}%p / 상한 ${t.pace.cap}%p</span>`:`<span class="rst">리셋 ${w.reset}</span>`;
+      const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
+      const pl=(isWk&&t.pace)?`<span class="rst" title="오늘 소비 / 하루 상한(주간 대비)">오늘 ${t.pace.used}%p / 상한 ${t.pace.cap}%p${tok?` · ${tok}`:""}</span>`:`<span class="rst">리셋 ${w.reset}${tok?` · ${tok}`:""}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
       <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>

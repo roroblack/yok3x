@@ -19,6 +19,7 @@ CodexBar(github.com/steipete/CodexBar)가 macOS에서 `codex /status`·`claude /
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -37,12 +38,18 @@ from typing import Any
 from .config import Config
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class Window:
     name: str                       # "5h" | "7d" | 등
     used_percent: float             # 0~100 (100 초과 가능)
     resets_at: float | None = None  # epoch seconds(절대 시각) — codex는 실제 리셋 시각
     window_minutes: int | None = None
+    # 라이브 API가 토큰 수를 주지 않으면 None. 0(측정됐지만 사용 없음)과 미측정을 구분한다.
+    used_tokens: int | None = None
+    limit_tokens: int | None = None
 
     def reset_in(self) -> str:
         if self.resets_at:
@@ -293,7 +300,7 @@ def _probe_uncached(cfg: Config, backend: str) -> LimitReading:
         if typ == "codex_sessions":
             return _probe_codex_sessions(backend, conf)
         if typ == "claude_oauth":
-            return _probe_claude_oauth(backend, conf)
+            return _probe_claude_oauth(backend, conf, cfg)
         if typ == "claude_transcripts":
             return _probe_claude_transcripts(backend, conf)
         if typ == "command":
@@ -495,6 +502,11 @@ _OAUTH_LIVE_CACHE: dict[str, tuple[float, LimitReading]] = {}
 
 # 토큰 자체 갱신 상태(경로별): 백오프·회로차단용. 데이터를 지어내지 않는다 — 실패 시 폴백.
 _REFRESH_STATE: dict[str, dict] = {}
+
+# 설정 파일별 마지막 자동 보정 저장 시각. 라이브 조회가 자주 성공해도 yok3x.json을 계속
+# 덮어쓰지 않도록 실제 저장에 성공했을 때만 갱신한다(_REFRESH_STATE와 같은 모듈 상태 패턴).
+_CLAUDE_CALIBRATION_STATE: dict[str, float] = {}
+_CLAUDE_CALIBRATION_LOCK = threading.Lock()
 
 
 def _read_oauth(p: Path) -> dict:
@@ -705,7 +717,8 @@ def _fetch_claude_oauth_usage(backend: str, conf: dict[str, Any]) -> LimitReadin
                         windows=windows, detail=f"{det} (live)")
 
 
-def _probe_claude_oauth(backend: str, conf: dict[str, Any]) -> LimitReading:
+def _probe_claude_oauth(backend: str, conf: dict[str, Any],
+                        cfg: Config | None = None) -> LimitReading:
     """라이브 실측 → (실패 시) 최근 실측 stale 유지 → 추정 → 원장. min_interval_sec로 호출 제한."""
     interval = float(conf.get("min_interval_sec", 60))
     max_stale = float(conf.get("max_stale_sec", 900))   # 실측 실패 시 마지막 실측을 이만큼 유지
@@ -716,6 +729,13 @@ def _probe_claude_oauth(backend: str, conf: dict[str, Any]) -> LimitReading:
     live = _fetch_claude_oauth_usage(backend, conf)
     if live.ok:
         _OAUTH_LIVE_CACHE[backend] = (now, live)
+        # 실측 반환이 주 기능이다. 로컬 transcript 읽기나 설정 저장이 실패해도 정상 live를
+        # 버리면 안 되므로 보정 부작용은 완전히 격리한다. 추가 네트워크 호출은 없다.
+        if cfg is not None:
+            try:
+                autocalibrate_claude(cfg, conf, live)
+            except Exception:
+                logger.exception("claude 자동 캘리브레이션 실패(라이브 실측은 유지)")
         return live
     # 실측 실패(429/토큰만료 등): 원장으로 떨어뜨려 배지가 실측↔원장으로 깜빡이는 대신, 최근
     # 실측값을 유지하고 detail에 '⚠N분 전 실측'을 붙여 정직하게 표시(stale-while-error).
@@ -767,6 +787,101 @@ def claude_rolling_tokens(conf: dict[str, Any], window: str) -> int:
     return _rolling_claude_tokens(_claude_root(conf), time.time(), secs)
 
 
+def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
+                         reading: LimitReading) -> dict[str, int | str | None]:
+    """Claude live 사용률로 transcript 추정 상한을 역산해 저장한다.
+
+    transcript 집계에는 cache read 토큰도 들어가므로 공개 플랜 프리셋만으로는 크게 과대 추정될
+    수 있다. 같은 시점의 live %(지상진실)와 로컬 롤링 합계를 맞춰 집계 단위 자체를 보정한다.
+    정확히 5h/7d 집계 창만 대상으로 하며 ``7d·Fable`` 같은 모델별 창은 의도적으로 제외한다.
+    """
+    out: dict[str, int | str | None] = {"5h": None, "7d": None, "skipped": ""}
+    if not conf.get("autocalibrate", True):
+        out["skipped"] = "비활성(autocalibrate=false)"
+        return out
+
+    live_by_name = {w.name: w for w in reading.windows if w.name in ("5h", "7d")}
+    if not live_by_name:
+        out["skipped"] = "대상 창 없음(5h/7d만 지원)"
+        return out
+
+    now = time.time()
+    state_key = str(cfg.paths.yok3x_json)
+    min_interval = float(conf.get("min_calib_interval_sec", 600))
+    min_pct = float(conf.get("min_calib_pct", 1.0))
+    reasons: list[str] = []
+
+    with _CLAUDE_CALIBRATION_LOCK:
+        last = _CLAUDE_CALIBRATION_STATE.get(state_key)
+        if last is not None and now - last < min_interval:
+            out["skipped"] = "rate-limit"
+            return out
+
+        # 직접 지정이 없으면 plan 프리셋을 비교 기준으로 쓴다. 새 값이 이 기준의 1/100 미만
+        # 또는 100배 초과면 잘못된 작은 %·불완전 transcript일 가능성이 높아 저장하지 않는다.
+        cap5, cap7 = _resolve_claude_caps(conf)
+        baselines = {"5h": cap5, "7d": cap7}
+        updates: dict[str, int] = {}
+        keys = {"5h": "limit_5h_tokens", "7d": "limit_7d_tokens"}
+        for name in ("5h", "7d"):
+            win = live_by_name.get(name)
+            if win is None:
+                continue
+            live_pct = float(win.used_percent)
+            if live_pct <= 0 or live_pct < min_pct:
+                reasons.append(f"{name}:live_pct<{min_pct:g}")
+                continue
+            toks = claude_rolling_tokens(conf, name)
+            if toks <= 0:
+                reasons.append(f"{name}:tokens<=0")
+                continue
+            cap = int(toks / (live_pct / 100.0))
+            if cap <= 0:
+                reasons.append(f"{name}:cap<=0")
+                continue
+            baseline = baselines[name]
+            if baseline > 0:
+                multiple = cap / baseline
+                lo = float(conf.get("min_calib_multiple", 0.001))
+                hi = float(conf.get("max_calib_multiple", 1000.0))
+                if multiple < lo or multiple > hi:
+                    reason = f"{name}:비현실 캡({multiple:.3g}x)"
+                    reasons.append(reason)
+                    logger.warning("claude 자동 캘리브레이션 무시: %s", reason)
+                    continue
+                # ±5%는 표시상 의미가 거의 없고 설정 파일 churn만 만든다.
+                if abs(cap - baseline) <= baseline * 0.05:
+                    reasons.append(f"{name}:변화<=5%")
+                    continue
+            updates[keys[name]] = cap
+            out[name] = cap
+
+        if not updates:
+            out["skipped"] = "; ".join(reasons) or "변경 없음"
+            return out
+
+        target = cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
+        old = {key: target.get(key) for key in updates}
+        missing = {key for key in updates if key not in target}
+        target.update(updates)
+        try:
+            cfg.save_yok3x()
+        except Exception:
+            # 저장 실패 시 메모리 설정만 바뀐 반쪽 상태도 남기지 않는다.
+            for key, value in old.items():
+                if key in missing:
+                    target.pop(key, None)
+                else:
+                    target[key] = value
+            raise
+        _CLAUDE_CALIBRATION_STATE[state_key] = now
+        out["skipped"] = "; ".join(reasons)
+        # yok3x.json을 실제로 바꾸는 부작용이라 사용자에게 보여야 한다. logger.info는 핸들러
+        # 미구성 시 삼켜지므로, 코드베이스 관례([reserve]·[acquire]·[guard])대로 print를 쓴다.
+        print(f"[calib] claude 자동 캘리브레이션 저장: {updates}", flush=True)
+        return out
+
+
 def _probe_claude_transcripts(backend: str, conf: dict[str, Any]) -> LimitReading:
     root = _claude_root(conf)
     if not root.exists():
@@ -778,9 +893,11 @@ def _probe_claude_transcripts(backend: str, conf: dict[str, Any]) -> LimitReadin
     tok7 = _rolling_claude_tokens(root, now, 7 * 24 * 3600)
     windows: list[Window] = []
     if cap5 > 0:
-        windows.append(Window("5h", 100.0 * tok5 / cap5, window_minutes=300))
+        windows.append(Window("5h", 100.0 * tok5 / cap5, window_minutes=300,
+                              used_tokens=tok5, limit_tokens=int(cap5)))
     if cap7 > 0:
-        windows.append(Window("7d", 100.0 * tok7 / cap7, window_minutes=10080))
+        windows.append(Window("7d", 100.0 * tok7 / cap7, window_minutes=10080,
+                              used_tokens=tok7, limit_tokens=int(cap7)))
     detail = (f"5h {tok5:,}tok" + (f"/{int(cap5):,}" if cap5 else "")
               + f", 7d {tok7:,}tok" + (f"/{int(cap7):,}" if cap7 else ""))
     if not windows:

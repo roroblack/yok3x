@@ -30,3 +30,4 @@ _extracted/
 _protorun*/
 *.tmp
 .pytest-tmp*/
+.codex-pytest-tmp*/

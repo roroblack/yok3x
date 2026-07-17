@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-17 — [로드맵 3.5] claude 추정 자동 캘리브레이션 + 토큰 수 표시 (codex 구현·Claude 검토)
+
+- **실통증 해결**: 실측(live)이 죽으면 사용량이 원장($0/$5)으로 떨어져 무의미해지던 문제. 원인은 트랜스크립트
+  추정이 **cache read 토큰까지 합산**해 ~150배 과대(7d 768% vs 실측 5%) → 200% 가드가 버림(BUG-15 방어).
+- `limits.autocalibrate_claude()`: 라이브 성공 시마다 `cap = rolling_tokens / (live%/100)` 역산해
+  `limit_5h/7d_tokens` 저장(수동 `yok3x calibrate` 로직 자동화). CLIP 교훈("평가자를 지상진실로 보정")과 동일.
+  가드: min_calib_pct(1%)·rate-limit(600s)·비현실 캡·미미변화 스킵. 네트워크 호출 추가 0(로컬 트랜스크립트만).
+- `Window`에 `used_tokens`/`limit_tokens`(None=미측정) → GUI가 추정 경로에서 **사용/남은 토큰량** 표시
+  (라이브는 %만 주므로 None 유지 — 사용자 요청이 '자동갱신 꺼진 경우'였음).
+- **검토서 결함 2개 발견·수정**: ①내 스펙의 '100배 초과 무시' 가드가 **정상 보정(7d ~153배)을 거부** →
+  `max_calib_multiple`(1000) 설정으로 분리(하드코딩이라 §5.5 위반이기도) + 회귀 테스트 2개 추가.
+  ②저장 알림이 `logger.info`라 핸들러 미구성 시 **안 보임** → 코드베이스 관례대로 `print("[calib] ...")`.
+- **실측 검증**: 보정 후 5h 16.0% vs 실측 16.0%, 7d 5.0% vs 실측 5.0% — **차이 0.0%p**. 138 passed.
+
 ## 미출시(dev) · 2026-07-17 — 토큰 갱신 시 refreshTokenExpiresAt 보존 + 추정 캘리브레이션 계획 (사용자 요청)
 
 - **수정**: `_refresh_claude_token`이 서버가 `refresh_token_expires_in`을 주면 `refreshTokenExpiresAt`를

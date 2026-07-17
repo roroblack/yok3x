@@ -80,7 +80,9 @@ def build_state(cfg: Config) -> dict:
         v = usage.check_backend(cfg, b)
         t = totals.get(b, {"usd": 0, "tokens": 0, "calls": 0})
         wins = [{"name": w.name, "used_percent": round(w.used_percent, 1),
-                 "reset": w.reset_in()} for w in (v.reading.windows if v.reading else [])]
+                 "reset": w.reset_in(), "used_tokens": w.used_tokens,
+                 "limit_tokens": w.limit_tokens}
+                for w in (v.reading.windows if v.reading else [])]
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
             ps = usage.daily_pace_status(cfg, b, usage._weekly_pct(v.reading))

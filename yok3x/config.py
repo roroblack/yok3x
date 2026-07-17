@@ -123,6 +123,16 @@ DEFAULT_YOK3X = {
             "plan": "max5x",            # 추정 폴백용 상한 프리셋: pro | max5x | max20x (기본 max5x)
             "limit_5h_tokens": 0,       # 추정 폴백 직접 상한(plan보다 우선). `yok3x calibrate`로 보정
             "limit_7d_tokens": 0,
+            # live %(지상진실)와 로컬 transcript 합계를 맞춰 추정 상한을 자동 보정한다.
+            "autocalibrate": True,
+            "min_calib_pct": 1.0,       # 작은 %로 나눠 캡이 폭발하는 것 방지
+            "min_calib_interval_sec": 600,  # 잦은 yok3x.json 쓰기 방지
+            # 역산 캡이 plan 프리셋 대비 이 배율 밖이면 무시(불완전 transcript 방어).
+            # 실측 근거: transcript는 cache read까지 합산해 7d가 plan 대비 ~153배로 나온다
+            # (5h는 ~1배). 100배로 막으면 정상 보정이 거부되므로 1000배까지 허용한다.
+            # min_calib_pct가 이미 '작은 %로 캡 폭발'을 막으므로 이 가드는 보조 안전망이다.
+            "max_calib_multiple": 1000.0,
+            "min_calib_multiple": 0.001,
             # 적응형 열화 다운그레이드 대상(guard.degrade). lite=한도 근처에서 낮출 가벼운 모델
             "models": {"full": "", "lite": "claude-haiku-4-5-20251001"}
         },

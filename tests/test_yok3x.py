@@ -513,6 +513,215 @@ def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
     assert r2.ok and abs(r2.ratio() - 0.62) < 1e-6  # 현실적 추정은 유지
 
 
+# -------------------------------------- claude transcript 자동 캘리브레이션 + 토큰 노출
+def test_autocalibrate_claude_saves_cap_from_live_percent(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000)
+    reading = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                                  windows=[limits.Window("5h", 10.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["5h"] == 10_000_000 and got["7d"] is None
+    assert cfg.yok3x["limits"]["claude"]["limit_5h_tokens"] == 10_000_000
+    saved = json.loads(cfg.paths.yok3x_json.read_text(encoding="utf-8"))
+    assert saved["limits"]["claude"]["limit_5h_tokens"] == 10_000_000
+
+
+@pytest.mark.parametrize("pct,toks,reason", [
+    (0.5, 1_000_000, "live_pct"),
+    (10.0, 0, "tokens<=0"),
+])
+def test_autocalibrate_claude_rejects_small_percent_or_zero_tokens(
+        tmp_path, monkeypatch, pct, toks, reason):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 12_345_678
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: toks)
+
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [limits.Window("5h", pct)]))
+
+    assert got["5h"] is None and reason in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 12_345_678
+    assert not cfg.paths.yok3x_json.exists()
+
+
+def test_autocalibrate_claude_rate_limits_writes(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000)
+    first = limits.LimitReading("claude", "claude_oauth", True, True,
+                                [limits.Window("5h", 10.0)])
+    second = limits.LimitReading("claude", "claude_oauth", True, True,
+                                 [limits.Window("7d", 10.0)])
+    limits.autocalibrate_claude(cfg, conf, first)
+
+    got = limits.autocalibrate_claude(cfg, conf, second)
+
+    assert got["skipped"] == "rate-limit"
+    assert conf["limit_7d_tokens"] == 0
+
+
+def test_autocalibrate_claude_rejects_implausible_cap(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 10_000_000
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    # 10%에서 200억 tok이면 2000억 cap = 기존의 20,000배 → 오염된 표본으로 본다.
+    # 상한은 max_calib_multiple(기본 1000배). 실측상 7d는 cache read 누적으로 정상적으로도
+    # ~153배가 나오므로(5h는 ~1배) 100배로 막으면 정상 보정이 거부된다 — 그래서 1000배다.
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 20_000_000_000)
+    reading = limits.LimitReading("claude", "claude_oauth", True, True,
+                                  [limits.Window("5h", 10.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["5h"] is None and "비현실" in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 10_000_000
+
+
+def test_autocalibrate_claude_allows_cache_read_inflation(tmp_path, monkeypatch):
+    """실측 근거: 7d는 cache read 누적으로 plan 대비 ~153배 캡이 정상이다(5h는 ~1배).
+    100배로 막으면 정상 보정이 거부되므로, 설정 상한(max_calib_multiple=1000) 안이면 통과해야 한다."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_7d_tokens"] = 500_000_000          # plan 프리셋 수준
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    # 5%에서 38.3억 tok → cap 766억 = 기존의 약 153배(실측에서 관측된 실제 배율)
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 3_830_000_000)
+    reading = limits.LimitReading("claude", "claude_oauth", True, True,
+                                  [limits.Window("7d", 5.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["7d"] == 76_600_000_000, got
+    assert conf["limit_7d_tokens"] == 76_600_000_000
+
+
+def test_autocalibrate_claude_multiple_bounds_come_from_config(tmp_path, monkeypatch):
+    """가드 경계는 하드코딩이 아니라 설정이어야 한다(RULE §5.5)."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 10_000_000
+    conf["max_calib_multiple"] = 2.0               # 상한을 좁히면 거부돼야
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 10_000_000)  # 10%→1억=10배
+    reading = limits.LimitReading("claude", "claude_oauth", True, True,
+                                  [limits.Window("5h", 10.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["5h"] is None and "비현실" in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 10_000_000
+
+
+def test_autocalibrate_claude_skips_negligible_change(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 10_000_000
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    # 역산 cap=10.5M: 기존 대비 정확히 +5%라 파일 churn 없이 유지한다.
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_050_000)
+    reading = limits.LimitReading("claude", "claude_oauth", True, True,
+                                  [limits.Window("5h", 10.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["5h"] is None and "변화<=5%" in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 10_000_000
+    assert not cfg.paths.yok3x_json.exists()
+
+
+def test_autocalibrate_claude_ignores_per_model_window(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens",
+                        lambda c, w: pytest.fail("per-model 창은 transcript를 읽으면 안 됨"))
+    reading = limits.LimitReading("claude", "claude_oauth", True, True,
+                                  [limits.Window("7d·Fable", 22.0)])
+
+    got = limits.autocalibrate_claude(cfg, conf, reading)
+
+    assert got["5h"] is None and got["7d"] is None
+    assert conf["limit_5h_tokens"] == 0 and conf["limit_7d_tokens"] == 0
+
+
+def test_autocalibrate_claude_off_preserves_existing_behavior(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["autocalibrate"] = False
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    monkeypatch.setattr(limits, "claude_rolling_tokens",
+                        lambda c, w: pytest.fail("off이면 transcript를 읽으면 안 됨"))
+
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [limits.Window("5h", 10.0)]))
+
+    assert "비활성" in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 0 and not cfg.paths.yok3x_json.exists()
+
+
+def test_claude_transcript_tokens_are_exposed_in_gui_state(tmp_path, monkeypatch):
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf.update({"projects_dir": str(tmp_path), "limit_5h_tokens": 10_000,
+                 "limit_7d_tokens": 20_000})
+    monkeypatch.setattr(limits, "_rolling_claude_tokens",
+                        lambda root, now, secs: 2_000 if secs == 5 * 3600 else 3_000)
+    reading = limits._probe_claude_transcripts("claude", conf)
+    by_name = {w.name: w for w in reading.windows}
+    assert (by_name["5h"].used_tokens, by_name["5h"].limit_tokens) == (2_000, 10_000)
+    assert (by_name["7d"].used_tokens, by_name["7d"].limit_tokens) == (3_000, 20_000)
+
+    verdict = usage.GuardVerdict("claude", reading.ratio(), "x", "ok", reading.detail,
+                                 source=reading.source, real=False, reading=reading)
+    monkeypatch.setattr(gs.usage, "today_totals", lambda c: {})
+    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b: verdict)
+    monkeypatch.setattr(gs.usage, "coach_messages", lambda c: [])
+    monkeypatch.setattr(gs, "_routing_preview", lambda c: {})
+    monkeypatch.setattr(gs, "_profile_routes", lambda c: {})
+    monkeypatch.setattr(gs.limits, "list_models", lambda c, b: [])
+    monkeypatch.setattr(gs.limits, "claude_token_status", lambda c: {})
+    state = gs.build_state(cfg)
+    win = state["tools"][0]["windows"][0]
+    assert win["used_tokens"] == 2_000 and win["limit_tokens"] == 10_000
+    # 배포 HTML은 저장소 gui를 쓰므로 사용자 요청 문구와 None 가드를 정적으로도 잠근다.
+    html = (Path(__file__).parents[1] / "gui" / "index.html").read_text(encoding="utf-8")
+    assert "사용 ${fmtTok(w.used_tokens)} / 남은" in html and "w.used_tokens!=null" in html
+
+
+def test_live_calibration_failure_does_not_hide_live_reading(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["min_interval_sec"] = 0
+    live = limits.LimitReading("claude", "claude_oauth", True, True,
+                               [limits.Window("5h", 10.0)], detail="5h 10% (live)")
+    limits._OAUTH_LIVE_CACHE.clear()
+    monkeypatch.setattr(limits, "_fetch_claude_oauth_usage", lambda b, c: live)
+    monkeypatch.setattr(limits, "autocalibrate_claude",
+                        lambda c, co, r: (_ for _ in ()).throw(OSError("disk full")))
+
+    got = limits._probe_claude_oauth("claude", conf, cfg)
+
+    assert got is live and got.ok and got.real
+
+
+def test_claude_autocalibration_defaults_are_configurable():
+    conf = DEFAULT_YOK3X["limits"]["claude"]
+    assert conf["autocalibrate"] is True
+    assert conf["min_calib_pct"] == 1.0
+    assert conf["min_calib_interval_sec"] == 600
+
+
 # -------------------------------------- 멀티라인 프롬프트 argv 잘림 방어(BUG-18/BUG-10 재발)
 def test_multiline_prompt_uses_stdin_even_with_stale_prompt_arg(monkeypatch):
     # 스테일 backends.json이 옛 {prompt}(argv) 형식이어도, 멀티라인이면 stdin으로 넘겨 .cmd 심 잘림 차단.
