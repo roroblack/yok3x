@@ -20,10 +20,37 @@ import shlex
 import shutil
 import subprocess
 import time
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+# effort를 지정하지 않으면 yok3x는 --effort/-c 플래그를 **아예 보내지 않는다** → 각 CLI의 자체 기본이
+# 적용된다. 그 '기본'이 무엇인지는 backend마다 출처가 달라, 알 수 있는 것만 실제로 읽어서 알려준다.
+# 모르면 빈 문자열 — 추측해서 표시하지 않는다(§5.5: 근거 없는 값 만들지 않음).
+_CODEX_EFFORT_RE = re.compile(r'^\s*model_reasoning_effort\s*=\s*["\']([^"\']+)["\']', re.M)
+
+
+def effort_defaults() -> dict[str, str]:
+    """backend별 '기본 effort'의 실제 출처를 조회한다. 반환: {backend: 값 or ""}.
+
+    - codex: `$CODEX_HOME|~/.codex/config.toml` 의 `model_reasoning_effort`(사용자가 바꿀 수 있음).
+      TOML 전체 파싱은 불필요(키 하나) — tomllib는 3.11+라 3.10 호환 위해 정규식으로 한 줄만 읽는다.
+    - claude: CLI/세션이 정하며 도움말·설정에 기본값 명시가 없다 → "" (GUI가 'CLI 기본'으로 표시).
+    - gemini/local/mock: effort 미지원.
+    """
+    out = {"claude": "", "codex": "", "gemini": "", "local": "", "mock": ""}
+    home = os.environ.get("CODEX_HOME")
+    p = (Path(home) if home else Path.home() / ".codex") / "config.toml"
+    try:
+        m = _CODEX_EFFORT_RE.search(p.read_text(encoding="utf-8", errors="replace"))
+        if m:
+            out["codex"] = m.group(1).strip()
+    except OSError:
+        pass
+    return out
 
 
 @dataclass
@@ -79,6 +106,7 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
     # 모델 다운그레이드(적응형 열화): model이 주어지고 model_arg 템플릿이 있으면 덧붙인다.
     if model and spec.get("model_arg"):
         cmd += [str(a).replace("{model}", model) for a in spec["model_arg"]]
+    # (effort 기본값 조회는 effort_defaults() 참고 — 아래 조립은 '지정됐을 때'만 플래그를 붙인다)
     # 추론 강도(effort): effort가 주어지고 effort_arg 템플릿이 있는 backend만 덧붙인다.
     # claude=--effort <level>, codex=-c model_reasoning_effort=<level>. gemini는 미지원(무시).
     if effort and spec.get("effort_arg"):

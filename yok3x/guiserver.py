@@ -16,7 +16,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from . import limits, usage
+from . import backends, limits, usage
 from ._version import __version__
 from .config import Config
 
@@ -119,6 +119,9 @@ def build_state(cfg: Config) -> dict:
         "profile_routes": _profile_routes(cfg),
         "models_catalog": cfg.yok3x.get("models_catalog", {}),
         "backend_models": {b: limits.list_models(cfg, b) for b in ("claude", "codex", "gemini")},
+        # effort 미지정 시 실제 적용되는 각 CLI의 기본값(알 수 있는 것만. 모르면 "")
+        "effort_defaults": backends.effort_defaults(),
+        "default_effort": cfg.yok3x.get("default_effort", ""),   # yok3x 전역 기본(있으면 이게 우선)
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
                   "failover": bool((g.get("degrade") or {}).get("failover_enabled", False)),

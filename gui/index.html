@@ -637,6 +637,27 @@ const ROLE={"claude-main":"구현","codex-main":"리팩터","codex-critic":"코�
 const PROFILE_DESC={best:"상황별 벤치마크 최고점 자동선택",balanced:"성능·비용 균형",cost:"저비용 우선",speed:"속도 우선",off:"수동(워커 기본 backend·수동 모델)"};
 function opts(list,sel){return list.map(v=>`<option ${v===sel?"selected":""}>${v}</option>`).join("")}
 const EFF_LEVELS={codex:["minimal","low","medium","high","xhigh"],claude:["low","medium","high","xhigh","max"]};
+// effort '기본'이 실제로 무엇인지 — backend마다 출처가 다르다. 알아낸 값만 보여주고 모르면 추측하지 않는다.
+//  · yok3x 전역 default_effort가 있으면 그게 먼저 적용된다(워커별 지정이 없을 때).
+//  · 없으면 플래그 자체를 안 보내므로 CLI 기본: codex=~/.codex/config.toml, claude=CLI/세션이 결정(비공개).
+function effDefaultOf(s,be){
+  const g=(s&&s.default_effort||"").trim();
+  if(g) return {val:g, src:"yok3x 전역 설정"};
+  const d=((s&&s.effort_defaults)||{})[be]||"";
+  if(d) return {val:d, src:be==="codex"?"~/.codex/config.toml":"CLI 설정"};
+  return {val:"", src:""};
+}
+function effDefaultLabel(s,be){
+  const d=effDefaultOf(s,be);
+  return d.val?`effort 기본 (${d.val})`:"effort 기본 (CLI 기본값)";
+}
+function effDefaultHint(s,be){
+  const d=effDefaultOf(s,be);
+  const head="추론 강도 — 비우면 yok3x가 플래그를 보내지 않는다.";
+  if(d.val) return `${head} 이 경우 실제 적용값: ${d.val} (출처: ${d.src}). 지원: ${(EFF_LEVELS[be]||[]).join("/")}`;
+  if(be==="claude") return `${head} claude 기본값은 CLI/세션이 정하며 공개돼 있지 않다(Claude Code는 Opus에 medium 권장). 지원: ${(EFF_LEVELS[be]||[]).join("/")}`;
+  return `${head} 지원: ${(EFF_LEVELS[be]||[]).join("/")}`;
+}
 window._agentOverrides=window._agentOverrides||{};
 function agentRow(s,w,values,taskMode){
   const be=values.backend||"", mdl=values.model||"", eff=values.effort||"";
@@ -647,14 +668,18 @@ function agentRow(s,w,values,taskMode){
   if(mdl&&!avail.includes(mdl))mopts.push(`<option value="${esc(mdl)}" selected>${esc(mdl)}(커스텀)</option>`);
   mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
   const levels=EFF_LEVELS[be]||[], supported=levels.length>0;
-  const eopts=['<option value="">effort 기본</option>'].concat(levels.map(e=>`<option value="${e}" ${e===eff?'selected':''}>${e}</option>`)).join("");
+  // "effort 기본" = yok3x가 --effort/-c 플래그를 **안 보냄** → 그 CLI의 자체 기본이 적용된다.
+  // 그 기본이 뭔지는 backend마다 출처가 달라, 알아낼 수 있는 것만 실제 값을 읽어 괄호로 보여준다.
+  const eopts=['<option value="">'+esc(effDefaultLabel(s,be))+'</option>']
+    .concat(levels.map(e=>`<option value="${e}" ${e===eff?'selected':''}>${e}</option>`)).join("");
+  const eTitle=supported?effDefaultHint(s,be):"이 backend는 effort 미지원(claude/codex만)";
   const changed=taskMode&&Object.keys(window._agentOverrides[w]||{}).length>0;
   const change=taskMode?'changeTaskAgent(this)':'markGlobalBoardDirty()';
   const modelChange=taskMode?'pickTaskModel(this)':'pickGlobalModel(this)';
   return `<div class="arow" data-worker="${esc(w)}"><div class="fn">${ROLE[w]||esc(w)} <small>${esc(w)}</small>${changed?' <b style="color:var(--red);font-size:10px">● 작업별</b>':''}</div>
     <select data-field="backend" ${taskMode?'data-ta-w':'data-w'}="${esc(w)}" onchange="${change}">${opts(backends,be)}</select>
     <select data-field="model" ${taskMode?'data-ta-wm':'data-wm'}="${esc(w)}" onchange="${modelChange}" title="수동 모델">${mopts.join("")}</select>
-    <select data-field="effort" ${taskMode?'data-ta-we':'data-we'}="${esc(w)}" onchange="${change}" title="추론 강도" ${supported?'':"style='opacity:.5'"}>${eopts}</select>
+    <select data-field="effort" ${taskMode?'data-ta-we':'data-we'}="${esc(w)}" onchange="${change}" title="${esc(eTitle)}" ${supported?'':"style='opacity:.5'"}>${eopts}</select>
     ${taskMode?`<button class="btn plain" onclick="resetTaskAgent(this)" title="이 워커의 작업별 배치 제거">↺</button>`:''}</div>`;
 }
 function renderGlobalBoard(s){

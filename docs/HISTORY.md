@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-17 — effort '기본'이 실제로 뭔지 표시 (사용자 요청)
+
+- **문제**: 드롭다운의 `effort 기본`이 **무슨 값인지 안 알려줌**. 실제로는 yok3x가 `--effort`/`-c` 플래그를
+  **아예 안 보내서** 각 CLI의 자체 기본이 적용되는데, 그 기본은 backend·사용자 설정마다 다르다.
+- `backends.effort_defaults()`: 알아낼 수 있는 것만 **실제로 읽어서** 알려준다(추측 금지 §5.5).
+  codex=`$CODEX_HOME|~/.codex/config.toml`의 `model_reasoning_effort` 정규식 조회(키 하나뿐이라 TOML
+  파서 불필요 — `tomllib`는 3.11+라 3.10 호환 위해 한 줄만 파싱). claude=""(CLI/세션이 정하며 비공개).
+- GUI: 옵션 라벨이 `effort 기본 (xhigh)`처럼 **실제값 표시**, 모르면 `(CLI 기본값)`. 툴팁에 출처·지원 레벨.
+  yok3x 전역 `default_effort`가 있으면 그게 우선임도 반영.
+- **확인된 사실**: 이 환경의 codex 기본은 **xhigh**(config.toml). claude는 도움말에 기본 미표기이나
+  Claude Code 안내 문구상 **Opus엔 medium 권장**이며, `ultrathink`가 고효율을 유발하는 프롬프트 키워드다
+  (= effort 값이 아님 — 앞선 ultracode 판단과 일치).
+- 검증: codex config 실조회(xhigh)·CODEX_HOME 존중·파일 없어도 예외 없음·GUI 표시. 153 passed.
+
 ## 미출시(dev) · 2026-07-17 — 작업 이름을 CRUD 줄로 이동('라벨' 정체 해소) (사용자 요청)
 
 - **문제**: `라벨` 필드가 실제로는 **작업 이름**(저장 파일명·작업별 보기 그룹)인데, placeholder가
