@@ -802,18 +802,35 @@ class Orchestrator:
             return "", []
         self._log(f"[acquire] 질문 {len(questions)}개 파싱 완료")
 
-        qa_items: list[dict] = []
+        prepared: list[tuple[int, dict, CallSpec]] = []
         for index, question in enumerate(questions):
             answerer = answerers[index % len(answerers)]
             self._log(f"[acquire] Answerer {index + 1}/{len(questions)} 시작: {answerer}")
             try:
-                answer_result = self.call_worker(
+                spec = self.prepare_call(
                     answerer, acquire.build_answerer_prompt(issue, question),
                     task_kind="general", cwd=workdir, read_only=True)
-            except RunAborted:
-                raise
             except Exception as exc:
-                self._log(f"[acquire] Answerer 호출 실패({answerer}): {type(exc).__name__}: {exc}")
+                self._log(
+                    f"[acquire] Answerer 준비 실패({answerer}): "
+                    f"{type(exc).__name__}: {exc}")
+                continue
+            prepared.append((index, question, spec))
+        specs = [spec for _, _, spec in prepared]
+
+        try:
+            results = self.call_workers_parallel(specs)
+        except RunAborted:
+            raise
+        except Exception as exc:
+            self._log(f"[acquire] Answerer 배치 호출 실패: {type(exc).__name__}: {exc}")
+            results = [None] * len(specs)
+
+        qa_items: list[dict] = []
+        for (index, question, spec), answer_result in zip(prepared, results):
+            answerer = spec.worker
+            if answer_result is None:
+                self._log(f"[acquire] Answerer 실패 슬롯({answerer}) — QA {index + 1} 제외")
                 continue
             if not answer_result.ok:
                 self._log(f"[acquire] Answerer 실패({answerer}): "

@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-18 — [로드맵 3 / C-4] ACQUIRE Answerer 병렬 이식 (codex 구현·Claude 검토)
+
+- `call_workers_parallel`(C-3)의 **첫 실사용자**. ACQUIRE는 질문마다 독립 읽기전용 Answerer라 병렬화의
+  이상적 대상(codex 원 설계도 "Answerer 먼저"). 질문마다 `prepare_call(read_only=True)`로 CallSpec 만들어
+  병렬 실행 → 결과를 질문과 zip해 순서 보존 처리(parse/validate/수집). 실패 슬롯(None)은 스킵(all-settled).
+- 나머지 로직 100% 보존: Questioner 단일호출·게이팅·verify_evidence·apply_verdicts·render·_save_acquire
+  (knot 미저장)·fail-safe. RunAborted 전파. parallel.enabled off면 순차 폴백(call_workers_parallel 위임).
+- 검토(적대적): **병렬 0.46s vs 순차 1.40s(3배)** · 순서 보존(느린 답 먼저 와도 질문 순) · read_only=True 유지 ·
+  all-settled(한 Answerer 실패해도 나머지 QA 수집) · 양 경로 결과 동일. **175 passed**(신규 6).
+
 ## 미출시(dev) · 2026-07-18 — 7일 바에 페이싱+리셋 시간 동시 표시 (사용자 요청)
 
 - 페이싱이 켜지면 `오늘 N%p / 상한 M%p`가 `리셋 X 후`를 **덮어써서** 리셋 시간이 사라지던 것 수정.
