@@ -20,7 +20,7 @@ from . import limits, usage
 from ._version import __version__
 from .config import Config
 
-BACKENDS_OK = ("claude", "codex", "gemini", "mock")
+EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 # 실행 상태 + 큐. 단일 실행 락으로 동시 실행 방지, 나머지는 큐 대기.
 # last: 직전 실행 결과/오류를 보존해 GUI에 노출(조용한 실패 금지).
@@ -134,6 +134,7 @@ def build_state(cfg: Config) -> dict:
         "tasks": _list_tasks(cfg),
         "saved_tasks": _saved_tasks(cfg),   # [{name,label}] — 작업별 보기와 통합용
         "workers": workers,
+        "backends": list(cfg.backends),
         "routing": dict(cfg.yok3x.get("routing", {})),
     }
 
@@ -260,13 +261,31 @@ def _task_path(cfg: Config, name: str) -> Path | None:
     return p
 
 
-def _validate_task_spec(spec: dict) -> str:
+def _validate_task_spec(spec: dict, cfg: Config | None = None) -> str:
     if not isinstance(spec, dict):
         return "spec이 객체가 아님"
     if not str(spec.get("task", "")).strip():
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
+    agents = spec.get("agents")
+    if agents is not None:
+        if not isinstance(agents, dict):
+            return "agents가 객체가 아님"
+        if cfg is None:
+            return "agents 검증에 config가 필요함"
+        workers = cfg.yok3x.get("workers", {})
+        for worker, override in agents.items():
+            if worker not in workers:
+                return f"없는 워커(agents): {worker}"
+            if not isinstance(override, dict):
+                return f"agents.{worker}가 객체가 아님"
+            if "backend" in override and override["backend"] not in cfg.backends:
+                return f"잘못된 backend(agents.{worker}): {override['backend']}"
+            effort = override.get("effort")
+            if effort and str(effort) not in EFFORTS_OK:
+                return (f"effort 값 오류(agents.{worker}): {effort} "
+                        f"({'/'.join(EFFORTS_OK)})")
     return ""
 
 
@@ -277,7 +296,7 @@ def _save_task(cfg: Config, raw_name: str, spec: dict) -> dict:
     p = _task_path(cfg, name)
     if p is None:
         return {"error": "잘못된 작업 이름/경로"}
-    err = _validate_task_spec(spec)
+    err = _validate_task_spec(spec, cfg)
     if err:
         return {"error": err}
     spec.setdefault("label", raw_name.strip())   # 라벨 기본=사용자 이름(작업별 콘솔 연동)
@@ -331,10 +350,10 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     for w, be in workers.items():
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커: {w}"}
-        if be not in BACKENDS_OK:
-            return {"error": f"잘못된 backend: {be} (가능: {', '.join(BACKENDS_OK)})"}
+        if be not in cfg.backends:
+            return {"error": f"잘못된 backend: {be} (가능: {', '.join(cfg.backends)})"}
     for fn, be in routing.items():
-        if be not in BACKENDS_OK:
+        if be not in cfg.backends:
             return {"error": f"routing '{fn}' backend 잘못됨: {be}"}
     if flavor is not None and flavor not in cfg.yok3x.get("flavors", {}):
         return {"error": f"없는 flavor: {flavor}"}
@@ -357,7 +376,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     for w, e in worker_efforts.items():
         if w not in cfg.yok3x.get("workers", {}):
             return {"error": f"없는 워커(effort): {w}"}
-        if e and str(e) not in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        if e and str(e) not in EFFORTS_OK:
             return {"error": f"effort 값 오류: {e} (minimal/low/medium/high/xhigh/max)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
@@ -503,12 +522,9 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                 iters = max(1, int(body.get("iterations", 1) or 1))
                 spec = body.get("spec")
                 if spec:  # 인라인 태스크
-                    if not str(spec.get("task", "")).strip():
-                        self._json(400, {"error": "task(목표)가 비었다"})
-                        return
-                    if spec.get("pattern") not in ("producer-reviewer", "pipeline",
-                                                   "fanout", "fanout-fanin"):
-                        self._json(400, {"error": "pattern이 잘못됨"})
+                    err = _validate_task_spec(spec, cfg)
+                    if err:
+                        self._json(400, {"error": err})
                         return
                     tf = _write_inline_spec(cfg, spec)
                 else:  # 등록된 task 파일

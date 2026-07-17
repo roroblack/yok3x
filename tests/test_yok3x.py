@@ -6,6 +6,7 @@ verify_cmd 게이트에 `pytest -q`를 걸면 프로젝트가 자기 자신을 d
 """
 from __future__ import annotations
 
+import copy
 import json
 
 import subprocess
@@ -83,6 +84,99 @@ def test_three_patterns_run_to_done(mock_root, spec):
     tf = mock_root / "task.json"
     tf.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     assert run_task_file(cfg, tf, auto=True) == "done"
+
+
+# ----------------------------------------------- 작업별 에이전트 배치 override
+def test_worker_merges_partial_run_override_without_mutating_global(mock_root):
+    cfg = Config.load(mock_root)
+    before = copy.deepcopy(cfg.yok3x["workers"])
+    o = Orchestrator(cfg, auto=True)
+    o.agents_override = {"claude-main": {"backend": "codex", "effort": "high"}}
+
+    worker = o._worker("claude-main")
+
+    assert worker["backend"] == "codex"
+    assert worker["effort"] == "high"
+    assert worker["role"] == before["claude-main"]["role"]   # 부분 override: 나머지는 전역 상속
+    assert cfg.yok3x["workers"] == before                       # 얕은 복사 병합: 전역 미오염
+
+
+def test_worker_without_override_is_same_as_global(mock_root):
+    cfg = Config.load(mock_root)
+    o = Orchestrator(cfg, auto=True)
+
+    assert o._worker("claude-main") == cfg.worker("claude-main")
+    assert o._worker("claude-main") is not cfg.worker("claude-main")
+
+
+def test_run_task_file_applies_agents_without_polluting_config(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    before = copy.deepcopy(cfg.yok3x["workers"])
+    agents = {"claude-main": {"backend": "codex", "model": "gpt-test", "effort": "high"}}
+    tf = mock_root / "task-agents.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t",
+                              "producer": "claude-main", "reviewer": "codex-critic",
+                              "agents": agents}), encoding="utf-8")
+    seen = {}
+
+    def fake_run(self, *args, **kwargs):
+        seen["agents"] = self.agents_override
+        seen["worker"] = self._worker("claude-main")
+
+    monkeypatch.setattr(Orchestrator, "run_producer_reviewer", fake_run)
+
+    assert run_task_file(cfg, tf, auto=True) == "done"
+    assert seen["agents"] == agents
+    assert seen["worker"]["backend"] == "codex"
+    assert seen["worker"]["role"] == before["claude-main"]["role"]
+    assert cfg.yok3x["workers"] == before
+
+
+@pytest.mark.parametrize(("agents", "error"), [
+    ({"없는-워커": {"backend": "codex"}}, "없는 워커"),
+    ({"claude-main": {"backend": "없는-backend"}}, "잘못된 backend"),
+    ({"claude-main": {"effort": "ultra"}}, "effort 값 오류"),
+])
+def test_validate_task_spec_rejects_bad_agent_override(mock_root, agents, error):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "t", "agents": agents}
+
+    assert error in gs._validate_task_spec(spec, cfg)
+
+
+def test_override_backend_is_used_for_actual_worker_call(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["use_real_limits"] = False
+    calls = []
+
+    def fake_backend(name, backend_spec, prompt, **kwargs):
+        calls.append((name, backend_spec, kwargs))
+        return BackendResult(backend=name, ok=True, text="ok")
+
+    monkeypatch.setattr(orchestrator, "run_backend", fake_backend)
+    o = Orchestrator(cfg, auto=True)
+    o.agents_override = {"claude-main": {"backend": "codex", "model": "gpt-test",
+                                          "effort": "high"}}
+
+    assert o.call_worker("claude-main", "t").ok
+    assert calls[0][0] == "codex"
+    assert calls[0][1] is cfg.backends["codex"]
+    assert calls[0][2]["model"] == "gpt-test"
+    assert calls[0][2]["effort"] == "high"
+
+
+def test_task_agents_survive_save_load_roundtrip(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    agents = {"claude-main": {"backend": "codex", "effort": "high"}}
+    spec = {"pattern": "producer-reviewer", "task": "배치 왕복", "agents": agents}
+
+    saved = gs._save_task(cfg, "배치 왕복", spec)
+    loaded = gs._load_task(cfg, saved["name"])
+
+    assert saved["ok"] and loaded["ok"]
+    assert loaded["spec"]["agents"] == agents
 
 
 # ----------------------------------------------- 작업(task)별 콘솔: label 흐름

@@ -282,49 +282,55 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         </div>
       </div>
 
-      <!-- 우: 에이전트 배치 -->
+      <!-- 우: 현재 작업의 에이전트 배치 override -->
       <div class="panel">
-        <h2><span class="ic"></span> 에이전트 배치</h2>
-        <p class="sub">어떤 CLI가 어떤 역할을 맡을지 바꾼다. 한도는 ← 좌측 실시간 스트립 참고.</p>
+        <h2><span class="ic"></span> 작업별 에이전트 배치</h2>
+        <p class="sub">기본은 설정 탭의 전역 배치. 바꾼 워커만 이 작업에 저장되며 전역 설정은 바뀌지 않는다.</p>
         <div class="assign" id="board"></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:11px;flex-wrap:wrap">
-          <button class="btn" style="background:var(--red);color:#fff" onclick="saveConfig()">저장</button>
-          <button class="btn plain" onclick="load()">되돌리기</button>
-          <span class="sub" id="board-msg" style="margin:0"></span>
-        </div>
-        <div style="margin-top:12px"><label class="tgl2">오케스트레이터 flavor
-          <select id="c-flavor"></select></label></div>
-        <div style="margin-top:10px">
-          <div class="sub" style="margin:0 0 4px">워크스페이스(기본 workdir) — 지정하면 모든 런이 이 폴더에서 실행(비면 빈 격리 dir)</div>
-          <div style="display:flex;gap:6px;align-items:center">
-            <button class="btn" type="button" id="ws-clear" onclick="clearWorkspace()" title="워크스페이스 지우기(빈 격리 dir 사용)" style="display:none;padding:6px 9px">✕</button>
-            <input id="c-workspace" class="wide" style="flex:1" placeholder="비면 빈 격리 dir · 예: C:/Users/me/myrepo">
-            <button class="btn" type="button" onclick="pickWorkspace()" title="폴더 선택 대화상자">📁 찾기</button>
-          </div>
-        </div>
-        <div style="margin-top:11px">
-          <label class="tgl2">모델 프로파일(상황별 자동선택) <select id="c-profile"></select></label>
-          <div class="sub" id="c-routing" style="margin-top:6px;line-height:1.7"></div>
-        </div>
-        <div style="margin-top:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <div id="swfo" class="switch off" onclick="toggleFailover()" title="on: 한도 초과 시 정지 대신 여유 있는 다른 도구로 자동 전환(결과 품질이 달라질 수 있음)"></div>
-          <b id="fotext" style="font-size:12px">OFF</b>
-          <span class="sub" style="margin:0">폴오버 — 한도 도달 시 여유 도구로 자동 전환(품질 변동 가능)</span>
-        </div>
-        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <div id="swof" class="switch off" onclick="toggleOffline()" title="on: 클라우드가 전부 한도 소진되면 로컬 모델(localhost)로 강등해 무중단. 로컬 서버가 떠 있을 때만 발동. 끄면 로컬 사용 안 함(현행처럼 정지)."></div>
-          <b id="oftext" style="font-size:12px">OFF</b>
-          <span class="sub" style="margin:0">오프라인 폴백(P3) — 클라우드 전멸 시 로컬 모델로 강등(끄면 로컬 미사용)</span>
-        </div>
+        <div class="sub" id="board-msg" style="margin-top:8px">전역 기본값 사용 중</div>
         <div class="qbox" id="c-queue"></div>
-        <div class="note">⚠ 로컬 전용(127.0.0.1) · 자동 승인 실행 · 가드 stop 시 큐 중단.</div>
+        <div class="note">● 작업별 행만 <code>agents</code>에 저장 · ↺로 해당 워커를 전역값으로 복귀.</div>
       </div>
     </div>
   </section>
 
   <!-- 설정(정적 UI) -->
   <section id="settings" class="view">
-    <div class="note" style="margin-bottom:10px">ℹ 이 탭의 모든 설정은 <b>변경 즉시 자동 저장</b>됩니다 — 별도 저장 버튼 불필요.</div>
+    <div class="note" style="margin-bottom:10px">ℹ 한도 설정은 변경 즉시 저장됩니다. 에이전트 배치는 변경 후 <b>전역 배치 저장</b>을 누르세요.</div>
+    <div class="panel">
+      <h2><span class="ic"></span> 에이전트 배치 보드 <span class="sub" style="font-weight:400">— 전역 기본</span></h2>
+      <p class="sub">새 작업과 override 없는 작업에 적용되는 기본 배치. 콘솔에서는 작업별로 재정의할 수 있다.</p>
+      <div class="assign" id="global-board"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:11px;flex-wrap:wrap">
+        <button class="btn" style="background:var(--red);color:#fff" onclick="saveConfig()">전역 배치 저장</button>
+        <button class="btn plain" onclick="resetGlobalBoard()">되돌리기</button>
+        <span class="sub" id="global-board-msg" style="margin:0"></span>
+      </div>
+      <div style="margin-top:12px"><label class="tgl2">오케스트레이터 flavor
+        <select id="c-flavor"></select></label></div>
+      <div style="margin-top:10px">
+        <div class="sub" style="margin:0 0 4px">워크스페이스(기본 workdir) — 지정하면 모든 런이 이 폴더에서 실행(비면 빈 격리 dir)</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn" type="button" id="ws-clear" onclick="clearWorkspace()" title="워크스페이스 지우기(빈 격리 dir 사용)" style="display:none;padding:6px 9px">✕</button>
+          <input id="c-workspace" class="wide" style="flex:1" placeholder="비면 빈 격리 dir · 예: C:/Users/me/myrepo">
+          <button class="btn" type="button" onclick="pickWorkspace()" title="폴더 선택 대화상자">📁 찾기</button>
+        </div>
+      </div>
+      <div style="margin-top:11px">
+        <label class="tgl2">모델 프로파일(상황별 자동선택) <select id="c-profile"></select></label>
+        <div class="sub" id="c-routing" style="margin-top:6px;line-height:1.7"></div>
+      </div>
+      <div style="margin-top:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="swfo" class="switch off" onclick="toggleFailover()" title="on: 한도 초과 시 정지 대신 여유 있는 다른 도구로 자동 전환(결과 품질이 달라질 수 있음)"></div>
+        <b id="fotext" style="font-size:12px">OFF</b>
+        <span class="sub" style="margin:0">폴오버 — 한도 도달 시 여유 도구로 자동 전환(품질 변동 가능)</span>
+      </div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="swof" class="switch off" onclick="toggleOffline()" title="on: 클라우드가 전부 한도 소진되면 로컬 모델(localhost)로 강등해 무중단. 로컬 서버가 떠 있을 때만 발동. 끄면 로컬 사용 안 함(현행처럼 정지)."></div>
+        <b id="oftext" style="font-size:12px">OFF</b>
+        <span class="sub" style="margin:0">오프라인 폴백(P3) — 클라우드 전멸 시 로컬 모델로 강등(끄면 로컬 미사용)</span>
+      </div>
+    </div>
     <div class="panel">
       <h2><span class="ic"></span> 가드 · 한도</h2>
       <div class="row">
@@ -369,15 +375,6 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       </div>
       <div id="pace-status" style="margin-top:8px"></div>
       <div class="note">14%p ≈ 주간의 1/7(균등). 실측 7d가 있는 <b>claude·codex</b>에 적용(gemini는 주간 API 없음). ‘정지+승인’은 캡 도달 시 루프를 멈추고 <b>재개 승인</b> 버튼(또는 <code>yok3x pace approve &lt;backend&gt;</code>)으로 그날만 재개. 자정 자동 리셋.</div>
-    </div>
-    <div class="panel">
-      <h2><span class="ic"></span> 워커</h2>
-      <div class="row">
-        <div class="tool" style="background:var(--panel)"><b>claude-main</b><div class="sub" style="margin:2px 0 0">구현 · <span class="mono">claude</span></div></div>
-        <div class="tool" style="background:var(--panel)"><b>codex-main</b><div class="sub" style="margin:2px 0 0">리팩터 · <span class="mono">codex</span></div></div>
-        <div class="tool" style="background:var(--panel)"><b>codex-critic</b><div class="sub" style="margin:2px 0 0">코드 리뷰 · <span class="mono">codex</span></div></div>
-        <div class="tool" style="background:var(--panel)"><b>gemini</b><div class="sub" style="margin:2px 0 0">설계 검토 · <span class="mono">gemini</span></div></div>
-      </div>
     </div>
   </section>
 
@@ -629,6 +626,69 @@ function render(s){
 const ROLE={"claude-main":"구현","codex-main":"리팩터","codex-critic":"코드리뷰","gemini":"설계검토"};
 const PROFILE_DESC={best:"상황별 벤치마크 최고점 자동선택",balanced:"성능·비용 균형",cost:"저비용 우선",speed:"속도 우선",off:"수동(워커 기본 backend·수동 모델)"};
 function opts(list,sel){return list.map(v=>`<option ${v===sel?"selected":""}>${v}</option>`).join("")}
+const EFF_LEVELS={codex:["minimal","low","medium","high","xhigh"],claude:["low","medium","high","xhigh","max"]};
+window._agentOverrides=window._agentOverrides||{};
+function agentRow(s,w,values,taskMode){
+  const be=values.backend||"", mdl=values.model||"", eff=values.effort||"";
+  const backends=s.backends||["claude","codex","gemini","local","mock"];
+  const avail=(s.backend_models&&s.backend_models[be])||[];
+  let mopts=['<option value="">(기본 모델)</option>'];
+  avail.forEach(m=>mopts.push(`<option value="${esc(m)}" ${m===mdl?'selected':''}>${esc(m)}</option>`));
+  if(mdl&&!avail.includes(mdl))mopts.push(`<option value="${esc(mdl)}" selected>${esc(mdl)}(커스텀)</option>`);
+  mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
+  const levels=EFF_LEVELS[be]||[], supported=levels.length>0;
+  const eopts=['<option value="">effort 기본</option>'].concat(levels.map(e=>`<option value="${e}" ${e===eff?'selected':''}>${e}</option>`)).join("");
+  const changed=taskMode&&Object.keys(window._agentOverrides[w]||{}).length>0;
+  const change=taskMode?'changeTaskAgent(this)':'markGlobalBoardDirty()';
+  const modelChange=taskMode?'pickTaskModel(this)':'pickGlobalModel(this)';
+  return `<div class="arow" data-worker="${esc(w)}"><div class="fn">${ROLE[w]||esc(w)} <small>${esc(w)}</small>${changed?' <b style="color:var(--red);font-size:10px">● 작업별</b>':''}</div>
+    <select data-field="backend" ${taskMode?'data-ta-w':'data-w'}="${esc(w)}" onchange="${change}">${opts(backends,be)}</select>
+    <select data-field="model" ${taskMode?'data-ta-wm':'data-wm'}="${esc(w)}" onchange="${modelChange}" title="수동 모델">${mopts.join("")}</select>
+    <select data-field="effort" ${taskMode?'data-ta-we':'data-we'}="${esc(w)}" onchange="${change}" title="추론 강도" ${supported?'':"style='opacity:.5'"}>${eopts}</select>
+    ${taskMode?`<button class="btn plain" onclick="resetTaskAgent(this)" title="이 워커의 작업별 배치 제거">↺</button>`:''}</div>`;
+}
+function renderGlobalBoard(s){
+  const bd=document.getElementById("global-board"); if(!bd||bd.dataset.dirty)return;
+  bd.innerHTML=Object.keys(s.workers||{}).map(w=>agentRow(s,w,s.workers[w],false)).join("");
+}
+function effectiveTaskAgent(w){return {...((window._globalWorkers||{})[w]||{}),...(window._agentOverrides[w]||{})};}
+function renderTaskBoard(s){
+  const bd=document.getElementById("board"); if(!bd)return;
+  bd.innerHTML=Object.keys(s.workers||{}).map(w=>agentRow(s,w,effectiveTaskAgent(w),true)).join("");
+  const n=Object.keys(cleanAgentOverrides()).length, msg=document.getElementById("board-msg");
+  if(msg)msg.textContent=n?`${n}개 워커 작업별 override`:'전역 기본값 사용 중';
+}
+function cleanAgentOverrides(){
+  const out={}, globals=window._globalWorkers||{};
+  Object.entries(window._agentOverrides||{}).forEach(([w,over])=>{
+    if(!globals[w]||!over||typeof over!=="object")return;
+    const clean={}; Object.entries(over).forEach(([k,v])=>{if(v!==(globals[w][k]??""))clean[k]=v;});
+    if(Object.keys(clean).length)out[w]=clean;
+  });
+  return out;
+}
+function changeTaskAgent(sel){
+  const row=sel.closest(".arow"), w=row.dataset.worker, base=(window._globalWorkers||{})[w]||{};
+  const next={...(window._agentOverrides[w]||{})};
+  row.querySelectorAll("select[data-field]").forEach(el=>{const k=el.dataset.field,v=el.value,b=base[k]||"";if(v===b)delete next[k];else next[k]=v;});
+  if(Object.keys(next).length)window._agentOverrides[w]=next;else delete window._agentOverrides[w];
+  renderTaskBoard(window._lastState);
+}
+function resetTaskAgent(btn){delete window._agentOverrides[btn.closest(".arow").dataset.worker];renderTaskBoard(window._lastState);}
+function setTaskAgents(agents){
+  window._agentOverrides={};
+  if(agents&&typeof agents==="object")Object.entries(agents).forEach(([w,v])=>{if(v&&typeof v==="object")window._agentOverrides[w]={...v};});
+  if(window._lastState)renderTaskBoard(window._lastState);
+}
+function pickTaskModel(sel){pickCustomModel(sel);changeTaskAgent(sel);}
+function pickGlobalModel(sel){pickCustomModel(sel);markGlobalBoardDirty();}
+function pickCustomModel(sel){
+  if(sel.value!=="__custom__")return;
+  const m=(prompt("모델 ID 입력 (예: gpt-5.6-codex, gemini-2.5-pro, o3):","")||"").trim();
+  if(m){const o=document.createElement("option");o.value=m;o.textContent=m+"(커스텀)";o.selected=true;sel.insertBefore(o,sel.lastElementChild);}else sel.value="";
+}
+function markGlobalBoardDirty(){const bd=document.getElementById("global-board");if(bd)bd.dataset.dirty="1";const m=document.getElementById("global-board-msg");if(m)m.textContent="미저장 변경";}
+function resetGlobalBoard(){const bd=document.getElementById("global-board");if(bd)bd.dataset.dirty="";const m=document.getElementById("global-board-msg");if(m)m.textContent="";if(window._lastState)renderGlobalBoard(window._lastState);}
 function renderProfileRoutes(){
   const pf=document.getElementById("c-profile"), rtp=document.getElementById("c-routing");
   if(!pf||!rtp) return;
@@ -666,14 +726,6 @@ async function toggleAutoRefresh(){
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_refresh:turnOn})});
     if(r.ok){document.getElementById("swar").classList.toggle("off",!turnOn);document.getElementById("artext").textContent=turnOn?"ON":"OFF";load();}
   }catch(e){}
-}
-function pickModel(sel){
-  if(sel.value==="__custom__"){
-    const m=(prompt("모델 ID 입력 (예: gpt-5.6-codex, gemini-2.5-pro, o3):","")||"").trim();
-    if(m){const o=document.createElement("option");o.value=m;o.textContent=m+"(커스텀)";o.selected=true;sel.insertBefore(o,sel.lastElementChild);}
-    else{sel.value="";}
-  }
-  document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경';
 }
 async function saveGuardRatios(){
   const soft=(+document.getElementById("softr").value)/100, hard=(+document.getElementById("hardr").value)/100;
@@ -749,33 +801,10 @@ function renderConsole(s,rn){
       || `<div class="us-win"><span>use</span><div class="g"><i style="width:${Math.round(t.ratio*100)}%"></i></div><b>${Math.round(t.ratio*100)}%</b></div>`;
     return `<div class="us-tool"><div class="nm"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}</span>${badge(t)}</div>${wins}</div>`;
   }).join("");
-  // 에이전트 배치 보드(워커→backend)
-  const bd=document.getElementById("board");
-  if(bd && !bd.dataset.dirty) bd.innerHTML=workers.map(w=>{
-    const be=s.workers[w].backend, mdl=s.workers[w].model||"";
-    const list=["claude","codex","gemini","local","mock"];
-    const avail=(s.backend_models&&s.backend_models[be])||[];   // 동적 조회(claude=API·codex=캐시)
-    let mopts=['<option value="">(기본 모델)</option>'];
-    avail.forEach(m=>mopts.push(`<option value="${m}" ${m===mdl?'selected':''}>${m}</option>`));
-    if(mdl && !avail.includes(mdl)) mopts.push(`<option value="${mdl}" selected>${mdl}(커스텀)</option>`);
-    mopts.push('<option value="__custom__">➕ 커스텀 입력…</option>');
-    const dirty="document.getElementById('board').dataset.dirty='1';document.getElementById('board-msg').textContent='미저장 변경'";
-    const hint=avail.length?`동적 조회됨(${avail.length}개)`:"목록 조회 불가(gemini 등) — 커스텀 입력";
-    // 추론 강도(effort) — 백엔드별 지원 레벨 다름(claude CLI가 직접 알려준 유효값으로 검증):
-    // claude --effort: low/medium/high/xhigh/max (ultracode는 effort 아님 — 클라우드 워크플로라 제외).
-    // codex model_reasoning_effort: minimal/low/medium/high/xhigh (에러메시지로 확인).
-    const eff=s.workers[w].effort||"";
-    const EFF_LEVELS={codex:["minimal","low","medium","high","xhigh"], claude:["low","medium","high","xhigh","max"]};
-    const levels=EFF_LEVELS[be]||[];
-    const effSupported=levels.length>0;
-    const effOpts=['<option value="">effort 기본</option>'].concat(
-      levels.map(e=>`<option value="${e}" ${e===eff?'selected':''}>${e}</option>`)).join("");
-    const effTitle=effSupported?`추론 강도 — ${be} 적용(${levels.join("/")})`:"추론 강도 — 이 backend는 미적용(claude/codex만)";
-    return `<div class="arow"><div class="fn">${ROLE[w]||w} <small>${w}</small></div>
-      <select data-w="${w}" onchange="${dirty}">${opts(list,be)}</select>
-      <select data-wm="${w}" onchange="pickModel(this)" title="수동 모델(프로파일 off일 때 적용). ${hint}. 저장 후 backend 바꿨으면 새로고침">${mopts.join("")}</select>
-      <select data-we="${w}" onchange="${dirty}" title="${effTitle}" ${effSupported?"":"style='opacity:.5'"}>${effOpts}</select></div>`;
-  }).join("");
+  // 설정 탭은 전역 기본, 콘솔 탭은 현재 작업의 부분 override를 각각 렌더한다.
+  window._globalWorkers=s.workers||{};
+  renderGlobalBoard(s);
+  renderTaskBoard(s);
   // 큐
   const q=document.getElementById("c-queue");
   if(q){const items=[]; if(rn.active)items.push(`▶ ${rn.task} (실행 중, ${rn.since||""})`);
@@ -848,6 +877,7 @@ function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목�
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
   spec.label=document.getElementById("c-label").value.trim();
+  const agents=cleanAgentOverrides(); if(Object.keys(agents).length)spec.agents=agents;
   return spec;
 }
 async function sendTask(){
@@ -878,6 +908,7 @@ function newTask(){
   set("c-task",""); set("c-label",""); set("c-workdir",""); set("c-verify","");
   set("c-rounds",2); set("c-score",8.0);
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
+  setTaskAgents({});
   const sel=document.getElementById("console-filter"); if(sel){sel.value="__all__"; renderConsoleLog(window._lastState);}
   document.getElementById("c-runmsg").textContent="새 작업 — 목표를 입력하고 [💾]로 저장하거나 바로 전송";
   const t=document.getElementById("c-task"); if(t) t.focus();
@@ -896,6 +927,7 @@ async function openTask(){
     if(s.pass_score)document.getElementById("c-score").value=s.pass_score;
     document.getElementById("c-workdir").value=s.workdir||"";
     document.getElementById("c-verify").value=s.verify_cmd||"";
+    setTaskAgents(s.agents||{});
     const pat=s.pattern||"producer-reviewer";
     document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p===pat));
     document.getElementById("c-runmsg").textContent="불러옴: "+name+" (수정 후 저장/실행)";
@@ -923,7 +955,7 @@ async function postRun(payload,msgId){
   }catch(e){document.getElementById(msgId).textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
 }
 async function saveConfig(){
-  const bd=document.getElementById("board");
+  const bd=document.getElementById("global-board");
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
   const worker_models={}; bd.querySelectorAll("select[data-wm]").forEach(s=>worker_models[s.dataset.wm]=s.value);
   const worker_efforts={}; bd.querySelectorAll("select[data-we]").forEach(s=>worker_efforts[s.dataset.we]=s.value);
@@ -932,9 +964,9 @@ async function saveConfig(){
   const active_profile=document.getElementById("c-profile").value;
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workers,worker_models,worker_efforts,flavor,workspace,active_profile})});
     const j=await r.json();
-    document.getElementById("board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
+    document.getElementById("global-board-msg").textContent=r.ok?"저장됨 ✓":("실패: "+(j.error||r.status));
     if(r.ok){bd.dataset.dirty="";} load();
-  }catch(e){document.getElementById("board-msg").textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
+  }catch(e){document.getElementById("global-board-msg").textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
 }
 async function runTask(name){
   try{

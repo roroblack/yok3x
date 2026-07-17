@@ -169,6 +169,8 @@ class Orchestrator:
         self.pattern = "-"
         self.task_desc = ""   # 상태/채팅 표시용 작업 목표
         self.label = ""       # 작업 그룹 라벨(콘솔 작업별 뷰). 비면 GUI가 무제목 처리
+        # 작업별 에이전트 배치. 전역 cfg는 건드리지 않고 이 런에서만 부분 병합한다.
+        self.agents_override: dict[str, dict[str, Any]] = {}
         # 태스크 옵션(코딩 기능): run_task_file이 세팅
         self.workdir: str | None = None      # 워커/검증 실행 디렉터리
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
@@ -179,6 +181,12 @@ class Orchestrator:
         self.escalate: dict = {}   # 조건부 라우팅: 낮은 점수 지속 시 워커 전환(task spec의 escalate)
 
     # ------------------------------------------------------------ infra
+
+    def _worker(self, name: str) -> dict[str, Any]:
+        """전역 워커 설정의 복사본에 이번 런의 작업별 배치만 부분 병합한다."""
+        worker = dict(self.cfg.worker(name))
+        worker.update(self.agents_override.get(name, {}))
+        return worker
 
     def _log(self, msg: str) -> None:
         print(msg, flush=True)
@@ -410,7 +418,7 @@ class Orchestrator:
                      read_only: bool = False) -> CallSpec:
         """라우팅·프롬프트·실행 경로를 부작용 없이 미리 확정한다."""
         cfg = self.cfg
-        w = cfg.worker(worker)
+        w = self._worker(worker)
 
         # 유효 backend·model 결정. 프로파일 라우팅 뒤 sticky 폴오버를 적용한다.
         # 요금 가드에 따른 폴오버·열화는 시점 의존 상태이므로 execute_call에 남긴다.
@@ -483,7 +491,7 @@ class Orchestrator:
         cfg = self.cfg
         worker, task, task_kind = spec.worker, spec.task, spec.task_kind
         backend, model_override = spec.backend, spec.model
-        w = cfg.worker(worker)
+        w = self._worker(worker)
 
         if spec.route_reason:
             self._log(
@@ -613,7 +621,7 @@ class Orchestrator:
         # stop이면 조사보다 본 수리를 우선한다. 중복 워커는 한 번만 확인한다.
         for worker in dict.fromkeys([questioner, *answerers]):
             try:
-                backend = self.cfg.worker(worker)["backend"]
+                backend = self._worker(worker)["backend"]
                 verdict = usage.check_backend(self.cfg, backend)
             except (KeyError, TypeError, ValueError) as exc:
                 self._log(f"[acquire] 워커/가드 확인 실패({worker}): {exc} — preflight 생략")
@@ -747,12 +755,12 @@ class Orchestrator:
     def _ensure_cross_family(self, producer: str, reviewer: str) -> str:
         """적대적 검수(ARIS): 프로듀서와 리뷰어가 같은 모델 패밀리면 다른 패밀리 워커로 리뷰어
         교체(교차검증 강화). 다른 패밀리 워커가 없으면 경고만. 반환: (교체된) reviewer."""
-        pb = (self.cfg.worker(producer) or {}).get("backend")
-        rb = (self.cfg.worker(reviewer) or {}).get("backend")
+        pb = (self._worker(producer) or {}).get("backend")
+        rb = (self._worker(reviewer) or {}).get("backend")
         if not pb or pb != rb:
             return reviewer
         for w in self.cfg.yok3x.get("workers", {}):
-            wb = (self.cfg.worker(w) or {}).get("backend")
+            wb = (self._worker(w) or {}).get("backend")
             if wb and wb != pb:
                 self._log(f"[adversarial] 교차 패밀리: 리뷰어 {reviewer}({rb}) → {w}({wb}) 교체")
                 return w
@@ -920,6 +928,7 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     """task.json 실행. 반환: 종료 상태 문자열."""
     spec = json.loads(Path(task_file).read_text(encoding="utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
+    orch.agents_override = spec.get("agents") or {}
     # 작업 그룹 라벨(콘솔 작업별 뷰용): label 키가 있으면 그 값(빈값 허용=무제목),
     # 키 자체가 없으면(등록된 task 파일) 파일명으로 폴백.
     _lbl = spec.get("label")

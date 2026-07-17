@@ -4,6 +4,18 @@
 
 ---
 
+## 미출시(dev) · 2026-07-17 — 작업별 에이전트 배치(전역 기본 + override) + CRUD 아이콘·새작업 (사용자 요청)
+
+- **작업별 에이전트 배치**: task spec에 `agents` 부분 override 추가. `Orchestrator._worker(name)`이
+  `dict(cfg.worker(name))` 복사본에 `agents_override[name]`만 병합 — orchestrator의 `cfg.worker()` 직접호출을
+  전부 교체(prepare/execute·`_ensure_cross_family`·acquire). **전역 config는 절대 안 바뀜**(런 스코프).
+- GUI: 설정탭 = **에이전트 배치 보드(전역 기본)**, 콘솔 = **작업별 배치**(전역값으로 표시 →
+  바꾸면 `● 작업별` 배지 + `↺` 되돌리기). `buildSpec()`이 **바뀐 워커만** `agents`에 담음(깨끗한 spec).
+- **CRUD 아이콘화**(➕📂▶💾🗑, 라벨은 툴팁) + **누락됐던 `➕ 새 작업`** — [열기]로 폼이 채워지면
+  새 작업을 시작할 방법이 없던 문제(사용자 지적). newTask()는 override도 전역으로 초기화.
+- 검토: 적대적 프로브 통과 — override 없으면 전역과 동일(회귀) · 부분 override 시 나머지 전역 유지 ·
+  **전역 불변** · 반환값 수정이 전역에 안 샘 · GUI 왕복(변경→배지→spec.agents→↺→복귀→newTask). 146 passed.
+
 ## 미출시(dev) · 2026-07-17 — [로드맵 3.5] claude 추정 자동 캘리브레이션 + 토큰 수 표시 (codex 구현·Claude 검토)
 
 - **실통증 해결**: 실측(live)이 죽으면 사용량이 원장($0/$5)으로 떨어져 무의미해지던 문제. 원인은 트랜스크립트
