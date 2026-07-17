@@ -4,6 +4,23 @@
 
 ---
 
+## 미출시(dev) · 2026-07-18 — 워커 산출물을 실제 파일로 게시(materialize) (사용자 요청·codex 공동설계)
+
+- **사용자 문제**: "_test_tmp에 계산기 만들라고 시켰는데 결과물이 없다." 원인: 워커는 텍스트 생산자라
+  (claude --disallowedTools로 Write/Edit 차단) 코드가 답변 텍스트로만 나오고 파일이 안 생김.
+  실제 계산기는 `.yok3x/runs/<id>/final_output.md`에 완성돼 있었다. = 멀티에이전트 리뷰 G2 격차.
+- **설계(codex 반박 수용)**: 코드블록에서 파일명 추측(A안)은 데모 휴리스틱 → 폐기. 워커가 `​```file:<상대경로>`
+  로 **경로를 명시**한 블록만 게시. `yok3x/artifacts.py`(순수): 파싱 + 경로검증(절대/드라이브/UNC/`..`/
+  윈도우예약어/끝공백점/대소문자충돌/디렉터리만 거부) + 개수·크기 상한 + 덮어쓰기 기본 금지.
+- orchestrator `_materialize_outputs`: 임시파일→`os.replace` 원자적 게시, **해석된 실제 경로가 루트 내부인지
+  재확인(심볼릭 차단)**, `workdir/yok3x-out/<run_id>/`에 격리, sha256 감사. **텍스트 성공≠게시 성공**을
+  status에 별도 기록. opt-in(`spec.materialize`), 기본 꺼짐이면 기존 동작 100% 동일.
+- GUI: 고급 옵션에 '산출물을 파일로 게시' + '덮어쓰기 허용' 토글. codegen 프롬프트에 게시 시 file: 계약 주입.
+- 검토(적대적): file:펜스만 추출(언어펜스 무시)·위험경로 9종 거부·경로탈출 차단(../hack.js가 workdir 밖에
+  안 생김)·tmp 잔여물 없음·overwrite/대소문자·기본 꺼짐. **169 passed**(신규 5).
+- 에이전트 선택: 대시보드 실측상 claude 여유(5h 94%/7d 92%) > codex(페이싱 13/14%p 소진) → claude(=Claude)가
+  구현, codex는 설계 논의만. (claude live가 429여도 어제 만든 자동 캘리브레이션 덕에 실측% 정상 표시.)
+
 ## 미출시(dev) · 2026-07-17 — [로드맵 3 / C-3] 진짜 병렬 call_workers_parallel (codex 구현·Claude 검토)
 
 - **여기서 처음 스레드 도입**(C-1 준비/실행 분리, C-2 예약·락 위에). `guard.parallel.enabled` **기본 false**

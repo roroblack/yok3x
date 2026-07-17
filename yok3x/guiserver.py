@@ -272,6 +272,12 @@ def _validate_task_spec(spec: dict, cfg: Config | None = None,
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
+    mat = spec.get("materialize")
+    if mat is not None:
+        if not isinstance(mat, dict):
+            return "materialize가 객체가 아님"
+        if "root" in mat and mat["root"] is not None and not isinstance(mat["root"], str):
+            return "materialize.root는 문자열이어야 함"
     agents = spec.get("agents")
     if agents is not None:
         if not isinstance(agents, dict):

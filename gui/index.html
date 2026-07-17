@@ -282,7 +282,13 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
               </label>
               <label>verify_cmd <input id="c-verify" class="wide" placeholder="pytest -q"></label>
             </div>
-            <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · context_globs/rubric은 task.json 편집.</div>
+            <div class="ci-row" style="margin-top:7px">
+              <label class="tgl2" title="워커는 파일을 못 쓴다(텍스트 생산자). 켜면 산출물의 ```file:<경로> 블록을 오케스트레이터가 workdir/yok3x-out/<run_id>/에 실제 파일로 게시한다. 경로검증·덮어쓰기금지·격리 적용.">
+                <input type="checkbox" id="c-materialize"> 산출물을 파일로 게시(yok3x-out/)</label>
+              <label class="tgl2" title="켜면 기존 파일 덮어쓰기 허용(기본은 금지 — 사고 방지).">
+                <input type="checkbox" id="c-overwrite"> 덮어쓰기 허용</label>
+            </div>
+            <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · 파일 게시는 워커에게 <code>```file:경로</code> 블록을 요구(추측 저장 안 함) · context_globs/rubric은 task.json 편집.</div>
           </details>
         </div>
 
@@ -933,6 +939,9 @@ function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목�
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
+  // 산출물 게시(opt-in). 켜졌을 때만 spec에 넣는다(꺼진 작업은 기존과 동일).
+  if(document.getElementById("c-materialize")?.checked)
+    spec.materialize={enabled:true, overwrite:!!document.getElementById("c-overwrite")?.checked};
   spec.label=document.getElementById("c-label").value.trim();
   const agents=cleanAgentOverrides(); if(Object.keys(agents).length)spec.agents=agents;
   return spec;
@@ -962,6 +971,8 @@ function resetTaskForm(label){
   const set=(id,v)=>{const e=document.getElementById(id); if(e) e.value=v;};
   set("c-task",""); set("c-label",label||""); set("c-workdir",""); set("c-verify","");
   syncWorkdirClear();
+  const mz=document.getElementById("c-materialize"), ow=document.getElementById("c-overwrite");
+  if(mz)mz.checked=false; if(ow)ow.checked=false;
   set("c-rounds",2); set("c-score",8.0);
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
   setTaskAgents({});
@@ -1000,6 +1011,8 @@ async function openTask(){
     if(s.pass_score)document.getElementById("c-score").value=s.pass_score;
     document.getElementById("c-workdir").value=s.workdir||""; syncWorkdirClear();
     document.getElementById("c-verify").value=s.verify_cmd||"";
+    const _mz=(s.materialize||{}); const mzc=document.getElementById("c-materialize"), owc=document.getElementById("c-overwrite");
+    if(mzc)mzc.checked=!!_mz.enabled; if(owc)owc.checked=!!_mz.overwrite;
     setTaskAgents(s.agents||{});
     const pat=s.pattern||"producer-reviewer";
     document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p===pat));

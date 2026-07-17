@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, knot, reserve, usage
+from . import acquire, artifacts, knot, reserve, usage
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 
@@ -190,6 +190,9 @@ class Orchestrator:
         self.rubric: str = ""                # 채점표 파일 경로
         self.adversarial: bool = cfg.yok3x.get("adversarial_review", False)  # ARIS AD1 적대적 검수
         self.escalate: dict = {}   # 조건부 라우팅: 낮은 점수 지속 시 워커 전환(task spec의 escalate)
+        # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
+        # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
+        self.materialize: dict = {}
 
     # ------------------------------------------------------------ infra
 
@@ -480,6 +483,10 @@ class Orchestrator:
                          "하지 말고 코드는 텍스트로만 답한다. 코드 앞에 접근을 2~3줄로 요약(계획)하고, "
                          "끝에 'SELF-CHECK:'로 엣지케이스·오류처리·요구충족을 점검하라. 존재하지 않는 "
                          "API·파일을 지어내지 말고, 명확화를 되묻지 말고 합리적 가정으로 곧장 구현하라.")
+            # 산출물 게시(opt-in)가 켜졌을 때만 파일 경로 명시 계약을 준다. 워커는 여전히 파일을
+            # 쓰지 않는다 — 경로를 '선언'만 하고, 실제 쓰기는 오케스트레이터가 검증 후 수행한다.
+            if (self.materialize or {}).get("enabled"):
+                parts.append(artifacts.FILES_CONTRACT)
         else:
             parts.append(f"[역할] {w['role']}")
             # 리뷰/크리틱도 텍스트 산출자다. 코드생성과 동일하게 '파일을 만들거나 편집하려 하지
@@ -1008,10 +1015,80 @@ class Orchestrator:
 
     # ------------------------------------------------------------ finish
 
+    def _materialize_root(self) -> Path:
+        """게시 루트. 기본은 workdir/yok3x-out/<run_id> — workdir 직접 저장은 기존 프로젝트와
+        충돌할 수 있어 런별로 격리한다(codex 권고)."""
+        raw = (self.materialize or {}).get("root")
+        if raw:
+            return Path(raw).expanduser()
+        base = Path(self.workdir) if self.workdir else self.run_dir
+        return base / "yok3x-out" / self.run_id
+
+    def _materialize_outputs(self, final_output: str) -> dict:
+        """final_output의 `​```file:<path>` 블록을 검증해 실제 파일로 게시한다.
+
+        워커 권한은 그대로 두고(텍스트 생산자) **오케스트레이터가 대신 쓴다**. 텍스트 생성 성공과
+        파일 게시 성공은 별개 상태다 — 실패해도 런을 깨지 않고 사유를 남긴다(codex 권고).
+        """
+        conf = self.materialize or {}
+        if not conf.get("enabled"):
+            return {"enabled": False}
+        root = self._materialize_root()
+        blocks = artifacts.parse_file_blocks(final_output or "")
+        if not blocks:
+            self._log("[out] 게시할 파일 없음 — 워커가 ```file:<경로> 블록을 내지 않았다")
+            return {"enabled": True, "ok": False, "reason": "file 블록 없음",
+                    "root": str(root), "written": [], "rejected": []}
+        existing: set[str] = set()
+        if root.exists():
+            existing = {str(p.relative_to(root)).replace("\\", "/")
+                        for p in root.rglob("*") if p.is_file()}
+        plan = artifacts.plan_files(blocks, existing=existing,
+                                    overwrite=bool(conf.get("overwrite")),
+                                    max_files=int(conf.get("max_files", 20)))
+        written: list[dict] = []
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            for fb in plan.accepted:
+                dest = (root / fb.path)
+                # 문자열 검증(artifacts)만 믿지 않고 **해석된 실제 경로**가 루트 안인지 재확인한다.
+                # 심볼릭 링크로 루트 밖을 가리키는 경우를 여기서 막는다.
+                try:
+                    real_root = root.resolve()
+                    real_dest = dest.resolve()
+                    real_dest.relative_to(real_root)
+                except (OSError, ValueError):
+                    plan.rejected.append({"path": fb.path, "reason": "해석된 경로가 루트 밖(심볼릭 등)"})
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_name(f".{dest.name}.yok3x.tmp")
+                tmp.write_text(fb.content, encoding="utf-8")
+                os.replace(tmp, dest)        # 부분 저장 방지: 완성 후 원자적 교체
+                written.append({"path": fb.path, "bytes": len(fb.content.encode("utf-8")),
+                                "sha256": fb.sha256()})
+        except OSError as e:
+            self._log(f"[out] 게시 실패: {type(e).__name__}: {e}")
+            return {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}",
+                    "root": str(root), "written": written, "rejected": plan.rejected}
+        for r in plan.rejected:
+            self._log(f"[out] 거부: {r['path']} — {r['reason']}")
+        if written:
+            self._log(f"[out] 게시 {len(written)}개 → {root}")
+        return {"enabled": True, "ok": bool(written), "root": str(root),
+                "written": written, "rejected": plan.rejected}
+
     def _finish(self, task: str, final_output: str) -> None:
         out = self.run_dir / "final_output.md"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         out.write_text(final_output or "(출력 없음)", encoding="utf-8")
+        # 산출물 게시(opt-in) — 텍스트 성공과 별개 상태로 기록해 "완성했다는데 파일이 없다"를 없앤다.
+        try:
+            mat = self._materialize_outputs(final_output or "")
+        except Exception as e:                       # 게시 실패가 런을 깨지 않게
+            self._log(f"[out] 게시 예외: {type(e).__name__}: {e}")
+            mat = {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}"}
+        if mat.get("enabled"):
+            self._save_status("done", {"materialized": mat})
         # 주의: brief.md에 런 '출력'을 덮어쓰지 않는다. 과거엔 그렇게 했다가, 다음 런 프롬프트에
         # brief.md가 주입돼 워커가 직전 실패 출력("빈 작업입니다")을 그대로 따라하는 자기오염
         # 피드백 루프가 생겼다. brief.md는 사용자 작업 컨텍스트 전용(수동)으로 둔다.
@@ -1075,6 +1152,9 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     spec = json.loads(Path(task_file).read_text(encoding="utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
     orch.agents_override = spec.get("agents") or {}
+    # 산출물 게시(opt-in). "이 폴더에 X 만들어줘"는 그 폴더 하위 신규 파일 생성에 대한 작업단위
+    # 승인으로 본다(codex 권고) — 파일마다 다시 묻지 않는다. 단 덮어쓰기는 명시해야 한다.
+    orch.materialize = spec.get("materialize") or {}
     # 작업 그룹 라벨(콘솔 작업별 뷰용): label 키가 있으면 그 값(빈값 허용=무제목),
     # 키 자체가 없으면(등록된 task 파일) 파일명으로 폴백.
     _lbl = spec.get("label")

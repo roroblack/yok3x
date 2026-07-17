@@ -1532,3 +1532,63 @@ def test_rename_task_same_name_updates_label_in_place(tmp_path):
     assert (tmp_path / "task-내작업.json").exists()          # 파일이 지워지면 안 됨
     spec = gs._load_task(cfg, "task-내작업.json")["spec"]
     assert spec["task"] == "진짜 목표" and spec["workdir"] == "F:/x"   # 내용 보존
+
+
+# --- 산출물 게시(artifacts) — codex 공동검토 설계 ---
+def test_artifacts_parse_only_file_fences():
+    from yok3x import artifacts as A
+    text = "```file:index.html\n<h1>hi</h1>\n```\n```html\n<div>ignored</div>\n```"
+    blocks = A.parse_file_blocks(text)
+    assert [b.path for b in blocks] == ["index.html"]      # 언어펜스(추측)는 제외
+    assert blocks[0].content == "<h1>hi</h1>"
+
+
+def test_artifacts_reject_dangerous_paths():
+    from yok3x import artifacts as A
+    bad = ["../evil", "/etc/passwd", "C:/x", "a/../b", "foo/", "CON", "aux.log", "con.txt ", "x\ty"]
+    plan = A.plan_files([A.FileBlock(p, "x") for p in bad])
+    assert plan.accepted == []                              # 전부 거부
+    assert len(plan.rejected) == len(bad)
+
+
+def test_artifacts_overwrite_and_case_collision():
+    from yok3x import artifacts as A
+    # 기본은 덮어쓰기 금지
+    p = A.plan_files([A.FileBlock("a.txt", "n")], existing={"a.txt"})
+    assert not p.accepted and "덮어쓰기" in p.rejected[0]["reason"]
+    # overwrite=True면 허용
+    assert A.plan_files([A.FileBlock("a.txt", "n")], existing={"a.txt"}, overwrite=True).accepted
+    # 대소문자 충돌: 하나만 통과
+    c = A.plan_files([A.FileBlock("App.js", "a"), A.FileBlock("app.js", "b")])
+    assert len(c.accepted) == 1 and c.rejected
+
+
+def test_materialize_writes_and_blocks_escape(tmp_path):
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["auto_approve"] = True
+    wd = tmp_path / "proj"; wd.mkdir()
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    o.materialize = {"enabled": True}
+    final = ("```file:index.html\n<h1>c</h1>\n```\n"
+             "```file:src/app.js\ncode\n```\n"
+             "```file:../hack.js\nevil\n```")
+    res = o._materialize_outputs(final)
+    root = Path(res["root"])
+    got = sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*") if p.is_file())
+    assert got == ["index.html", "src/app.js"]             # 정상 2개만
+    assert (root / "index.html").read_text(encoding="utf-8").strip() == "<h1>c</h1>"
+    assert not (wd.parent / "hack.js").exists()            # 경로탈출 차단
+    assert res["ok"] and len(res["written"]) == 2
+    assert any("hack" in r["path"] for r in res["rejected"])
+
+
+def test_materialize_disabled_by_default(tmp_path):
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(tmp_path)
+    # materialize 미설정이면 아무것도 안 함
+    assert o._materialize_outputs("```file:x.txt\ny\n```") == {"enabled": False}
+    assert not (tmp_path / "yok3x-out").exists()
