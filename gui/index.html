@@ -269,7 +269,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           </div>
           <details style="margin-top:8px"><summary style="font-size:11.5px;cursor:pointer">고급: 코딩 게이트 옵션</summary>
             <div class="ci-row" style="margin-top:7px">
-              <label>workdir <input id="c-workdir" class="wide" placeholder="F:/my/repo"></label>
+              <label title="이 작업만의 실행 폴더. 워커 실행 cwd·verify_cmd 실행 위치·레포 컨텍스트 기준이 된다. 비면 전역 워크스페이스 사용.">workdir
+                <button class="btn ico" type="button" id="wd-clear" onclick="clearWorkdir()" title="작업 workdir 지우기(전역 워크스페이스 사용)" style="display:none">✕</button>
+                <input id="c-workdir" class="wide" placeholder="F:/my/repo" oninput="syncWorkdirClear()">
+                <button class="btn ico" type="button" onclick="pickWorkdir()" title="폴더 선택 대화상자">📁</button>
+              </label>
               <label>verify_cmd <input id="c-verify" class="wide" placeholder="pytest -q"></label>
             </div>
             <div class="sub" style="margin-top:5px">verify_cmd 실패는 높은 SCORE여도 하드 불통과 · context_globs/rubric은 task.json 편집.</div>
@@ -708,6 +712,18 @@ async function saveWorkspace(path){
   try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspace:path})}); load();}catch(e){}
 }
 function clearWorkspace(){ document.getElementById("c-workspace").value=""; saveWorkspace(""); }
+// 작업별 workdir — 전역 워크스페이스(c-workspace)와 달리 **작업 폼의 일부**라 즉시 저장하지 않는다.
+// 값은 [💾]로 작업을 저장할 때 spec.workdir로 들어간다. 비면 전역 워크스페이스가 쓰인다.
+async function pickWorkdir(){
+  try{const r=await fetch("/api/pickdir",{method:"POST"});const j=await r.json();
+    if(j.path){document.getElementById("c-workdir").value=j.path; syncWorkdirClear();}
+  }catch(e){alert("폴더 선택 실패(`yok3x gui`로 실행해야 함): "+e);}
+}
+function clearWorkdir(){ document.getElementById("c-workdir").value=""; syncWorkdirClear(); }
+function syncWorkdirClear(){
+  const b=document.getElementById("wd-clear"), v=(document.getElementById("c-workdir")||{}).value||"";
+  if(b) b.style.display=v.trim()?"":"none";
+}
 async function toggleFailover(){
   const turnOn=document.getElementById("swfo").classList.contains("off");  // off면 켜는 것
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({failover_enabled:turnOn})});
@@ -786,6 +802,7 @@ function renderConsole(s,rn){
   const wsc=document.getElementById("ws-clear"); if(wsc) wsc.style.display=(s.workspace||"").trim()?"":"none";
   const cw=document.getElementById("c-workdir");
   if(cw) cw.placeholder = s.workspace ? ("기본: "+s.workspace) : "F:/my/repo";
+  syncWorkdirClear();
   // 모델 프로파일 선택(설명 포함) + 선택한 프로파일이 상황별로 고르는 모델 미리보기
   window._profRoutes=s.profile_routes||{};
   const pf=document.getElementById("c-profile");
@@ -906,6 +923,7 @@ function selectedSavedTaskName(){   // 작업별 보기에서 선택한 라벨 �
 function newTask(){
   const set=(id,v)=>{const e=document.getElementById(id); if(e) e.value=v;};
   set("c-task",""); set("c-label",""); set("c-workdir",""); set("c-verify","");
+  syncWorkdirClear();
   set("c-rounds",2); set("c-score",8.0);
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
   setTaskAgents({});
@@ -925,7 +943,7 @@ async function openTask(){
     if(s.reviewer)document.getElementById("c-reviewer").value=s.reviewer;
     if(s.max_rounds)document.getElementById("c-rounds").value=s.max_rounds;
     if(s.pass_score)document.getElementById("c-score").value=s.pass_score;
-    document.getElementById("c-workdir").value=s.workdir||"";
+    document.getElementById("c-workdir").value=s.workdir||""; syncWorkdirClear();
     document.getElementById("c-verify").value=s.verify_cmd||"";
     setTaskAgents(s.agents||{});
     const pat=s.pattern||"producer-reviewer";
