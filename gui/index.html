@@ -106,6 +106,9 @@ code,.mono,.rid{font-family:var(--font-code)}
 .tg.ok{background:var(--green);color:#fff}.tg.warn{background:var(--yellow)}.tg.stop{background:var(--red);color:#fff}
 
 /* 런 */
+/* 최근 런 목록: 내부 스크롤로 페이지가 무한정 길어지는 것 방지(측정: 12런에 2098px=화면의 2.8배,
+   서버 상한 20이면 ~3500px). 420px≈뷰포트 57%, 카드 평균 165px라 2~3장이 한눈에. .chat(360px)과 동류. */
+#runs{max-height:420px;overflow-y:auto;padding-right:6px}
 .run{border:3px solid var(--ink);border-radius:14px;background:var(--cream);padding:11px 15px;margin:11px 0;box-shadow:var(--shadow-sm)}
 .run .rh{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px;margin-bottom:6px}
 .run .rid{font-family:var(--font-code);font-weight:700}
@@ -336,6 +339,12 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <button data-plan="max20x" onclick="savePlan('max20x')">max20x</button>
       </div>
       <div class="note">codex는 app-server가 plan 자동 감지 · gemini는 원장 예산.</div>
+      <div style="margin-top:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="swar" class="switch off" onclick="toggleAutoRefresh()" title="on: claude 액세스 토큰이 만료 임박하면 리프레시 토큰으로 자동 재발급해 실측(5h/7d)이 끊기지 않게 한다. 끄면 만료 시 실측이 원장 추정으로 폴백된다(창 사라짐)."></div>
+        <b id="artext" style="font-size:12px">OFF</b>
+        <span class="sub" style="margin:0">claude 토큰 자동갱신 — 끄면 만료 시 실측 5h/7d가 멈추고 원장 추정으로 폴백</span>
+        <b id="arstat" class="mono" style="font-size:11px;margin-left:auto"></b>
+      </div>
     </div>
     <div class="panel">
       <h2><span class="ic"></span> 하루 페이싱 <span class="sub" style="font-weight:400">— 주간쿼터를 하루 단위로</span> <b id="pace-saved" style="font-size:11px;color:var(--green);margin-left:auto"></b></h2>
@@ -545,6 +554,18 @@ function render(s){
   const swof=document.getElementById("swof");
   if(swof){const of=!!(s.guard&&s.guard.offline);
     swof.classList.toggle("off",!of); document.getElementById("oftext").textContent=of?"ON":"OFF";}
+  // claude 토큰 자동갱신 토글 + 토큰 상태 배지(왜 실측이 멈췄는지 바로 보이게)
+  const swar=document.getElementById("swar");
+  if(swar){const ar=!!s.claude_auto_refresh;
+    swar.classList.toggle("off",!ar); document.getElementById("artext").textContent=ar?"ON":"OFF";
+    const tk=s.claude_token||{}, st=document.getElementById("arstat");
+    if(st){
+      if(!tk.exists) st.innerHTML='<span style="color:var(--red)">토큰 없음 — 로그인 필요</span>';
+      else if(tk.expired) st.innerHTML='<span style="color:var(--red)">토큰 만료</span>'+
+        (tk.refresh_ok?'<span style="color:var(--ink2)"> · 자동갱신으로 복구 가능</span>':'<span style="color:var(--red)"> · 재로그인 필요</span>');
+      else if(tk.mins_left!=null) st.innerHTML=`<span style="color:var(--green)">토큰 유효</span><span style="color:var(--ink2)"> · ${tk.mins_left}분 남음</span>`;
+      else st.textContent="";
+    }}
   // 하루 페이싱 동기화
   const pc=(s.guard&&s.guard.pace)||{};
   const swp=document.getElementById("swpace");
@@ -577,8 +598,12 @@ function render(s){
     const cls=m.includes("[정지")?"stop":m.includes("[경고")?"warn":"ok";
     const mm=m.replace(/^\[([^\]]+)\]\s*/,'<span class="tg '+cls+'">$1</span>');
     return `<div class="bub">${mm}</div>`;}).join("");
-  // runs
-  document.getElementById("runs").innerHTML=s.runs.length? s.runs.map(r=>`
+  // runs — 대시보드는 '최근' 패널이라 8개만(관례 5~10). 서버는 20을 주지만(콘솔 작업별 그룹핑이 씀)
+  // 여기서만 잘라 그린다. 나머지는 #runs의 내부 스크롤 + 아래 '더 있음' 힌트로 접근.
+  const DASH_RUNS_MAX=8;
+  const shown=(s.runs||[]).slice(0,DASH_RUNS_MAX), hidden=(s.runs||[]).length-shown.length;
+  const moreHint=hidden>0?`<div class="note" style="margin-top:0">…최근 ${DASH_RUNS_MAX}개만 표시 · ${hidden}개 더 있음(콘솔 탭에서 작업별로 보기)</div>`:"";
+  document.getElementById("runs").innerHTML=shown.length? shown.map(r=>`
     <div class="run"><div class="rh"><span class="rid">${esc(r.run_id)}</span>
       <span class="chip pat">${esc(r.pattern||"-")}</span><span class="chip ${esc(r.state)}">${esc(r.state)}</span>
       <span class="mono" style="font-size:11px">step ${esc(r.done)}/${esc(r.steps)}</span>
@@ -587,7 +612,7 @@ function render(s){
         <span class="chip ${esc(st.status)}">${esc(st.status)}</span>
         ${st.score!=null?`<span class="score">${esc(st.score)}</span>`:""}
         ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${esc(st.issues.join("; ").slice(0,60))}</span>`:""}</div>`).join("")}
-    </div>`).join("") : '<div class="note">아직 런 기록이 없다. <code>yok3x run task-producer-reviewer.json --auto</code> 실행.</div>';
+    </div>`).join("")+moreHint : '<div class="note">아직 런 기록이 없다. <code>yok3x run task-producer-reviewer.json --auto</code> 실행.</div>';
   // 태스크 실행 목록 + 진행 상태
   const rn=s.running||{active:false};
   const rs=document.getElementById("runstatus");
@@ -629,6 +654,13 @@ async function toggleOffline(){
   const turnOn=document.getElementById("swof").classList.contains("off");  // off면 켜는 것
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({offline_enabled:turnOn})});
     if(r.ok){document.getElementById("swof").classList.toggle("off",!turnOn);document.getElementById("oftext").textContent=turnOn?"ON":"OFF";}
+  }catch(e){}
+}
+// claude 토큰 자동갱신 on/off. 끄면 토큰 만료 시 실측(5h/7d)이 원장 추정으로 폴백돼 창이 사라진다.
+async function toggleAutoRefresh(){
+  const turnOn=document.getElementById("swar").classList.contains("off");
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_refresh:turnOn})});
+    if(r.ok){document.getElementById("swar").classList.toggle("off",!turnOn);document.getElementById("artext").textContent=turnOn?"ON":"OFF";load();}
   }catch(e){}
 }
 function pickModel(sel){

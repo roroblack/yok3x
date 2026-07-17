@@ -107,6 +107,11 @@ def build_state(cfg: Config) -> dict:
         "workspace": cfg.yok3x.get("workspace", ""),
         "active_profile": cfg.yok3x.get("active_profile", ""),
         "plan": ((cfg.yok3x.get("limits") or {}).get("claude") or {}).get("plan", ""),
+        # claude 토큰 자동갱신 on/off + 토큰 상태(읽기만 — 여기서 refresh 트리거 금지)
+        "claude_auto_refresh": bool(((cfg.yok3x.get("limits") or {}).get("claude") or {})
+                                    .get("auto_refresh", False)),
+        "claude_token": limits.claude_token_status(
+            (cfg.yok3x.get("limits") or {}).get("claude") or {}),
         "profiles": list(cfg.yok3x.get("profiles", {})),
         "route_preview": _routing_preview(cfg),
         "profile_routes": _profile_routes(cfg),
@@ -354,6 +359,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             return {"error": f"effort 값 오류: {e} (minimal/low/medium/high/xhigh/max)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
+    auto_refresh = body.get("auto_refresh")           # claude 토큰 자체갱신 on/off
     soft = body.get("soft_ratio")
     hard = body.get("hard_ratio")
     for nm, v in (("soft_ratio", soft), ("hard_ratio", hard)):
@@ -396,6 +402,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
     if offline_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["offline_enabled"] = bool(offline_enabled)
+    if auto_refresh is not None:
+        cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})["auto_refresh"] = bool(auto_refresh)
     if soft is not None:
         cfg.yok3x["guard"]["soft_ratio"] = float(soft)
     if hard is not None:

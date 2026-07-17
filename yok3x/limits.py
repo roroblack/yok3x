@@ -585,6 +585,33 @@ def _refresh_claude_token(conf: dict[str, Any], p: Path) -> str | None:
     return new_at
 
 
+def claude_token_status(conf: dict[str, Any]) -> dict[str, Any]:
+    """claude OAuth 토큰 상태를 **읽기만** 해서 반환(GUI 표시용).
+
+    절대 갱신을 트리거하지 않는다 — build_state가 주기적으로 부르므로 여기서 refresh를 걸면
+    리프레시 토큰이 계속 회전한다. 반환: exists·expired·mins_left·refresh_ok.
+    """
+    p = Path(conf.get("credentials_path")
+             or (Path.home() / ".claude" / ".credentials.json")).expanduser()
+    out: dict[str, Any] = {"exists": False, "expired": None, "mins_left": None, "refresh_ok": None}
+    if not p.exists():
+        return out
+    try:
+        oauth = (json.loads(p.read_text(encoding="utf-8-sig")) or {}).get("claudeAiOauth") or {}
+    except (OSError, json.JSONDecodeError):
+        return out
+    out["exists"] = bool(oauth.get("accessToken"))
+    exp, rexp = oauth.get("expiresAt"), oauth.get("refreshTokenExpiresAt")
+    now = time.time()
+    if exp:
+        left = float(exp) / 1000.0 - now
+        out["expired"] = left <= 0
+        out["mins_left"] = int(left // 60)
+    if rexp:                       # 리프레시 토큰이 살아 있으면 자동갱신으로 복구 가능
+        out["refresh_ok"] = (float(rexp) / 1000.0 - now) > 0
+    return out
+
+
 def _claude_oauth_token(conf: dict[str, Any]) -> tuple[str | None, str]:
     """~/.claude/.credentials.json 의 구독 OAuth 액세스 토큰. (토큰, 오류사유).
     auto_refresh on이고 만료 임박이면 refresh_token으로 자체 갱신 시도(실패=기존 동작 폴백)."""
