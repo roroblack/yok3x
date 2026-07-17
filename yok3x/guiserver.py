@@ -343,7 +343,11 @@ def _rename_task(cfg: Config, old_name: str, new_raw_name: str) -> dict:
     new_path = _task_path(cfg, new_name)
     if new_path is None:
         return {"error": "잘못된 작업 이름/경로"}
-    if new_path.exists():
+    # 자기 자신으로의 이름 변경(같은 slug)은 충돌이 아니다 — 프롬프트가 현재 이름을 미리 채워주므로
+    # 그대로 확인만 눌러도 여기 걸려 "이미 있다"가 뜨던 버그. 이 경우 파일 이동 없이 label만 갱신한다
+    # (예: "My Task"→"my task"처럼 표시만 바꾸는 정상 케이스도 지원).
+    same_file = new_path == old_path
+    if new_path.exists() and not same_file:
         return {"error": "같은 이름의 작업이 이미 있다"}
 
     loaded = _load_task(cfg, old_name)
@@ -364,6 +368,8 @@ def _rename_task(cfg: Config, old_name: str, new_raw_name: str) -> dict:
             pass
         return {"error": f"이름 변경 저장 실패: {e}"}
 
+    if same_file:                             # 같은 파일에 label만 갱신 — 지울 원본이 없다
+        return {"ok": True, "name": new_name, "label": new_label}
     try:
         old_path.unlink()                     # 새 파일 저장 성공 뒤에만 원본 삭제
     except OSError as e:

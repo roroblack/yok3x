@@ -25,6 +25,7 @@
 | [18](BUG-18-stale-backends-prompt-argv.md) | **스테일 backends.json {prompt}(argv) → 멀티라인 잘림(계산기 실패, BUG-10 재발)** | **높음** | — | ✅ |
 | [19](BUG-19-console-html-injection-horizontal-blowout.md) | **콘솔 채팅 세로→가로 붕괴 — 에이전트 산출물 HTML이 이스케이프 없이 innerHTML DOM 파괴** | **높음** | — | ✅ |
 | [20](BUG-20-usage-strip-per-window-color-and-missing-budget-ruler.md) | 사용량 스트립 창별 색상 오류(5h warn→전체 warn) + 7d 예산 눈금 누락 | 중간 | — | ✅ |
+| [21](BUG-21-rename-task-self-collision.md) | 작업 이름 수정: 같은 이름(자기 자신)으로 바꾸면 '이미 있다'로 실패 | 중간 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

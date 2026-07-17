@@ -1516,3 +1516,19 @@ def test_save_acquire_uses_atomic_replace_without_temp_residue(tmp_path, monkeyp
     assert saved["qa_items"] == [{"answer": "a"}]
     assert list(orch.run_dir.glob("*.tmp")) == []
     assert list(orch.run_dir.glob(".acquire.json.*")) == []
+
+
+def test_rename_task_same_name_updates_label_in_place(tmp_path):
+    """사용자 보고 버그: 이름 수정 프롬프트가 현재 이름을 미리 채워주는데, 그대로 확인만 눌러도
+    '같은 이름의 작업이 이미 있다'로 실패했다. 자기 자신으로의 rename은 충돌이 아니다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    gs._save_task(cfg, "내작업", {"label": "내작업", "task": "진짜 목표",
+                                 "pattern": "producer-reviewer", "workdir": "F:/x"})
+
+    got = gs._rename_task(cfg, "task-내작업.json", "내작업")
+
+    assert got.get("ok"), got
+    assert (tmp_path / "task-내작업.json").exists()          # 파일이 지워지면 안 됨
+    spec = gs._load_task(cfg, "task-내작업.json")["spec"]
+    assert spec["task"] == "진짜 목표" and spec["workdir"] == "F:/x"   # 내용 보존
