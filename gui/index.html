@@ -238,7 +238,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <p class="sub">작업을 입력하면 큐에 쌓여 순차 실행. yok3x 기법·할루시네이션 방지·가드 자동 적용.</p>
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
           <label class="sub" style="margin:0">작업별 보기</label>
-          <select id="console-filter" onchange="renderConsoleLog(window._lastState)" style="font-size:12px"></select>
+          <select id="console-filter" onchange="onFilterChange()" style="font-size:12px"></select>
           <!-- 작업 이름(=spec.label). 저장 파일명·작업별 보기 그룹이 모두 이 값이라 CRUD 옆에 둔다.
                저장된 작업을 연 상태에선 읽기전용 — 여기서 고치고 💾 하면 '이름 변경'이 아니라
                '다른 이름으로 복제'가 돼 작업이 두 개가 된다. 이름 변경은 ✏️가 담당. -->
@@ -914,6 +914,13 @@ function renderConsoleLog(s){
             : '<div class="sub">이 작업의 실행 기록이 없다.</div>'));
   if((window._lastRn||{}).active) log.scrollTop=log.scrollHeight;
   syncTaskButtons();
+}
+// 작업별 보기에서 작업을 고르면 그 이름을 c-label에 반영한다 — 안 하면 전송/저장이 선택한 작업이
+// 아니라 무제목/전체로 새는 버그(라벨을 CRUD 줄로 옮기며 생긴 회귀). '전체'는 새 이름 입력을 위해 안 건드림.
+function onFilterChange(){
+  const sel=document.getElementById("console-filter"), lb=document.getElementById("c-label");
+  if(sel&&lb&&sel.value&&sel.value!=="__all__") lb.value=sel.value;
+  renderConsoleLog(window._lastState);
 }
 // 열기/실행/이름 수정/🗑은 💾 저장된 작업이 선택됐을 때만 활성화(런 라벨엔 비활성)
 function syncTaskButtons(){

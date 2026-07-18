@@ -26,6 +26,7 @@
 | [19](BUG-19-console-html-injection-horizontal-blowout.md) | **콘솔 채팅 세로→가로 붕괴 — 에이전트 산출물 HTML이 이스케이프 없이 innerHTML DOM 파괴** | **높음** | — | ✅ |
 | [20](BUG-20-usage-strip-per-window-color-and-missing-budget-ruler.md) | 사용량 스트립 창별 색상 오류(5h warn→전체 warn) + 7d 예산 눈금 누락 | 중간 | — | ✅ |
 | [21](BUG-21-rename-task-self-collision.md) | 작업 이름 수정: 같은 이름(자기 자신)으로 바꾸면 '이미 있다'로 실패 | 중간 | — | ✅ |
+| [22](BUG-22-send-not-attaching-to-selected-task.md) | 전송이 선택한 작업에 안 붙고 무제목/전체로 감(라벨 CRUD 이동 회귀) | 높음 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.
