@@ -907,11 +907,16 @@ class Orchestrator:
         self.pattern = "fanout-fanin"
         self._save_status("running", {"task": task})
         outs = []
+        specs = []
         for index, w in enumerate(workers):
             # fanout에는 별도 build kind가 없으므로 첫 진입 워커에만 정적 QA를 1회 주입한다.
-            res = self.call_worker(w, task, "fanout",
-                                   extra_context=initial_context if index == 0 else "")
-            if res.ok:
+            specs.append(self.prepare_call(
+                w, task, "fanout",
+                extra_context=initial_context if index == 0 else ""))
+        results = self.call_workers_parallel(specs)
+        for w, res in zip(workers, results):
+            # 병렬 완료 순서와 무관하게 워커 입력 순서로 취합하고 실패 슬롯은 건너뛴다.
+            if res is not None and res.ok:
                 outs.append(f"### {w}\n{res.text}")
         merged = "\n\n".join(outs)
         if join_worker and outs:

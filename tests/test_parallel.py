@@ -214,6 +214,173 @@ def test_parallel_disabled_uses_sequential_fallback(tmp_path, monkeypatch):
     assert [result.text for result in results if result is not None] == order
 
 
+def test_fanout_runs_concurrently_and_keeps_worker_order(tmp_path, monkeypatch):
+    orch = _orch(tmp_path, monkeypatch, max_workers=3, max_per_backend=3)
+    workers = ["worker-0", "worker-1", "worker-2"]
+    delays = {"worker-0": 0.18, "worker-1": 0.05, "worker-2": 0.10}
+    for worker in workers:
+        orch.cfg.yok3x["workers"][worker]["role"] = worker
+    lock = threading.Lock()
+    active = maximum = 0
+    final = []
+
+    def backend(name, spec, prompt, **kwargs):
+        nonlocal active, maximum
+        worker = next(worker for worker in workers if f"[역할] {worker}" in prompt)
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        time.sleep(delays[worker])
+        with lock:
+            active -= 1
+        return BackendResult(name, True, text=f"result-{worker}")
+
+    monkeypatch.setattr(orchestrator, "run_backend", backend)
+    monkeypatch.setattr(orch, "_finish", lambda task, output: final.append(output))
+    started = time.monotonic()
+
+    orch.run_fanout("병렬 fanout", workers)
+
+    elapsed = time.monotonic() - started
+    # 병렬성의 확실한 증거는 '동시 진입 최대치'다(세 워커가 실제로 겹쳐 실행). 벽시계 임계는
+    # 스레드풀·예약·배치승인 고정 오버헤드 때문에 sum*0.75처럼 빡빡하면 머신에 따라 flaky하다
+    # → 순차보다 빠르다(< 합)만 sanity로 확인한다(BUG: 이 임계가 CI에서 간헐 실패).
+    assert maximum == 3
+    assert elapsed < sum(delays.values())
+    assert final == [
+        "### worker-0\nresult-worker-0\n\n"
+        "### worker-1\nresult-worker-1\n\n"
+        "### worker-2\nresult-worker-2"
+    ]
+
+
+def test_fanout_prepares_ordered_specs_with_context_only_on_first_worker(
+        tmp_path, monkeypatch):
+    orch = _orch(tmp_path, monkeypatch)
+    workers = ["worker-0", "worker-1", "worker-2"]
+    captured = []
+    final = []
+
+    def parallel(specs):
+        captured.extend(specs)
+        return [BackendResult("mock", True, text=spec.worker) for spec in specs]
+
+    monkeypatch.setattr(orch, "call_workers_parallel", parallel)
+    monkeypatch.setattr(orch, "_finish", lambda task, output: final.append(output))
+
+    orch.run_fanout("같은 작업", workers, initial_context="첫 워커 QA")
+
+    assert [spec.worker for spec in captured] == workers
+    assert [spec.task for spec in captured] == ["같은 작업"] * 3
+    assert [spec.task_kind for spec in captured] == ["fanout"] * 3
+    assert [spec.extra_context for spec in captured] == ["첫 워커 QA", "", ""]
+    assert [part.splitlines()[0] for part in final[0].split("\n\n")] == [
+        "### worker-0", "### worker-1", "### worker-2",
+    ]
+
+
+@pytest.mark.parametrize("failure", ["exception", "not-ok"])
+def test_fanout_failure_slot_keeps_other_results(tmp_path, monkeypatch, failure):
+    orch = _orch(tmp_path, monkeypatch, max_workers=3, max_per_backend=3)
+    workers = ["worker-0", "worker-1", "worker-2"]
+    for worker in workers:
+        orch.cfg.yok3x["workers"][worker]["role"] = worker
+    final = []
+
+    def backend(name, spec, prompt, **kwargs):
+        worker = next(worker for worker in workers if f"[역할] {worker}" in prompt)
+        if worker == "worker-1":
+            if failure == "exception":
+                raise RuntimeError("fanout boom")
+            return BackendResult(name, False, error="fanout failed")
+        return BackendResult(name, True, text=f"result-{worker}")
+
+    monkeypatch.setattr(orchestrator, "run_backend", backend)
+    monkeypatch.setattr(orch, "_finish", lambda task, output: final.append(output))
+
+    orch.run_fanout("부분 성공", workers)
+
+    assert final == [
+        "### worker-0\nresult-worker-0\n\n"
+        "### worker-2\nresult-worker-2"
+    ]
+
+
+def test_fanout_join_worker_is_one_sequential_call(tmp_path, monkeypatch):
+    orch = _orch(tmp_path, monkeypatch)
+    workers = ["worker-0", "worker-1"]
+    parallel_calls = []
+    join_calls = []
+    final = []
+
+    def parallel(specs):
+        parallel_calls.append(specs)
+        return [
+            BackendResult("mock", True, text="first"),
+            BackendResult("mock", True, text="second"),
+        ]
+
+    def join(worker, task, task_kind="general", extra_context="", cwd=None,
+             read_only=False):
+        join_calls.append((worker, task, task_kind, extra_context))
+        return BackendResult("mock", True, text="joined-result")
+
+    monkeypatch.setattr(orch, "call_workers_parallel", parallel)
+    monkeypatch.setattr(orch, "call_worker", join)
+    monkeypatch.setattr(orch, "_finish", lambda task, output: final.append(output))
+
+    orch.run_fanout("취합 작업", workers, join_worker="worker-2")
+
+    assert len(parallel_calls) == 1
+    assert len(join_calls) == 1
+    assert join_calls[0][:3] == (
+        "worker-2", "아래 여러 워커의 결과를 하나의 최종안으로 통합하라.", "fanin")
+    assert join_calls[0][3] == "### worker-0\nfirst\n\n### worker-1\nsecond"
+    assert final == ["joined-result"]
+
+
+def test_fanout_parallel_on_off_returns_same_result(tmp_path, monkeypatch):
+    outputs = {}
+
+    def backend(name, spec, prompt, **kwargs):
+        worker = next(
+            worker for worker in ("worker-0", "worker-1")
+            if f"[역할] {worker}" in prompt)
+        return BackendResult(name, True, text=f"result-{worker}")
+
+    monkeypatch.setattr(orchestrator, "run_backend", backend)
+    for enabled in (False, True):
+        root = tmp_path / ("on" if enabled else "off")
+        orch = _orch(root, monkeypatch, enabled=enabled, max_workers=2,
+                     max_per_backend=2)
+        workers = ["worker-0", "worker-1"]
+        for worker in workers:
+            orch.cfg.yok3x["workers"][worker]["role"] = worker
+        monkeypatch.setattr(
+            orch, "_finish",
+            lambda task, output, enabled=enabled: outputs.__setitem__(enabled, output))
+
+        orch.run_fanout("동일 결과", workers)
+
+    assert outputs[False] == outputs[True] == (
+        "### worker-0\nresult-worker-0\n\n"
+        "### worker-1\nresult-worker-1")
+
+
+def test_fanout_parallel_run_aborted_propagates(tmp_path, monkeypatch):
+    orch = _orch(tmp_path, monkeypatch)
+
+    def abort(specs):
+        raise RunAborted("guard stop")
+
+    monkeypatch.setattr(orch, "call_workers_parallel", abort)
+    monkeypatch.setattr(
+        orch, "_finish", lambda *args: pytest.fail("중단된 fanout을 완료하면 안 됨"))
+
+    with pytest.raises(RunAborted, match="guard stop"):
+        orch.run_fanout("중단 작업", ["worker-0", "worker-1"])
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows CLI 프로세스 트리 취소 계약")
 def test_parallel_abort_terminates_running_cli_process(tmp_path, monkeypatch):
     orch = _orch(tmp_path, monkeypatch, max_workers=2)
