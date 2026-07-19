@@ -1109,8 +1109,8 @@ class Orchestrator:
         except Exception as e:                       # 게시 실패가 런을 깨지 않게
             self._log(f"[out] 게시 예외: {type(e).__name__}: {e}")
             mat = {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}"}
-        if mat.get("enabled"):
-            self._save_status("done", {"materialized": mat})
+        # 주의: 여기서 바로 _save_status 하지 않는다 — 아래 최종 _save_status가 덮어써 materialized가
+        # 유실된다(E2E에서 발견). 최종 저장에 함께 실어 한 번만 기록한다.
         # 주의: brief.md에 런 '출력'을 덮어쓰지 않는다. 과거엔 그렇게 했다가, 다음 런 프롬프트에
         # brief.md가 주입돼 워커가 직전 실패 출력("빈 작업입니다")을 그대로 따라하는 자기오염
         # 피드백 루프가 생겼다. brief.md는 사용자 작업 컨텍스트 전용(수동)으로 둔다.
@@ -1120,7 +1120,7 @@ class Orchestrator:
         knot.save(self.cfg, f"run-{self.run_id}",
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",
                   tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
-        self._save_status("done")
+        self._save_status("done", {"materialized": mat} if mat.get("enabled") else None)
         self._log(f"[done] 최종 산출물: {out}")
 
 
