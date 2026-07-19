@@ -89,7 +89,8 @@ def build_state(cfg: Config) -> dict:
                                          reset_at=usage._weekly_reset_at(v.reading))
             if ps:
                 pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
-                        "soft": round(ps["soft"], 1),
+                        "soft": round(ps["soft"], 1), "base_cap": round(ps["base_cap"], 1),
+                        "strategy": ps["strategy"],
                         "start": round(ps["current"] - ps["used"], 1),  # 오늘 아침 7d 기준선
                         "level": ps["level"], "blocked": ps["blocked"], "approved": ps["approved"]}
         tools.append({

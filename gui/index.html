@@ -610,8 +610,12 @@ function render(s){
       const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
       // 페이싱이 있어도 리셋 시간을 덮어쓰지 않는다 — 오늘 소비/상한 + 리셋까지 + 토큰을 모두 보여준다.
       const rstTxt=w.reset?`리셋 ${w.reset}`:"";
+      // 유동(catch_up)이고 상한이 균등 기준선과 다르면 '상한 18%p(균등 14%p)'로 둘 다 보여준다.
+      const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
+      const capTxt=(t.pace&&t.pace.strategy==="catch_up"&&base!=null&&Math.round(cap)!==Math.round(base))
+        ?`상한 ${cap}%p(균등 ${base}%p)` : `상한 ${cap}%p`;
       const pl=(isWk&&t.pace)
-        ?`<span class="rst" title="오늘 소비 / 하루 상한(주간 대비) · 창 리셋까지">오늘 ${t.pace.used}%p / 상한 ${t.pace.cap}%p${rstTxt?` · ${rstTxt}`:""}${tok?` · ${tok}`:""}</span>`
+        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도 표기) · 창 리셋까지">오늘 ${t.pace.used}%p / ${capTxt}${rstTxt?` · ${rstTxt}`:""}${tok?` · ${tok}`:""}</span>`
         :`<span class="rst">${rstTxt}${tok?` · ${tok}`:""}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>

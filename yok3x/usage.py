@@ -298,7 +298,9 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     else:
         level = "ok"
     return {"used": used, "cap": cap, "soft": soft, "blocked": blocked,
-            "current": current, "level": level, "mode": mode, "approved": approved}
+            "current": current, "level": level, "mode": mode, "approved": approved,
+            # 균등 기준선(고정 q)도 함께 노출 — 유동 상한이 원래 하루치 대비 얼마인지 보이게.
+            "base_cap": q, "strategy": dp["strategy"]}
 
 
 def pace_block_active(cfg: Config, backend: str, today: str | None = None) -> bool:
