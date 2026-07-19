@@ -84,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("coach", help="사용량 코칭 / guard on|off")
     sp.add_argument("args", nargs="*", help="(비움)=코칭 출력 | guard on | guard off")
 
+    sp = sub.add_parser("calib", help="심판 캘리브레이션 요약(SCORE가 실제 통과를 예측하나)")
+    sp.add_argument("--threshold", type=float, default=8.0, help="게이트 임계 SCORE(기본 8.0)")
+
     sp = sub.add_parser("knot", help="지식그물: save/ingest/query/lint")
     ksub = sp.add_subparsers(dest="kcmd", required=True)
     k = ksub.add_parser("save"); k.add_argument("title"); k.add_argument("body", nargs="?")
@@ -148,6 +151,35 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "mat":
         matview.show(cfg, watch=a.watch, interval=a.interval)
+        return 0
+
+    if a.cmd == "calib":
+        import json as _json
+        from . import calibration
+        p = cfg.paths.runs.parent / "calibration.jsonl"
+        recs = []
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        recs.append(_json.loads(line))
+                    except _json.JSONDecodeError:
+                        pass
+        s = calibration.summarize(recs, threshold=a.threshold)
+        corr = s["score_verify_corr"]
+        c = s["confusion"]
+        print(f"심판 캘리브레이션 — 레코드 {s['n_total']}개(라벨 {s['n_labeled']}개, verify_cmd 있는 런만)")
+        print(f"  판정: {s['verdict']}")
+        if s["pass_rate"] is not None:
+            print(f"  실제 통과율: {s['pass_rate']*100:.0f}%")
+        print(f"  SCORE↔통과 상관: {'%.3f' % corr if corr is not None else '—(표본/분산 부족)'}"
+              f"   (~0이면 게이트가 신호를 못 줌)")
+        print(f"  게이트@{c['threshold']:.1f}: 통과시킴 중 실제통과 "
+              f"{'%.0f%%' % (c['precision']*100) if c['precision'] is not None else '—'}"
+              f"  (tp={c['tp']} fp={c['fp']} tn={c['tn']} fn={c['fn']})")
+        if s["n_labeled"] < 10:
+            print("  ※ 표본이 적어(10 미만) 아직 신뢰 불가 — 런이 쌓이면 다시 보라.")
         return 0
 
     if a.cmd == "coach":

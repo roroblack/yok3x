@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, knot, reserve, usage
+from . import acquire, artifacts, calibration, knot, reserve, usage
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 
@@ -193,6 +193,8 @@ class Orchestrator:
         # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
         # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
         self.materialize: dict = {}
+        # 심판 캘리브레이션(F0): 루프가 최종 score·verify_ok·rounds를 여기 남기면 _finish가 기록.
+        self._calib: dict = {}
 
     # ------------------------------------------------------------ infra
 
@@ -998,6 +1000,11 @@ class Orchestrator:
             score = self.steps[-1].score
             issues_sig = self._defect_sig(rev.text)
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
+            # 캘리브레이션 라벨: verify_cmd가 있어야 지상진실. 없으면 label 없음(상관 제외). 최종 라운드 값이 남음.
+            self._calib = {"score": score, "rounds": rnd,
+                           "verify_ok": (bool(verify_ok) if self.verify_cmd else None),
+                           "backend": (self._worker(producer) or {}).get("backend"),
+                           "effort": (self._worker(producer) or {}).get("effort") or None}
 
             passed = (score is not None and score >= pass_score) and verify_ok
             if passed:
@@ -1121,7 +1128,30 @@ class Orchestrator:
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",
                   tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
         self._save_status("done", {"materialized": mat} if mat.get("enabled") else None)
+        self._log_calibration()
         self._log(f"[done] 최종 산출물: {out}")
+
+    def _log_calibration(self) -> None:
+        """심판 캘리브레이션 레코드를 .yok3x/calibration.jsonl에 append(F0 데이터 수집).
+        선택 편향 주의(codex): 고른 경로 결과만 관측 — 초기엔 상관 확인용. 실패해도 런 안 깨짐."""
+        try:
+            c = self._calib
+            if not c:
+                return                          # producer-reviewer 아닌 패턴은 score/verify 없음 → 스킵
+            rec = calibration.make_record(
+                run_id=self.run_id, ts=datetime.now().isoformat(timespec="seconds"),
+                pattern=self.pattern, backend=c.get("backend"), effort=c.get("effort"),
+                rounds=c.get("rounds"), score=c.get("score"), verify_ok=c.get("verify_ok"),
+                tokens=sum(int(s.tokens or 0) for s in self.steps) or None,
+                cost_usd=round(sum(float(s.cost_usd or 0) for s in self.steps), 4) or None,
+                duration_ms=sum(int(s.duration_ms or 0) for s in self.steps) or None,
+                issues=sum(len(s.checklist or []) for s in self.steps))
+            path = self.cfg.paths.runs.parent / "calibration.jsonl"   # .yok3x/calibration.jsonl
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:                  # 계측 실패가 런을 깨지 않게
+            self._log(f"[calib] 기록 실패: {type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------- loop
