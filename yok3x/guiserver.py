@@ -85,7 +85,8 @@ def build_state(cfg: Config) -> dict:
                 for w in (v.reading.windows if v.reading else [])]
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
-            ps = usage.daily_pace_status(cfg, b, usage._weekly_pct(v.reading))
+            ps = usage.daily_pace_status(cfg, b, usage._weekly_pct(v.reading),
+                                         reset_at=usage._weekly_reset_at(v.reading))
             if ps:
                 pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
                         "soft": round(ps["soft"], 1),
@@ -128,7 +129,8 @@ def build_state(cfg: Config) -> dict:
                   "offline": bool((g.get("degrade") or {}).get("offline_enabled", True)),
                   "pace": {"enabled": bool((g.get("daily_pace") or {}).get("enabled", False)),
                            "cap_pct": round(float((g.get("daily_pace") or {}).get("pct_of_weekly", 0.14)) * 100),
-                           "mode": (g.get("daily_pace") or {}).get("mode", "warn")}},
+                           "mode": (g.get("daily_pace") or {}).get("mode", "warn"),
+                           "strategy": (g.get("daily_pace") or {}).get("strategy", "fixed")}},
         "coach": usage.coach_messages(cfg),
         "runs": _recent_runs(cfg, int(cfg.yok3x.get("runs_max", 20))),   # 작업별 그룹핑 위해 히스토리↑
         "tools": tools,
@@ -527,6 +529,8 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             cur["enabled"] = bool(dp["enabled"])
         if dp.get("mode") in ("warn", "pause"):
             cur["mode"] = dp["mode"]
+        if dp.get("strategy") in ("fixed", "catch_up"):     # 균등/유동(남은일수 배분)
+            cur["strategy"] = dp["strategy"]
         for k in ("pct_of_weekly", "soft_frac"):
             if k in dp:
                 try:

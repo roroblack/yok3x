@@ -150,6 +150,14 @@ def _pace_cfg(cfg: Config, backend: str) -> dict:
     dp["soft_frac"] = min(0.99, max(0.0, sf)) if math.isfinite(sf) else 0.8
     if dp.get("mode") not in ("warn", "pause"):
         dp["mode"] = "warn"
+    # 하루 상한 산정 전략: fixed(고정 pct_of_weekly) | catch_up(남은 일수로 유동 — 덜 썼으면 상한↑).
+    if dp.get("strategy") not in ("fixed", "catch_up"):
+        dp["strategy"] = "fixed"
+    try:                                          # catch_up 안전 캡 배수(하루 상한 ≤ max_cap_mult×q)
+        mm = float(dp.get("max_cap_mult", 2.0))
+    except (TypeError, ValueError):
+        mm = 2.0
+    dp["max_cap_mult"] = min(7.0, max(1.0, mm)) if math.isfinite(mm) else 2.0
     return dp
 
 
@@ -161,6 +169,15 @@ def _weekly_pct(reading: "limits.LimitReading | None") -> float | None:
         return exact[0]
     pref = [float(w.used_percent) for w in wins if str(w.name).startswith("7d")]
     return max(pref) if pref else None
+
+
+def _weekly_reset_at(reading: "limits.LimitReading | None") -> float | None:
+    """정확히 '7d' 집계 창의 리셋 epoch(catch-up 페이싱의 남은 일수 계산용). 없으면 None."""
+    for w in (getattr(reading, "windows", None) or []):
+        if str(w.name) == "7d":
+            ra = getattr(w, "resets_at", None)
+            return float(ra) if ra else None
+    return None
 
 
 def _pace_file(cfg: Config) -> Path:
@@ -191,11 +208,30 @@ def _save_pace(cfg: Config, state: dict) -> None:
     tmp.replace(p)   # 원자적 교체(같은 볼륨) — torn write로 인한 상태 유실 방지
 
 
+def _catch_up_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
+                  now: float | None = None) -> float:
+    """catch-up 하루 상한(codex 설계). 균등 허용선(경과일×q)에서 오늘 첫 실측(u0)을 빼 '몰아쓸 수
+    있는 여유'를 준다. 안전 캡 max_mult×q로 마지막 날 폭발 방지. reset_at 없으면 고정 q로 폴백.
+        D = clamp(1,7, ceil(남은초/86400)) · k = 8-D(오늘 포함 경과일) · cap = min(max_mult·q, max(0, min(100,k·q)-u0))
+    """
+    if not reset_at or not math.isfinite(reset_at):
+        return q                                 # 리셋 정보 없으면 고정(안전 폴백)
+    now = now if now is not None else time.time()
+    remaining = reset_at - now
+    if not math.isfinite(remaining):
+        return q
+    D = max(1, min(7, math.ceil(remaining / 86400.0)))
+    k = 8 - D                                     # 창의 몇째 날(오늘 포함, 1~7)
+    raw = max(0.0, min(100.0, k * q) - max(0.0, u0))
+    return min(max_mult * q, raw)
+
+
 def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
-                      today: str | None = None) -> dict | None:
+                      today: str | None = None, reset_at: float | None = None) -> dict | None:
     """하루 페이싱 상태. current_pct=현재 7d used_percent(실측). enabled off / 7d 없으면 None.
     오늘소비 = '첫 관측 이후 7d%의 양의 증분 누적'(롤오프 상쇄 완화). pause 모드는 cap 도달 시
-    blocked를 저장해 값이 낮아져도 자동 재개하지 않고 승인/자정까지 정지 유지."""
+    blocked를 저장해 값이 낮아져도 자동 재개하지 않고 승인/자정까지 정지 유지.
+    reset_at(7d 창 리셋 epoch)이 있고 strategy=catch_up이면 남은 일수로 유동 상한을 낸다."""
     dp = _pace_cfg(cfg, backend)
     if not dp.get("enabled") or current_pct is None:
         return None
@@ -206,15 +242,28 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     if not math.isfinite(current):
         return None
     today = today or datetime.now().strftime("%Y-%m-%d")
-    cap = dp["pct_of_weekly"] * 100.0
-    soft = cap * dp["soft_frac"]
+    q = dp["pct_of_weekly"] * 100.0               # 기본 하루치(균등 14%p)
     mode = dp["mode"]
+    # 창 세대 마커: resets_at이 바뀌면(새 주간 창) 롤오프가 아니라 진짜 리셋 → 당일 기준 재초기화.
+    win_gen = round(float(reset_at)) if (reset_at and math.isfinite(reset_at)) else None
     st = _load_pace(cfg)
     rec = st.get(backend) if isinstance(st.get(backend), dict) else {}
     changed = False
-    if rec.get("date") != today:                 # 새 날 → 기준 초기화(자정 자동 리셋)
-        rec = {"date": today, "start_pct": current, "last_pct": current,
-               "used_today": 0.0, "blocked": False}
+    # 새 날(자정) 또는 새 창(주간 리셋)이면 기준 초기화. u0·cap_today를 당일 고정(사용할수록 상한이
+    # 줄어드는 문제 방지 — codex). cap_today는 이 시점에 한 번 계산해 하루 동안 유지.
+    if rec.get("date") != today or rec.get("win") != win_gen:
+        cap_today = (_catch_up_cap(q, current, reset_at, dp["max_cap_mult"])
+                     if dp["strategy"] == "catch_up" else q)
+        rec = {"date": today, "win": win_gen, "start_pct": current, "last_pct": current,
+               "used_today": 0.0, "blocked": False, "cap_today": cap_today,
+               "strat": dp["strategy"]}
+        changed = True
+    elif rec.get("strat") != dp["strategy"]:
+        # 하루 중 전략을 바꾸면 즉시 반영한다(당일 재초기화 없이). u0는 오늘 첫 실측(start_pct)을
+        # 그대로 써 사용량 누적을 보존한다 — current로 재계산하면 몰아쓴 뒤 상한이 줄어든다.
+        rec["cap_today"] = (_catch_up_cap(q, float(rec.get("start_pct", current)), reset_at,
+                                          dp["max_cap_mult"]) if dp["strategy"] == "catch_up" else q)
+        rec["strat"] = dp["strategy"]
         changed = True
     else:
         last = float(rec.get("last_pct", current))
@@ -225,6 +274,9 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         if rec.get("last_pct") != current:
             rec["last_pct"] = current
             changed = True
+    # 하루 상한은 당일 초기화 때 고정한 cap_today(없으면 고정 q로 폴백 — 옛 레코드 호환).
+    cap = float(rec.get("cap_today", q))
+    soft = cap * dp["soft_frac"]
     used = float(rec.get("used_today", 0.0))
     if mode == "pause" and used >= cap and not rec.get("blocked"):
         rec["blocked"] = True                    # sticky: 그날은 정지 유지
@@ -288,7 +340,8 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
-                pace = daily_pace_status(cfg, backend, _weekly_pct(reading))
+                pace = daily_pace_status(cfg, backend, _weekly_pct(reading),
+                                         reset_at=_weekly_reset_at(reading))
                 if pace and pace["level"] != "ok":
                     tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
                             + ("(승인 필요)" if pace["level"] == "stop" else ""))   # 동일 severity라도 표시

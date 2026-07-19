@@ -1592,3 +1592,42 @@ def test_materialize_disabled_by_default(tmp_path):
     # materialize 미설정이면 아무것도 안 함
     assert o._materialize_outputs("```file:x.txt\ny\n```") == {"enabled": False}
     assert not (tmp_path / "yok3x-out").exists()
+
+
+def test_daily_pace_catch_up_cap(tmp_path):
+    """유동(catch-up) 하루 상한: 덜 썼으면 상한↑(안전캡 2×q), 많이 썼으면↓, 폴백은 고정 q.
+    사용자 시나리오: 2일 지나고 0% 사용 → 오늘 28%p(=이틀치 몰아쓰기, 안전캡)."""
+    import time
+    from yok3x import usage
+    def status(current, days_left, strategy="catch_up"):
+        cfg = Config.load(tmp_path / f"{strategy}-{current}-{days_left}")
+        cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                            "mode": "warn", "strategy": strategy}
+        return usage.daily_pace_status(cfg, "claude", current,
+                                       reset_at=time.time() + days_left * 86400)
+    assert round(status(0.0, 5)["cap"]) == 28       # 3일차·0% → 안전캡 2×14
+    assert round(status(0.0, 6.5)["cap"]) == 14      # 1일차·0% → 14(안전캡 미도달)
+    assert round(status(30.0, 5)["cap"]) == 12       # 3일차·30% → 42-30
+    assert round(status(50.0, 5)["cap"]) == 0        # 과사용 → 0
+    assert round(status(0.0, 0.5)["cap"]) == 28      # 마지막 날 → 폭발 방지(안전캡)
+    assert round(status(0.0, 5, "fixed")["cap"]) == 14  # fixed는 고정
+    # reset_at 없으면 고정 폴백
+    cfg = Config.load(tmp_path / "nofb")
+    cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                        "mode": "warn", "strategy": "catch_up"}
+    assert round(usage.daily_pace_status(cfg, "claude", 0.0, reset_at=None)["cap"]) == 14
+
+
+def test_daily_pace_strategy_change_applies_same_day(tmp_path):
+    """하루 중 fixed→catch_up 전환 시 당일 재초기화 없이 즉시 상한이 유동으로 바뀐다(사용자 UX)."""
+    import time
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    dp = cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                             "mode": "warn", "strategy": "fixed"}
+    reset_at = time.time() + 5 * 86400                       # 3일차
+    s1 = usage.daily_pace_status(cfg, "claude", 0.0, reset_at=reset_at)
+    assert round(s1["cap"]) == 14                            # fixed
+    dp["strategy"] = "catch_up"                              # 같은 날 전략만 변경
+    s2 = usage.daily_pace_status(cfg, "claude", 0.0, reset_at=reset_at)
+    assert round(s2["cap"]) == 28                            # 즉시 유동 반영(안전캡)
