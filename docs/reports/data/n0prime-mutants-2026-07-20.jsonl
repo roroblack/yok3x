@@ -1,0 +1,20 @@
+{"idx": 0, "file": "acquire.py", "line": 137, "op": "guard_off", "original_line": "if unknowns and _UNKNOWN_ANSWER_RE.search(answer):", "mutant_line": "if False:", "rc": 1, "elapsed": 45.4}
+{"idx": 1, "file": "calibration.py", "line": 61, "op": "guard_off", "original_line": "if pred and actual: tp += 1", "mutant_line": "if False: tp += 1", "rc": 1, "elapsed": 47.7}
+{"idx": 2, "file": "limits.py", "line": 329, "op": "return_sub", "original_line": "return f\"{mins // 60}h\"", "mutant_line": "return None", "rc": 1, "elapsed": 43.7}
+{"idx": 3, "file": "guiserver.py", "line": 261, "op": "guard_off", "original_line": "if not isinstance(name, str) or not _TASK_NAME_RE.match(name):", "mutant_line": "if False:", "rc": 1, "elapsed": 48.7}
+{"idx": 4, "file": "usage.py", "line": 491, "op": "return_sub", "original_line": "return (\"downgrade\", lite)", "mutant_line": "return None", "rc": 1, "elapsed": 49.6}
+{"idx": 5, "file": "limits.py", "line": 727, "op": "boundary", "original_line": "if hit and (now - hit[0]) < interval:", "mutant_line": "if hit and (now - hit[1]) < interval:", "rc": 1, "elapsed": 20.9}
+{"idx": 6, "file": "acquire.py", "line": 73, "op": "boundary", "original_line": "limit = max(0, qa_count)", "mutant_line": "limit = max(1, qa_count)", "rc": 1, "elapsed": 55.4}
+{"idx": 7, "file": "knot.py", "line": 210, "op": "comparison", "original_line": "if n.get(\"source\") != \"orchestrator\"][:limit]", "mutant_line": "if n.get(\"source\") == \"orchestrator\"][:limit]", "rc": 1, "elapsed": 50.1}
+{"idx": 8, "file": "guiserver.py", "line": 150, "op": "return_sub", "original_line": "return sorted(p.name for p in cfg.paths.root.glob(\"task-*.json\"))", "mutant_line": "return None", "rc": 1, "elapsed": 32.2}
+{"idx": 9, "file": "acquire.py", "line": 189, "op": "boundary", "original_line": "first_evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}", "mutant_line": "first_evidence = evidence[0] if evidence and isinstance(evidence[1], dict) else {}", "rc": 1, "elapsed": 37.7}
+{"idx": 10, "file": "orchestrator.py", "line": 411, "op": "boundary", "original_line": "if chars_per_token <= 0 or output_ratio < 0 or usd_per_1k < 0:", "mutant_line": "if chars_per_token <= 1 or output_ratio < 0 or usd_per_1k < 0:", "rc": 1, "elapsed": 51.5}
+{"idx": 11, "file": "artifacts.py", "line": 120, "op": "guard_off", "original_line": "if size > max_bytes_per_file:", "mutant_line": "if False:", "rc": 1, "elapsed": 51.5}
+{"idx": 12, "file": "limits.py", "line": 327, "op": "return_sub", "original_line": "return f\"{mins // 1440}d\"", "mutant_line": "return None", "rc": 1, "elapsed": 49.6}
+{"idx": 13, "file": "config.py", "line": 343, "op": "return_sub", "original_line": "return cls(", "mutant_line": "return None", "rc": 1, "elapsed": 44.9}
+{"idx": 14, "file": "backends.py", "line": 183, "op": "guard_off", "original_line": "if process_started is None and process_finished is None and cancel_event is None:", "mutant_line": "if False:", "rc": 1, "elapsed": 60.1}
+{"idx": 15, "file": "limits.py", "line": 322, "op": "comparison", "original_line": "if mins == 300:", "mutant_line": "if mins != 300:", "rc": 1, "elapsed": 35.2}
+{"idx": 16, "file": "knot.py", "line": 172, "op": "boundary", "original_line": "out = sorted(scores.values(), key=lambda x: -x[0])", "mutant_line": "out = sorted(scores.values(), key=lambda x: -x[1])", "rc": 1, "elapsed": 49.7}
+{"idx": 17, "file": "orchestrator.py", "line": 1317, "op": "comparison", "original_line": "if set(old) != set(new):", "mutant_line": "if set(old) == set(new):", "rc": 1, "elapsed": 49.5}
+{"idx": 18, "file": "orchestrator.py", "line": 947, "op": "comparison", "original_line": "if i == 0 and initial_context:", "mutant_line": "if i != 0 and initial_context:", "rc": 1, "elapsed": 48.5}
+{"idx": 19, "file": "orchestrator.py", "line": 993, "op": "logic", "original_line": "if not pb or pb != rb:", "mutant_line": "if not pb and pb != rb:", "rc": 1, "elapsed": 49.9}
