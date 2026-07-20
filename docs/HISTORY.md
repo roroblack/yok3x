@@ -5,6 +5,23 @@
 ---
 
 
+## 미출시(dev) · 2026-07-20 — [N0] 심판 교정 backfill **불가 판정** + 변이 기반 대안(N0') 제안
+
+- 계획서 v5.0.0의 최우선 항목 N0(과거 패치를 baseline/candidate 쌍으로 재생해 SCORE 교정) 실행.
+- **라벨링 방식은 검증 성공**: BUG-21 수정커밋의 부모에 worktree를 만들고 현재 회귀테스트를 역적용 →
+  `test_rename_task_same_name_updates_label_in_place` **정확히 실패**(=부모가 broken이라는 기계적 라벨 성립).
+  LLM 없이 무료로 정답 라벨을 만들 수 있음이 확인됨.
+- **그러나 표본이 없다**: 최근 40커밋 전수조사 결과 라벨 가능 쌍 **실질 1~2개**. 우리 버그 다수가
+  **GUI/JS**(pytest 라벨 불가: BUG-19·20·22)거나 **기능 추가**(75e6c5e)거나 **라이브 환경 의존**(BUG-17·18).
+  우리 자신의 기준(`calibration.summarize`의 n<10=표본부족)에 미달 → **n=2 LLM 채점은 통계적 무의미이므로
+  실행하지 않음**(비용 회피). 자동 채택 금지(N3)는 그대로 유지.
+- **대안 N0'(변이 기반 하한 검사)**: 정상 코드에 결함 주입 → **pytest 결과를 무료 라벨**로 → 심판 블라인드
+  채점 → point_biserial/confusion. 실현성 확인(변이 3종 즉시 적용 가능, 대상 6,163줄·라벨러 216테스트).
+  **한계 명시**: 변이 결함은 LLM 실제 결함과 분포가 달라 **하한 검사**로만 유효.
+- 부수 발견: 수정과 회귀테스트를 같은 커밋에 넣는 습관 탓에 옛 시점에 실패 테스트가 없다 →
+  **failing test first** 커밋 습관이 향후 라벨 데이터를 자연 축적시킴.
+- 보고서: `docs/reports/v5.x-assessment-n0-judge-calibration-backfill-2026-07-20.md`
+
 ## 미출시(dev) · 2026-07-18 — [로드맵 3 / C-4] ACQUIRE Answerer 병렬 이식 (codex 구현·Claude 검토)
 
 - `call_workers_parallel`(C-3)의 **첫 실사용자**. ACQUIRE는 질문마다 독립 읽기전용 Answerer라 병렬화의
