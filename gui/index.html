@@ -203,6 +203,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
     <span class="clock" id="clock"></span>
   </div>
   <div class="zig"></div>
+  <div id="disconnected" style="display:none;margin:8px 0;padding:9px 12px;border-radius:6px;
+       background:rgba(220,70,70,.14);border:1px solid rgba(220,70,70,.5);font-size:12px">
+    <b>서버 연결 끊김</b> — <span id="disconn-detail"></span>
+    아래 수치는 <b>마지막으로 받은 값</b>이며 갱신되지 않는다. <code>yok3x gui</code>가 살아있는지 확인하라.
+  </div>
 
   <div class="tabs">
     <div class="tab active" data-v="dash">대시보드</div>
@@ -1108,12 +1113,35 @@ async function runTask(name){
   }catch(e){alert("실행 요청 실패(파일 직접 열림 상태면 `yok3x gui`로 실행): "+e);}
 }
 function setLive(on){const b=document.getElementById("livebadge");
-  b.className="pill "+(on?"live":"mock"); b.textContent=on?"● LIVE":"○ MOCK(파일 직접 열림)";
-  document.getElementById("src2").textContent=on?"실데이터 연동(/api/state)":"mock 데이터 — `yok3x gui`로 실행하면 실데이터";}
+  // everLive면 "파일 직접 열림"이 아니라 연결이 끊긴 것 — 문구를 구분한다(오진 방지).
+  const lost=!on&&everLive;
+  b.className="pill "+(on?"live":"mock");
+  b.textContent=on?"● LIVE":(lost?"○ 연결 끊김(갱신 중단)":"○ MOCK(파일 직접 열림)");
+  document.getElementById("src2").textContent=on?"실데이터 연동(/api/state)"
+    :(lost?"서버 응답 없음 — 마지막으로 받은 값을 표시 중":"mock 데이터 — `yok3x gui`로 실행하면 실데이터");}
+// 서버 연결 상태. everLive: 한 번이라도 실데이터를 받았나 / fails: 연속 실패 횟수.
+// 왜: 실패 경로가 두 가지인데 지금까지 구분이 없었다.
+//  (A) 처음부터 서버 없음(html 파일 직접 열기) = 정상적인 mock 시연 모드
+//  (B) 쓰던 중 서버가 죽음 = 사고. 이때 MOCK을 덮어 그리면 가짜 사용량(claude 31% 등)이
+//      진짜처럼 보인다. 마지막 실데이터를 유지하고 배너로 갱신 중단을 알린다.
+let everLive=false, fails=0;
 async function load(){
   try{const r=await fetch("/api/state",{cache:"no-store"});if(!r.ok)throw 0;
-    const s=await r.json();setLive(true);render(s);}
-  catch(e){setLive(false);render(MOCK);}
+    const s=await r.json();everLive=true;fails=0;
+    document.getElementById("disconnected").style.display="none";
+    setLive(true);render(s);}
+  catch(e){
+    fails++;
+    if(everLive){                       // (B) 연결이 끊겼다 — 마지막 값 유지, 덮어쓰지 않는다
+      const el=document.getElementById("disconnected");
+      document.getElementById("disconn-detail").textContent=
+        `/api/state 응답 없음(연속 ${fails}회, 약 ${Math.round(fails*7)}초).`;
+      el.style.display="block";
+      setLive(false);
+    }else{                              // (A) 처음부터 서버 없음 — 기존 mock 시연 유지
+      setLive(false);render(MOCK);
+    }
+  }
 }
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
