@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -28,6 +29,7 @@ from typing import Any, Callable
 from . import acquire, artifacts, calibration, knot, reserve, usage
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
+from ._version import __version__
 
 SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
 
@@ -134,6 +136,15 @@ class CallSpec:
     # 제어 스레드에서 배치 승인을 끝낸 spec만 True. worker에서 input()을 부르지 않게 한다.
     batch_approved: bool = False
 
+    @property
+    def call_key(self) -> str:
+        """호출 내용만으로 만드는 재생 키. 단계 번호는 의도적으로 포함하지 않는다."""
+        raw = "|".join((
+            self.worker, self.task_kind, self.backend, self.model or "",
+            self.prompt, "true" if self.read_only else "false",
+        ))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
 
 @dataclass
 class StepLog:
@@ -148,13 +159,16 @@ class StepLog:
     tokens: int | None = None
     cost_usd: float | None = None
     duration_ms: int | None = None
+    replayed: bool = False
 
 
 class RunAborted(Exception):
-    def __init__(self, message: str, results: list[BackendResult | None] | None = None):
+    def __init__(self, message: str, results: list[BackendResult | None] | None = None,
+                 *, cause: str = "unknown"):
         super().__init__(message)
         # 병렬 중단 때 이미 완료된 입력 순서 결과를 호출자가 회수할 수 있게 한다.
         self.results = results
+        self.cause = cause
 
 
 class Orchestrator:
@@ -195,6 +209,9 @@ class Orchestrator:
         self.materialize: dict = {}
         # 심판 캘리브레이션(F0): 루프가 최종 score·verify_ok·rounds를 여기 남기면 _finish가 기록.
         self._calib: dict = {}
+        # G-1: 순차 pipeline 재개에서만 채워지는 성공 prefix 캐시.
+        self._replay_cache: dict[str, dict[str, Any]] = {}
+        self.resume_from: str | None = None
 
     # ------------------------------------------------------------ infra
 
@@ -240,6 +257,8 @@ class Orchestrator:
                 "updated": datetime.now().isoformat(timespec="seconds"),
                 "steps": [s.__dict__ for s in self.steps],
             }
+            if self.resume_from:
+                data["resume_from"] = self.resume_from
             if extra:
                 data.update(extra)
             _atomic_write_json(self.run_dir / "status.json", data)
@@ -269,7 +288,7 @@ class Orchestrator:
             return True
         ans = self.ask(f"[gate] {description} — 진행? [y/N/q] ").strip().lower()
         if ans == "q":
-            raise RunAborted("사용자 중단(q)")
+            raise RunAborted("사용자 중단(q)", cause="user_abort")
         ok = ans == "y"
         self._log(f"[gate] {'승인' if ok else '거부'}: {description}")
         return ok
@@ -417,7 +436,7 @@ class Orchestrator:
             return True
         ans = self.ask(f"[gate] {description}\n진행? [y/N/q] ").strip().lower()
         if ans == "q":
-            raise RunAborted("사용자 중단(q)")
+            raise RunAborted("사용자 중단(q)", cause="user_abort")
         ok = ans == "y"
         self._log(f"[gate] {'승인' if ok else '거부'}: {description}")
         if ok:
@@ -537,6 +556,39 @@ class Orchestrator:
         worker, task, task_kind = spec.worker, spec.task, spec.task_kind
         backend, model_override = spec.backend, spec.model
         w = self._worker(worker)
+        call_key = spec.call_key
+
+        # 성공 prefix 재생은 가드·승인·backend보다 먼저 처리한다. 실제 호출도 과금도 없다.
+        cached = self._replay_cache.get(call_key)
+        if cached is not None:
+            cached_usage = cached["usage"]
+            res = BackendResult(
+                backend=backend, ok=True, text=cached["text"], error=cached["error"],
+                cost_usd=float(cached_usage["cost_usd"] or 0),
+                total_tokens=int(cached_usage["total_tokens"] or 0),
+                duration_ms=int(cached_usage["duration_ms"] or 0),
+                meta={"replayed": True, "source_step": cached["_source_index"]},
+            )
+            with self._state_lock:
+                self.steps.append(StepLog(
+                    idx, worker, task_kind, "done", summary=res.text[:200],
+                    score=cached["score"], checklist=list(cached["checklist"]),
+                    tokens=(res.total_tokens or None), cost_usd=(res.cost_usd or None),
+                    duration_ms=res.duration_ms, replayed=True))
+                self.run_dir.mkdir(parents=True, exist_ok=True)
+                _atomic_write_json(self.run_dir / f"step_{idx:02d}_{worker}.json", {
+                    "worker": worker, "task_kind": task_kind, "task": task,
+                    "backend": backend, "model": model_override,
+                    "read_only": spec.read_only, "call_key": call_key,
+                    "ok": True, "error": res.error, "text": res.text,
+                    "score": cached["score"], "checklist": list(cached["checklist"]),
+                    "usage": dict(cached_usage), "replayed": True,
+                })
+                self._save_status("running")
+            self._log(
+                f"[resume] step {idx} 재생: {worker} "
+                f"(source step {cached['_source_index']}, call_key={call_key})")
+            return res
 
         if spec.route_reason:
             self._log(
@@ -563,7 +615,8 @@ class Orchestrator:
                                               f"guard stop: {verdict.backend} {verdict.detail}"))
                     self._save_status("stopped_by_guard")
                 raise RunAborted(f"요금 가드 정지: {verdict.backend} {verdict.metric} "
-                                 f"{verdict.ratio:.0%} ({verdict.detail})")
+                                 f"{verdict.ratio:.0%} ({verdict.detail})",
+                                 cause="guard_stop")
 
         # 승인 게이트
         if (not spec.batch_approved
@@ -621,10 +674,13 @@ class Orchestrator:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             _atomic_write_json(step_file, {
                 "worker": worker, "task_kind": task_kind, "task": task,
+                "backend": backend, "model": model_override,
+                "read_only": spec.read_only, "call_key": call_key,
                 "ok": res.ok, "error": res.error, "text": res.text,
                 "score": score, "checklist": checklist,
                 "usage": {"cost_usd": res.cost_usd, "total_tokens": res.total_tokens,
                           "duration_ms": res.duration_ms},
+                "replayed": False,
             })
             self._save_status("running")
         if checklist:
@@ -963,7 +1019,7 @@ class Orchestrator:
         for role in ("to_producer", "to_reviewer"):
             w = self.escalate.get(role)
             if w and w not in self.cfg.yok3x.get("workers", {}):
-                raise RunAborted(f"escalate.{role} 없는 워커: {w}")
+                raise RunAborted(f"escalate.{role} 없는 워커: {w}", cause="config_error")
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
         prev_sig = None
@@ -1142,9 +1198,11 @@ class Orchestrator:
                 run_id=self.run_id, ts=datetime.now().isoformat(timespec="seconds"),
                 pattern=self.pattern, backend=c.get("backend"), effort=c.get("effort"),
                 rounds=c.get("rounds"), score=c.get("score"), verify_ok=c.get("verify_ok"),
-                tokens=sum(int(s.tokens or 0) for s in self.steps) or None,
-                cost_usd=round(sum(float(s.cost_usd or 0) for s in self.steps), 4) or None,
-                duration_ms=sum(int(s.duration_ms or 0) for s in self.steps) or None,
+                tokens=sum(int(s.tokens or 0) for s in self.steps if not s.replayed) or None,
+                cost_usd=round(sum(float(s.cost_usd or 0) for s in self.steps
+                                   if not s.replayed), 4) or None,
+                duration_ms=sum(int(s.duration_ms or 0) for s in self.steps
+                                if not s.replayed) or None,
                 issues=sum(len(s.checklist or []) for s in self.steps))
             path = self.cfg.paths.runs.parent / "calibration.jsonl"   # .yok3x/calibration.jsonl
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1198,10 +1256,134 @@ def resolve_model(cfg: Config, task_kind: str, available=None,
     return (None, None, "")
 
 
-def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
-                  ask=None) -> str:
+def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
+    """G-1은 acquire/materialize 없는 순차 pipeline만 허용한다."""
+    if spec.get("pattern", "producer-reviewer") != "pipeline":
+        return False, "재개는 pattern=pipeline에서만 지원합니다"
+    parallel = ((cfg.yok3x.get("guard") or {}).get("parallel") or {})
+    if parallel.get("enabled", False):
+        return False, "재개는 guard.parallel.enabled=false인 순차 pipeline에서만 지원합니다"
+    for key in ("acquire", "materialize"):
+        if key in spec:
+            return False, f"재개는 {key}가 없는 pipeline에서만 지원합니다"
+    return True, ""
+
+
+def _manifest_workers(orch: Orchestrator, spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """task가 실제로 참조하는 worker의 실행 식별 필드만 고정한다."""
+    pattern = spec.get("pattern", "producer-reviewer")
+    names: list[str] = []
+    if pattern == "pipeline":
+        names.extend(stage.get("worker", "") for stage in spec.get("stages", []))
+    elif pattern in ("fanout", "fanout-fanin"):
+        names.extend(spec.get("workers", []) or [])
+        names.append(spec.get("join_worker") or "")
+    elif pattern == "producer-reviewer":
+        names.extend((spec.get("producer", "claude-main"),
+                      spec.get("reviewer", "codex-critic")))
+        escalate = spec.get("escalate") or {}
+        names.extend((escalate.get("to_producer") or "",
+                      escalate.get("to_reviewer") or ""))
+    acquire_spec = spec.get("acquire")
+    if isinstance(acquire_spec, dict):
+        names.append(acquire_spec.get("questioner") or "")
+        names.extend(acquire_spec.get("answerers", []) or [])
+
+    workers: dict[str, dict[str, Any]] = {}
+    for name in sorted(set(filter(None, names))):
+        worker = orch._worker(name)
+        workers[name] = {
+            "backend": worker.get("backend"),
+            "model": worker.get("model") or None,
+            "effort": worker.get("effort") or orch.cfg.yok3x.get("default_effort") or None,
+        }
+    return workers
+
+
+def _make_manifest(orch: Orchestrator, spec: dict[str, Any], spec_bytes: bytes) -> dict[str, Any]:
+    return {
+        "spec_sha256": hashlib.sha256(spec_bytes).hexdigest(),
+        "pattern": spec.get("pattern", "producer-reviewer"),
+        "workers": _manifest_workers(orch, spec),
+        "flavor": orch.cfg.yok3x["flavor"],
+        "verify_cmd": orch.verify_cmd,
+        "yok3x_version": __version__,
+    }
+
+
+def _manifest_difference(old: Any, new: Any, path: str = "manifest") -> str | None:
+    """strict manifest 불일치의 첫 위치를 사람이 읽을 수 있게 돌려준다."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        if set(old) != set(new):
+            missing = sorted(set(old) - set(new))
+            added = sorted(set(new) - set(old))
+            return f"{path} 필드 불일치(missing={missing}, added={added})"
+        for key in sorted(old):
+            diff = _manifest_difference(old[key], new[key], f"{path}.{key}")
+            if diff:
+                return diff
+        return None
+    if old != new:
+        return f"{path} 불일치(이전={old!r}, 현재={new!r})"
+    return None
+
+
+_STEP_FILE_RE = re.compile(r"^step_(\d+)_.*\.json$")
+_REPLAY_REQUIRED = {
+    "worker", "task_kind", "task", "call_key", "ok", "error", "text",
+    "score", "checklist", "usage",
+}
+_REPLAY_USAGE_REQUIRED = {"cost_usd", "total_tokens", "duration_ms"}
+
+
+def _load_replay_prefix(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
+    """번호가 연속된 ok step만 읽는다. 손상/실패를 만나는 즉시 안전하게 중단한다."""
+    indexed: dict[int, list[Path]] = {}
+    for path in run_dir.glob("step_*.json"):
+        match = _STEP_FILE_RE.match(path.name)
+        if not match:
+            continue
+        index = int(match.group(1))
+        indexed.setdefault(index, []).append(path)
+
+    cache: dict[str, dict[str, Any]] = {}
+    expected = 1
+    for index in sorted(indexed):
+        if index != expected:
+            return cache, f"step {expected} 파일 없음"
+        paths = indexed[index]
+        if len(paths) != 1:
+            return cache, f"step {index} 파일 중복"
+        path = paths[0]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return cache, f"step {index} JSON 손상({type(exc).__name__})"
+        if not isinstance(data, dict) or not _REPLAY_REQUIRED.issubset(data):
+            return cache, f"step {index} 필수 필드 없음"
+        usage_data = data.get("usage")
+        if (not isinstance(usage_data, dict)
+                or not _REPLAY_USAGE_REQUIRED.issubset(usage_data)):
+            return cache, f"step {index} usage 필수 필드 없음"
+        if data.get("ok") is not True:
+            return cache, f"step {index} 성공 아님"
+        call_key = data.get("call_key")
+        if not isinstance(call_key, str) or not call_key:
+            return cache, f"step {index} call_key 오류"
+        cached = dict(data)
+        cached["_source_index"] = index
+        cache[call_key] = cached
+        expected += 1
+    return cache, "성공 prefix 끝"
+
+
+def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
+                   ask=None, *, resume_dir: Path | None = None
+                   ) -> str | dict[str, str]:
     """task.json 실행. 반환: 종료 상태 문자열."""
-    spec = json.loads(Path(task_file).read_text(encoding="utf-8-sig"))  # BOM 방어
+    task_path = Path(task_file)
+    spec_bytes = task_path.read_bytes()
+    spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
     orch.agents_override = spec.get("agents") or {}
     # 산출물 게시(opt-in). "이 폴더에 X 만들어줘"는 그 폴더 하위 신규 파일 생성에 대한 작업단위
@@ -1213,10 +1395,18 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     orch.label = (str(_lbl).strip() if _lbl is not None else Path(task_file).stem.strip())
     # 코딩 태스크 옵션. task가 workdir를 지정하면 우선, 없으면 전역 workspace를 상속.
     orch.workdir = spec.get("workdir") or cfg.yok3x.get("workspace") or None
+    pattern = spec.get("pattern", "producer-reviewer")
+    task = spec["task"]
+    orch.pattern = pattern
+    orch.task_desc = task
+    if resume_dir is not None:
+        orch.resume_from = resume_dir.name
+
     if orch.workdir and not Path(orch.workdir).is_dir():
         msg = f"workdir 없음(오타?): {orch.workdir}"
         print(f"[error] {msg}")
-        orch._save_status("aborted", {"reason": msg})
+        orch._save_status("aborted", {
+            "reason": msg, "cause": "config_error", "resumable": False})
         return f"aborted: {msg}"
     # task가 지정하면 우선, 없으면 yok3x.json 전역 기본값을 상속(프로젝트 전체 게이트).
     orch.verify_cmd = spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
@@ -1227,9 +1417,32 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     if "adversarial" in spec:                       # task가 명시하면 우선, 없으면 config 기본
         orch.adversarial = bool(spec.get("adversarial"))
     orch.escalate = spec.get("escalate") or {}      # 조건부 라우팅(에스컬레이션) 규칙
-    pattern = spec.get("pattern", "producer-reviewer")
-    task = spec["task"]
-    orch.task_desc = task
+    manifest = _make_manifest(orch, spec, spec_bytes)
+    if resume_dir is not None:
+        supported, reason = _resume_supported(spec, cfg)
+        if not supported:
+            orch._save_status("aborted", {
+                "reason": reason, "cause": "config_error", "resumable": False})
+            return {"error": reason}
+        try:
+            previous_manifest = json.loads(
+                (resume_dir / "manifest.json").read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            reason = f"재개 거부: 이전 manifest.json을 읽을 수 없습니다({type(exc).__name__})"
+            orch._save_status("aborted", {
+                "reason": reason, "cause": "config_error", "resumable": False})
+            return {"error": reason}
+        difference = _manifest_difference(previous_manifest, manifest)
+        if difference:
+            reason = f"재개 거부: strict manifest {difference}"
+            orch._save_status("aborted", {
+                "reason": reason, "cause": "config_error", "resumable": False})
+            return {"error": reason}
+        orch._replay_cache, prefix_reason = _load_replay_prefix(resume_dir)
+        orch._log(f"[resume] {resume_dir.name}: 성공 prefix {len(orch._replay_cache)}개 "
+                  f"적재 ({prefix_reason})")
+    orch.run_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(orch.run_dir / "manifest.json", manifest)
     try:
         acquire_context = ""
         acquire_spec = spec.get("acquire")
@@ -1257,8 +1470,34 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         return "done"
     except RunAborted as e:
         orch._log(f"[stop] {e}")
-        orch._save_status("aborted", {"reason": str(e)})
+        supported, _ = _resume_supported(spec, cfg)
+        cause = getattr(e, "cause", "unknown")
+        resumable = bool(supported and cause in ("guard_stop", "user_abort"))
+        orch._save_status("aborted", {
+            "reason": str(e), "cause": cause, "resumable": resumable})
         return f"aborted: {e}"
+
+
+def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
+                  ask=None, resume_run_id: str | None = None
+                  ) -> str | dict[str, str]:
+    """task.json 실행. G-1 재개는 이전 lineage 잠금을 잡은 순차 pipeline만 허용한다."""
+    if resume_run_id is None:
+        return _run_task_file(cfg, task_file, auto=auto, ask=ask)
+    if not isinstance(resume_run_id, str) or not resume_run_id.strip():
+        return {"error": "재개 거부: resume_run_id가 비어 있습니다"}
+    runs_root = cfg.paths.runs.resolve()
+    resume_dir = (runs_root / resume_run_id).resolve()
+    if resume_dir.parent != runs_root or not resume_dir.is_dir():
+        return {"error": f"재개 거부: 이전 run을 찾을 수 없습니다({resume_run_id})"}
+    lock_path = resume_dir / "resume.lock"
+    try:
+        # 재개 런 전체 동안 lineage를 독점한다. 24시간은 일반 backend timeout보다 충분히 길다.
+        with reserve.file_lock(lock_path, ttl=86400, run_id=f"resume-{resume_run_id}"):
+            return _run_task_file(
+                cfg, task_file, auto=auto, ask=ask, resume_dir=resume_dir)
+    except FileExistsError:
+        return {"error": f"재개 거부: lineage 잠금 사용 중({resume_run_id})"}
 
 
 def run_loop(cfg: Config, task_file: str | Path, iterations: int = 3,
