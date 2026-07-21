@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [E] few-shot 예시 필드 + [C정리] (Claude 구현)
+
+- **E**: task spec `examples`(문자열/리스트) → build/revise(Resolver/생산자) 프롬프트에 `[예시]` 블록 주입.
+  **ACQUIRE Questioner/Answerer(task_kind=general)·critic엔 주입 안 함**(조기가설 방지). 문자 상한
+  `examples_max_chars`(기본 4000, clip). 예시 안 명령은 "지시 아니라 형식 참고"로 감싸 인젝션 완화.
+  GUI textarea(c-examples) + buildSpec/openTask/resetTaskForm 배선. 테스트 6·실브라우저 검증. 274 passed.
+- **C 블록 정리**: C-1~C-5로 이미 완료된 세부 항목들의 미체크 박스를 정리(원자적쓰기·ThreadPoolExecutor·
+  취소계약·all-settled·예약누수·TOCTOU·lockfile·이식순서 — 전부 C-1~C-5 커밋에 구현·테스트됨).
+
 ## 미출시(dev) · 2026-07-21 — [G-2] producer-reviewer 재개 (**Claude 구현** — 역할 정정 후 첫 작업)
 
 - 로드맵 G-2. 기존 재개(G-1)는 순차 pipeline만 허용했으나, replay는 `call_key`(프롬프트 내용 해시) 기반이라

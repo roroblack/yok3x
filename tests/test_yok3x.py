@@ -232,6 +232,35 @@ def test_conditional_routing_invalid_target_fails(mock_root):
         o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=2)
 
 
+# ----------------------------------------------- E few-shot 예시 주입
+@pytest.mark.parametrize("kind,expected", [
+    ("build", True), ("revise", True), ("general", False), ("critic", False)])
+def test_examples_injected_only_for_producer_kinds(mock_root, kind, expected):
+    """E: 예시는 build/revise(Resolver/생산자)에만. general(ACQUIRE Q/A)·critic엔 주입 금지."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.examples = "예시: def foo(): return 42"
+    spec = o.prepare_call("claude-main", "작업", task_kind=kind)
+    assert ("[예시]" in spec.prompt) is expected
+
+
+def test_examples_char_limit_applied(mock_root):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["examples_max_chars"] = 100
+    o = Orchestrator(cfg, auto=True)
+    o.examples = "X" * 5000
+    spec = o.prepare_call("claude-main", "작업", task_kind="build")
+    assert spec.prompt.count("X") <= 120        # clip 상한(head+tail) 내
+
+
+def test_examples_spec_accepts_list_and_string(mock_root):
+    from yok3x.orchestrator import _run_task_file  # noqa: F401  (스펙 읽기 경로 확인용)
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    # 리스트→빈 줄로 결합되는지(직접 필드 세팅은 _run_task_file이 함)
+    o.examples = "\n\n".join(["ex1", "ex2"])
+    spec = o.prepare_call("claude-main", "작업", task_kind="build")
+    assert "ex1" in spec.prompt and "ex2" in spec.prompt
+
+
 # ----------------------------------------------- 심판 캘리브레이션 원자료
 def test_calibration_make_record_rejects_unknown_and_fills_missing():
     with pytest.raises(TypeError, match="verify_passed"):

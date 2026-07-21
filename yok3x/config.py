@@ -23,6 +23,7 @@ DEFAULT_YOK3X = {
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
     "context_max_chars": 8000,      # context.md 글자 제한
     "brief_max_chars": 1200,        # brief.md 글자 제한
+    "examples_max_chars": 4000,     # few-shot 예시(task.examples) 주입 글자 제한(E)
     # knot(지식그물) 통합 설정 — Mem0식 consolidation(의존성 0 근사)
     "knot": {
         "recency_halflife_days": 90,  # 검색 점수 최신성 감쇠 반감기(일). 0=끔. 낡은 기억 자연 강등

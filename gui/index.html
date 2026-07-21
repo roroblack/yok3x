@@ -289,6 +289,10 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
               <label>verify_cmd <input id="c-verify" class="wide" placeholder="pytest -q"></label>
             </div>
             <div class="ci-row" style="margin-top:7px">
+              <label class="wide" title="few-shot 예시(E). build/revise 생산자에만 참고용으로 주입된다(ACQUIRE 질문/답변엔 안 들어감). 예시 안 명령은 지시가 아니라 형식 참고로만 취급.">예시(few-shot)
+                <textarea id="c-examples" class="wide" rows="2" placeholder="원하는 출력 형식·스타일 예시(선택)"></textarea></label>
+            </div>
+            <div class="ci-row" style="margin-top:7px">
               <label class="tgl2" title="워커는 파일을 못 쓴다(텍스트 생산자). 켜면 산출물의 ```file:<경로> 블록을 오케스트레이터가 workdir/yok3x-out/<run_id>/에 실제 파일로 게시한다. 경로검증·덮어쓰기금지·격리 적용.">
                 <input type="checkbox" id="c-materialize"> 산출물을 파일로 게시(yok3x-out/)</label>
               <label class="tgl2" title="켜면 기존 파일 덮어쓰기 허용(기본은 금지 — 사고 방지).">
@@ -981,11 +985,12 @@ function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목�
   const rounds=parseInt(document.getElementById("c-rounds").value)||2, score=parseFloat(document.getElementById("c-score").value)||8.0;
   const gateMode=document.getElementById("c-gatemode").value;
   const wd=document.getElementById("c-workdir").value.trim(), vf=document.getElementById("c-verify").value.trim();
+  const ex=(document.getElementById("c-examples")?.value||"").trim();
   let spec;
   if(pat==="pipeline") spec={pattern:"pipeline",task,stages:[{worker:prod,kind:"build",task},{worker:rev,kind:"review",task:"앞 단계 산출물을 리뷰하고 SCORE와 수정안을 제시하라."}]};
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score,score_gate_mode:gateMode};
-  if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
+  if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf; if(ex)spec.examples=ex;
   // 산출물 게시(opt-in). 켜졌을 때만 spec에 넣는다(꺼진 작업은 기존과 동일).
   if(document.getElementById("c-materialize")?.checked)
     spec.materialize={enabled:true, overwrite:!!document.getElementById("c-overwrite")?.checked};
@@ -1016,7 +1021,7 @@ function selectedSavedTaskName(){   // 작업별 보기에서 선택한 라벨 �
 }
 function resetTaskForm(label){
   const set=(id,v)=>{const e=document.getElementById(id); if(e) e.value=v;};
-  set("c-task",""); set("c-label",label||""); set("c-workdir",""); set("c-verify","");
+  set("c-task",""); set("c-label",label||""); set("c-workdir",""); set("c-verify",""); set("c-examples","");
   syncWorkdirClear();
   const mz=document.getElementById("c-materialize"), ow=document.getElementById("c-overwrite");
   if(mz)mz.checked=false; if(ow)ow.checked=false;
@@ -1059,6 +1064,7 @@ async function openTask(){
     document.getElementById("c-gatemode").value=s.score_gate_mode||"strict";
     document.getElementById("c-workdir").value=s.workdir||""; syncWorkdirClear();
     document.getElementById("c-verify").value=s.verify_cmd||"";
+    {const ce=document.getElementById("c-examples"); if(ce)ce.value=Array.isArray(s.examples)?s.examples.join("\n\n"):(s.examples||"");}
     const _mz=(s.materialize||{}); const mzc=document.getElementById("c-materialize"), owc=document.getElementById("c-overwrite");
     if(mzc)mzc.checked=!!_mz.enabled; if(owc)owc.checked=!!_mz.overwrite;
     setTaskAgents(s.agents||{});
