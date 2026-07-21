@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from yok3x import __version__, backends, limits, matview, orchestrator, usage
+from yok3x import __version__, backends, calibration, limits, matview, orchestrator, usage
 from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_YOK3X, Config, scaffold
 from yok3x.orchestrator import Orchestrator, run_task_file
@@ -230,6 +230,75 @@ def test_conditional_routing_invalid_target_fails(mock_root):
     o.escalate = {"to_reviewer": "nonexistent-worker"}   # 오타/부재
     with pytest.raises(RunAborted):                       # 조용한 폴백 아니라 명확한 실패(codex 리뷰)
         o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=2)
+
+
+# ----------------------------------------------- 심판 캘리브레이션 원자료
+def test_calibration_make_record_rejects_unknown_and_fills_missing():
+    with pytest.raises(TypeError, match="verify_passed"):
+        calibration.make_record(score=7, verify_passed=True)
+
+    rec = calibration.make_record(score=7, verify_ok=True)
+    assert rec["score"] == 7 and rec["verify_ok"] is True
+    assert rec["reviewer"] is None and rec["round"] is None
+
+
+def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    o.agents_override = {
+        "claude-main": {"backend": "producer-backend", "effort": "high"},
+        "codex-critic": {"backend": "reviewer-backend"},
+    }
+    scores = iter([3.0, 5.0, 9.0])
+    verify_calls = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "critic":
+            score = next(scores)
+            text = f"SCORE: {score}\nround-specific defect {score}"
+        else:
+            score, text = None, "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    def fake_verify():
+        verify_calls.append(True)
+        return True, "ok"
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", fake_verify)
+    o.run_producer_reviewer(
+        "calibrate", "claude-main", "codex-critic", max_rounds=3, pass_score=8.0)
+
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == len(verify_calls) == 3
+    assert {r["run_id"] for r in records} == {o.run_id}
+    assert [r["round"] for r in records] == [1, 2, 3]
+    assert [r["score"] for r in records] == [3.0, 5.0, 9.0]
+    assert all(r["reviewer"] == "reviewer-backend" for r in records)
+    assert all(r["threshold"] == 8.0 for r in records)
+    assert [r["gate_pass"] for r in records] == [False, False, True]
+    assert all(r["verify_ok"] is True for r in records)  # 저점 후보도 검증된 실측값
+    # rounds=총 라운드 수(전 행 동일), round=인덱스 — 둘이 중복이면 안 된다(검토 수정).
+    assert all(r["rounds"] == 3 for r in records)
+    # 런 합계는 마지막 행에만 — 전 행에 반복하면 파일 합산이 과대계상된다(검토 수정).
+    assert [r["issues"] is not None for r in records] == [False, False, True]
+    assert sum(r["tokens"] or 0 for r in records) == (records[-1]["tokens"] or 0)
+
+
+def test_calibration_logging_failure_does_not_break_run(mock_root, monkeypatch):
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o._calib_rounds.append({"score": 1.0, "round": 1})
+    monkeypatch.setattr(
+        calibration, "make_record", lambda **kwargs: (_ for _ in ()).throw(TypeError("boom")))
+
+    o._log_calibration()
+
+    assert "[calib] 기록 실패: TypeError: boom" in (o.run_dir / "run.log").read_text(encoding="utf-8")
 
 
 # ----------------------------------------------- GUI 작업(task) CRUD

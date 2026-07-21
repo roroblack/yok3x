@@ -11,13 +11,18 @@ from __future__ import annotations
 
 import math
 
-# 런당 캘리브레이션 레코드 스키마(고정). label=verify_ok(지상진실)이 있어야 상관에 쓰인다.
+# 라운드별 캘리브레이션 레코드 스키마. label=verify_ok(지상진실)이 있어야 상관에 쓰인다.
 FIELDS = ("run_id", "ts", "pattern", "backend", "effort", "rounds",
-          "score", "verify_ok", "tokens", "cost_usd", "duration_ms", "issues")
+          "score", "verify_ok", "tokens", "cost_usd", "duration_ms", "issues",
+          "reviewer", "threshold", "gate_pass", "round")
 
 
 def make_record(**kw) -> dict:
     """스키마에 맞춘 레코드 생성(누락 필드는 None). 값 타입은 로깅측이 보장."""
+    unknown = set(kw) - set(FIELDS)
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise TypeError(f"unknown calibration field(s): {names}")
     return {f: kw.get(f) for f in FIELDS}
 
 

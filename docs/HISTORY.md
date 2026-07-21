@@ -5,6 +5,23 @@
 ---
 
 
+## 미출시(dev) · 2026-07-20 — [작업B] 심판 캘리브레이션 실데이터 수집 강화 (codex 구현·Claude 검토)
+
+- N0'가 드러낸 "게이트 임계 8.0이 정상 코드 전량 반려(최고 SCORE 7.0)"에 대응. 새 임계를 정하려면
+  **실제 런의 (SCORE, verify_ok) 쌍**이 필요한데 `.yok3x/calibration.jsonl`이 비어 있었다. 수집 결함 3건 수정.
+  **임계값 8.0 자체는 안 바꿈**(합성 데이터 N0'로 정하면 CLIP 교훈 위반 — 실 verify 신호로 정해야, codex 판단).
+- B-1: `make_record(**kw)`가 모르는 키를 조용히 버려 `verify_passed=` 오타가 `verify_ok=None`이 되던 것
+  → 미지 키 `TypeError`. (N0'에서 나를 속인 그 버그)
+- B-2: 매 라운드 `_calib` 덮어써 최종 라운드만 기록하던 것 → `_calib_rounds` 리스트로 **라운드별 전부 기록**.
+  초기=저점·후기=고점이라 임계 보정에 필요한 SCORE 전 구간이 남는다. run_id·round로 상관 클러스터링 대비.
+- B-3: 스키마에 `reviewer`(실제 심판 backend, 폴오버 반영)·`threshold`·`gate_pass`·`round` 추가.
+- 핵심 확인: verify는 이미 게이트 판정보다 **먼저 점수와 무관하게** 실행됨(orchestrator.py) →
+  정답 코드가 8.0에서 반려되는 구간(FN)이 실제로 데이터에 남는다. 테스트로 검증(저점 3.0/5.0도 verify_ok 기록).
+- **Claude 적대적 검토가 잡은 2건**(codex 원안의 데이터 함정): ① `rounds`가 `round`와 동일값이 되어
+  총량 의미 상실 → rounds=총 라운드 수 복원. ② 런합계(tokens·cost·duration·issues)를 전 행에 반복 →
+  파일 합산 시 과대계상 → 마지막 행에만 싣고 나머지 None. 둘 다 회귀 테스트 추가.
+- 219 passed(신규 5). scope guard 준수: 임계 변경·적응형 게이트·재개·사후최적임계 계산 안 함.
+
 ## 미출시(dev) · 2026-07-20 — [N0] 심판 교정 backfill **불가 판정** + 변이 기반 대안(N0') 제안
 
 - 계획서 v5.0.0의 최우선 항목 N0(과거 패치를 baseline/candidate 쌍으로 재생해 SCORE 교정) 실행.

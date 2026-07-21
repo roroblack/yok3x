@@ -207,8 +207,8 @@ class Orchestrator:
         # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
         # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
         self.materialize: dict = {}
-        # 심판 캘리브레이션(F0): 루프가 최종 score·verify_ok·rounds를 여기 남기면 _finish가 기록.
-        self._calib: dict = {}
+        # 심판 캘리브레이션(F0): 루프의 모든 score·verify_ok 관측치를 _finish가 기록.
+        self._calib_rounds: list[dict[str, Any]] = []
         # G-1: 순차 pipeline 재개에서만 채워지는 성공 prefix 캐시.
         self._replay_cache: dict[str, dict[str, Any]] = {}
         self.resume_from: str | None = None
@@ -1056,13 +1056,17 @@ class Orchestrator:
             score = self.steps[-1].score
             issues_sig = self._defect_sig(rev.text)
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
-            # 캘리브레이션 라벨: verify_cmd가 있어야 지상진실. 없으면 label 없음(상관 제외). 최종 라운드 값이 남음.
-            self._calib = {"score": score, "rounds": rnd,
-                           "verify_ok": (bool(verify_ok) if self.verify_cmd else None),
-                           "backend": (self._worker(producer) or {}).get("backend"),
-                           "effort": (self._worker(producer) or {}).get("effort") or None}
-
             passed = (score is not None and score >= pass_score) and verify_ok
+            # 캘리브레이션 라벨: verify_cmd가 있어야 지상진실. 없으면 label 없음(상관 제외).
+            # 라운드별 원자료를 보존해 downstream이 last-only/all/클러스터링을 고를 수 있게 한다.
+            self._calib_rounds.append({
+                "score": score, "round": rnd,     # round=이 관측의 라운드 인덱스. rounds(총량)는 _finish에서
+                "verify_ok": (bool(verify_ok) if self.verify_cmd else None),
+                "backend": (self._worker(producer) or {}).get("backend"),
+                "effort": (self._worker(producer) or {}).get("effort") or None,
+                "reviewer": rev.backend,
+                "threshold": pass_score, "gate_pass": bool(passed),
+            })
             if passed:
                 self._log(f"[review] 통과 기준({pass_score}) + 검증 충족 — 종료")
                 break
@@ -1188,26 +1192,38 @@ class Orchestrator:
         self._log(f"[done] 최종 산출물: {out}")
 
     def _log_calibration(self) -> None:
-        """심판 캘리브레이션 레코드를 .yok3x/calibration.jsonl에 append(F0 데이터 수집).
-        선택 편향 주의(codex): 고른 경로 결과만 관측 — 초기엔 상관 확인용. 실패해도 런 안 깨짐."""
+        """라운드별 심판 캘리브레이션을 .yok3x/calibration.jsonl에 append한다.
+        한 런의 라운드는 상관되므로 run_id·round를 함께 보존한다. 실패해도 런은 깨지지 않는다."""
         try:
-            c = self._calib
-            if not c:
+            if not self._calib_rounds:
                 return                          # producer-reviewer 아닌 패턴은 score/verify 없음 → 스킵
-            rec = calibration.make_record(
-                run_id=self.run_id, ts=datetime.now().isoformat(timespec="seconds"),
-                pattern=self.pattern, backend=c.get("backend"), effort=c.get("effort"),
-                rounds=c.get("rounds"), score=c.get("score"), verify_ok=c.get("verify_ok"),
-                tokens=sum(int(s.tokens or 0) for s in self.steps if not s.replayed) or None,
-                cost_usd=round(sum(float(s.cost_usd or 0) for s in self.steps
-                                   if not s.replayed), 4) or None,
-                duration_ms=sum(int(s.duration_ms or 0) for s in self.steps
-                                if not s.replayed) or None,
-                issues=sum(len(s.checklist or []) for s in self.steps))
+            # tokens·cost·duration·issues는 런 전체 합계(라운드별 아님). 모든 행에 반복하면
+            # 파일 합산 시 라운드 수만큼 과대계상되므로 마지막(종료) 레코드에만 싣고 나머지는 None.
+            totals = {
+                "tokens": sum(int(s.tokens or 0) for s in self.steps if not s.replayed) or None,
+                "cost_usd": round(sum(float(s.cost_usd or 0) for s in self.steps
+                                      if not s.replayed), 4) or None,
+                "duration_ms": sum(int(s.duration_ms or 0) for s in self.steps
+                                   if not s.replayed) or None,
+                "issues": sum(len(s.checklist or []) for s in self.steps),
+            }
+            empty_totals = {k: None for k in totals}
+            total_rounds = len(self._calib_rounds)      # rounds=총 라운드 수(전 행 동일), round=인덱스
+            ts = datetime.now().isoformat(timespec="seconds")
+            last = total_rounds - 1
+            records = [calibration.make_record(
+                run_id=self.run_id, ts=ts, pattern=self.pattern,
+                backend=c.get("backend"), effort=c.get("effort"),
+                rounds=total_rounds, score=c.get("score"), verify_ok=c.get("verify_ok"),
+                reviewer=c.get("reviewer"), threshold=c.get("threshold"),
+                gate_pass=c.get("gate_pass"), round=c.get("round"),
+                **(totals if i == last else empty_totals))
+                for i, c in enumerate(self._calib_rounds)]
             path = self.cfg.paths.runs.parent / "calibration.jsonl"   # .yok3x/calibration.jsonl
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                for rec in records:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception as e:                  # 계측 실패가 런을 깨지 않게
             self._log(f"[calib] 기록 실패: {type(e).__name__}: {e}")
 
