@@ -274,6 +274,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
           <div class="ci-row">
             <label>max_rounds <input id="c-rounds" value="3"></label>
             <label>pass_score <input id="c-score" value="8.0"></label>
+            <label>score_gate_mode <select id="c-gatemode"><option value="strict">strict</option><option value="advisory">advisory</option></select></label>
             <label>반복 <input id="c-iters" value="1"></label>
             <div class="spacer"></div>
             <button class="btn" style="background:var(--red);color:#fff" onclick="sendTask()">전송 ▶</button>
@@ -967,11 +968,12 @@ function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목�
   if(!task){document.getElementById("c-runmsg").textContent="목표를 입력하라";return null;}
   const pat=activePattern(), prod=document.getElementById("c-producer").value, rev=document.getElementById("c-reviewer").value;
   const rounds=parseInt(document.getElementById("c-rounds").value)||2, score=parseFloat(document.getElementById("c-score").value)||8.0;
+  const gateMode=document.getElementById("c-gatemode").value;
   const wd=document.getElementById("c-workdir").value.trim(), vf=document.getElementById("c-verify").value.trim();
   let spec;
   if(pat==="pipeline") spec={pattern:"pipeline",task,stages:[{worker:prod,kind:"build",task},{worker:rev,kind:"review",task:"앞 단계 산출물을 리뷰하고 SCORE와 수정안을 제시하라."}]};
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
-  else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score};
+  else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score,score_gate_mode:gateMode};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf;
   // 산출물 게시(opt-in). 켜졌을 때만 spec에 넣는다(꺼진 작업은 기존과 동일).
   if(document.getElementById("c-materialize")?.checked)
@@ -1007,7 +1009,7 @@ function resetTaskForm(label){
   syncWorkdirClear();
   const mz=document.getElementById("c-materialize"), ow=document.getElementById("c-overwrite");
   if(mz)mz.checked=false; if(ow)ow.checked=false;
-  set("c-rounds",2); set("c-score",8.0);
+  set("c-rounds",2); set("c-score",8.0); set("c-gatemode","strict");
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
   setTaskAgents({});
 }
@@ -1043,6 +1045,7 @@ async function openTask(){
     if(s.reviewer)document.getElementById("c-reviewer").value=s.reviewer;
     if(s.max_rounds)document.getElementById("c-rounds").value=s.max_rounds;
     if(s.pass_score)document.getElementById("c-score").value=s.pass_score;
+    document.getElementById("c-gatemode").value=s.score_gate_mode||"strict";
     document.getElementById("c-workdir").value=s.workdir||""; syncWorkdirClear();
     document.getElementById("c-verify").value=s.verify_cmd||"";
     const _mz=(s.materialize||{}); const mzc=document.getElementById("c-materialize"), owc=document.getElementById("c-overwrite");

@@ -14,7 +14,7 @@ import math
 # 라운드별 캘리브레이션 레코드 스키마. label=verify_ok(지상진실)이 있어야 상관에 쓰인다.
 FIELDS = ("run_id", "ts", "pattern", "backend", "effort", "rounds",
           "score", "verify_ok", "tokens", "cost_usd", "duration_ms", "issues",
-          "reviewer", "threshold", "gate_pass", "round")
+          "reviewer", "threshold", "gate_pass", "gate_mode", "round")
 
 
 def make_record(**kw) -> dict:

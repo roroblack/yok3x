@@ -239,7 +239,132 @@ def test_calibration_make_record_rejects_unknown_and_fills_missing():
 
     rec = calibration.make_record(score=7, verify_ok=True)
     assert rec["score"] == 7 and rec["verify_ok"] is True
-    assert rec["reviewer"] is None and rec["round"] is None
+    assert rec["reviewer"] is None and rec["round"] is None and rec["gate_mode"] is None
+
+
+@pytest.mark.parametrize(("mode", "has_verify", "verify_ok", "score", "passed"), [
+    ("strict", True, True, 9.0, True),
+    ("strict", True, True, 7.9, False),
+    ("strict", True, False, 9.0, False),
+    ("strict", False, None, 9.0, True),
+    ("strict", False, None, 7.9, False),
+    ("advisory", True, True, 7.9, True),
+    ("advisory", True, False, 9.0, False),
+])
+def test_evaluate_score_gate_matrix(mode, has_verify, verify_ok, score, passed):
+    gate = orchestrator.evaluate_score_gate(
+        mode, has_verify_cmd=has_verify, verify_ok=verify_ok,
+        score=score, threshold=8.0)
+
+    assert gate["passed"] is passed
+    assert gate["mode"] == mode and gate["threshold"] == 8.0
+    assert gate["verify_ok"] is (bool(verify_ok) if has_verify else None)
+
+
+def test_evaluate_score_gate_advisory_low_score_requires_review():
+    gate = orchestrator.evaluate_score_gate(
+        "advisory", has_verify_cmd=True, verify_ok=True,
+        score=7.9, threshold=8.0)
+
+    assert gate["passed"] is True
+    assert gate["review_required"] is True
+    assert gate["reason"] == "score_below_threshold_review_required"
+
+
+@pytest.mark.parametrize(("mode", "has_verify"), [
+    ("advisory", False),
+    ("auto", True),
+])
+def test_evaluate_score_gate_rejects_bad_config(mode, has_verify):
+    with pytest.raises(orchestrator.RunAborted) as caught:
+        orchestrator.evaluate_score_gate(
+            mode, has_verify_cmd=has_verify, verify_ok=True,
+            score=9.0, threshold=8.0)
+
+    assert caught.value.cause == "config_error"
+
+
+@pytest.mark.parametrize("mode,verify_cmd", [("advisory", ""), ("auto", "verify")])
+def test_producer_reviewer_rejects_gate_config_before_worker(
+        mock_root, monkeypatch, mode, verify_cmd):
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.score_gate_mode = mode
+    o.verify_cmd = verify_cmd
+    monkeypatch.setattr(
+        o, "call_worker",
+        lambda *a, **k: pytest.fail("설정 오류에서 워커를 호출하면 안 됨"))
+
+    with pytest.raises(orchestrator.RunAborted) as caught:
+        o.run_producer_reviewer("t", "claude-main", "codex-critic")
+
+    assert caught.value.cause == "config_error"
+
+
+def _run_gate_case(mock_root, monkeypatch, mode, score):
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.score_gate_mode = mode
+    o.verify_cmd = "verify sentinel"
+    calls = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        calls.append(task_kind)
+        o._step_i += 1
+        value = score if task_kind == "critic" else None
+        text = f"SCORE: {score}\nreview" if task_kind == "critic" else "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=value))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer(
+        "gate status", "claude-main", "codex-critic",
+        max_rounds=2, pass_score=8.0)
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    records = [json.loads(line) for line in
+               (o.cfg.paths.runs.parent / "calibration.jsonl").read_text(
+                   encoding="utf-8").splitlines()]
+    return calls, status, records
+
+
+def test_advisory_low_score_passes_once_and_persists_gate(mock_root, monkeypatch):
+    calls, status, records = _run_gate_case(mock_root, monkeypatch, "advisory", 5.0)
+
+    assert calls == ["build", "critic"]              # verify 첫 통과에서 조기 종료
+    assert status["state"] == "done"                  # done 의미는 실행 완료로 유지
+    assert status["gate"] == {
+        "mode": "advisory", "passed": True, "verify_ok": True,
+        "score": 5.0, "threshold": 8.0, "review_required": True,
+        "reason": "score_below_threshold_review_required",
+    }
+    assert len(records) == 1 and records[0]["gate_mode"] == "advisory"
+
+
+def test_strict_low_score_stays_rejected_and_persists_gate(mock_root, monkeypatch):
+    calls, status, records = _run_gate_case(mock_root, monkeypatch, "strict", 5.0)
+
+    assert calls == ["build", "critic", "revise", "critic"]
+    assert status["state"] == "done"
+    assert status["gate"]["mode"] == "strict"
+    assert status["gate"]["passed"] is False
+    assert status["gate"]["review_required"] is False
+    assert all(record["gate_mode"] == "strict" for record in records)
+
+
+def test_producer_failure_still_persists_unevaluated_gate(mock_root, monkeypatch):
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    monkeypatch.setattr(
+        o, "call_worker",
+        lambda *a, **k: BackendResult(backend="mock", ok=False, text="producer failed"))
+
+    o.run_producer_reviewer(
+        "failed producer", "claude-main", "codex-critic", max_rounds=1)
+
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "done"
+    assert status["gate"]["mode"] == "strict"
+    assert status["gate"]["passed"] is False
+    assert status["gate"]["reason"] == "not_evaluated"
 
 
 def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
@@ -281,6 +406,7 @@ def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
     assert [r["score"] for r in records] == [3.0, 5.0, 9.0]
     assert all(r["reviewer"] == "reviewer-backend" for r in records)
     assert all(r["threshold"] == 8.0 for r in records)
+    assert all(r["gate_mode"] == "strict" for r in records)
     assert [r["gate_pass"] for r in records] == [False, False, True]
     assert all(r["verify_ok"] is True for r in records)  # 저점 후보도 검증된 실측값
     # rounds=총 라운드 수(전 행 동일), round=인덱스 — 둘이 중복이면 안 된다(검토 수정).
@@ -396,6 +522,68 @@ def test_validate_task_spec_allows_empty_goal_only_for_draft(mock_root):
 
     assert gs._validate_task_spec(spec, cfg, allow_draft=True) == ""
     assert "목표" in gs._validate_task_spec(spec, cfg)              # 실행 검증은 계속 엄격함
+
+
+def test_validate_task_spec_rejects_gate_mode_errors_early(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    base = {"pattern": "producer-reviewer", "task": "t"}
+
+    assert "score_gate_mode" in gs._validate_task_spec(
+        {**base, "score_gate_mode": "auto", "verify_cmd": "pytest -q"}, cfg)
+    assert "verify_cmd" in gs._validate_task_spec(
+        {**base, "score_gate_mode": "advisory"}, cfg)
+    assert "verify_cmd" in gs._validate_task_spec(
+        {**base, "score_gate_mode": "advisory", "verify_cmd": "   "}, cfg)
+    assert gs._validate_task_spec(
+        {**base, "score_gate_mode": "advisory", "verify_cmd": "pytest -q"}, cfg) == ""
+
+
+@pytest.mark.parametrize("mode,verify_cmd", [("advisory", None), ("auto", "verify")])
+def test_task_gate_config_error_aborts_before_worker(
+        mock_root, monkeypatch, mode, verify_cmd):
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "t",
+            "producer": "claude-main", "reviewer": "codex-critic",
+            "score_gate_mode": mode}
+    if verify_cmd is not None:
+        spec["verify_cmd"] = verify_cmd
+    tf = mock_root / "task-gate-error.json"
+    tf.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(
+        Orchestrator, "call_worker",
+        lambda *a, **k: pytest.fail("설정 오류에서 워커를 호출하면 안 됨"))
+
+    result = run_task_file(cfg, tf, auto=True)
+
+    assert result.startswith("aborted:")
+    run_dir = max(cfg.paths.runs.iterdir(), key=lambda p: p.name)
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "aborted" and status["cause"] == "config_error"
+
+
+def test_gui_score_gate_mode_is_wired_for_build_open_and_reset():
+    html = (Path(__file__).parents[1] / "gui" / "index.html").read_text(encoding="utf-8")
+
+    assert '<select id="c-gatemode">' in html
+    assert 'score_gate_mode:gateMode' in html
+    assert 'set("c-gatemode","strict")' in html
+    assert 's.score_gate_mode||"strict"' in html
+    assert '<option value="auto">' not in html
+
+
+def test_saved_task_with_invalid_gate_mode_is_rejected_before_enqueue(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    name = "task-invalid-gate.json"
+    (mock_root / name).write_text(json.dumps({
+        "pattern": "producer-reviewer", "task": "t",
+        "score_gate_mode": "auto", "verify_cmd": "pytest -q",
+    }), encoding="utf-8")
+
+    result = gs._enqueue_saved_task(cfg, name, 1)
+
+    assert "score_gate_mode" in result["error"]
 
 
 def test_draft_task_save_list_and_load_roundtrip(mock_root):

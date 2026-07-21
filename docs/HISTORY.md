@@ -5,6 +5,23 @@
 ---
 
 
+## 미출시(dev) · 2026-07-21 — [F1-a/c] advisory 게이트: SCORE 권한 분리 (codex 구현·Claude 검토)
+
+- 배경: PDF 교육자료 원칙("실제 테스트 합격 코드를 AI 주관 점수만으로 떨어뜨리지 말자") + 웹리서치
+  5단계 검증 사다리(객관 verify=L3 vs LLM SCORE=L4는 다른 층) + N0' 실측(정상코드 전량반려).
+- `score_gate_mode`(task 전용, 기본 strict): strict=현행 `SCORE≥th AND verify`,
+  advisory=`verify가 통과 결정`·낮은 SCORE는 반려 대신 `review_required` 플래그. **임계 8.0 불변**.
+- 순수 판정 함수 `evaluate_score_gate`(외부상태 미접근)로 분리 → 진리표 테스트 용이.
+  advisory+verify_cmd 없음 = **워커 호출 전 RunAborted(config_error)**, 조용한 strict 폴백 금지.
+  런 디스패치·run_producer_reviewer 양쪽서 사전검증(저장된 task의 잘못된 mode도 enqueue 전 거부).
+- **F1-c**: 최종 status에 `gate`{mode·passed·verify_ok·score·threshold·review_required·reason} 보존.
+  `done`(실행완료) 의미는 유지하되 게이트 결과는 별도 필드로 → done=합격 오해 해소. prod 실패 시
+  기본 gate(`not_evaluated`, passed=False) 보존. calibration에 `gate_mode` 필드 추가(advisory는 조기종료라 분포 상이).
+- GUI: pass_score 옆 select(strict/advisory, **auto 없음**·보류). buildSpec/openTask/resetTaskForm 배선.
+- 검토(Claude): 진리표 정확(strict 저점→반려 유지, advisory verify통과+저점→통과+플래그), advisory 통과 시
+  루프 즉시 종료(라운드 낭비 없음), self.gate 초기화·엣지케이스 안전. 실브라우저 select 렌더 확인.
+  **242 passed**(신규 20). scope guard 준수: 임계 불변·auto 보류·state failed 미변경·리뷰어 blind 유지.
+
 ## 미출시(dev) · 2026-07-20 — [작업E] 심판 캘리브레이션 **라벨 누출 제거** (codex 발견·구현·Claude 검토)
 
 - **핵심 발견(codex)**: producer-reviewer 루프가 verify를 먼저 실행하고 그 통과/실패 결과를

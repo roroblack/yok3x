@@ -248,6 +248,7 @@ import re as _re
 # 경로순회(../, 슬래시)가 원천 차단된다(+_task_path에서 parent==root 재확인).
 _TASK_NAME_RE = _re.compile(r"^task-[\w-]+\.json$", _re.UNICODE)
 _VALID_PATTERNS = ("producer-reviewer", "pipeline", "fanout", "fanout-fanin")
+_VALID_SCORE_GATE_MODES = ("strict", "advisory")
 
 
 def _slug_task_name(raw: str) -> str:
@@ -275,6 +276,14 @@ def _validate_task_spec(spec: dict, cfg: Config | None = None,
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
+    gate_mode = spec.get("score_gate_mode", "strict")
+    if gate_mode not in _VALID_SCORE_GATE_MODES:
+        return "score_gate_mode가 잘못됨(strict/advisory)"
+    effective_verify_cmd = (spec.get("verify_cmd")
+                            or ((cfg.yok3x.get("verify_cmd", "") or "") if cfg else ""))
+    if (spec.get("pattern") == "producer-reviewer"
+            and gate_mode == "advisory" and not str(effective_verify_cmd).strip()):
+        return "score_gate_mode=advisory에는 verify_cmd가 필요함"
     mat = spec.get("materialize")
     if mat is not None:
         if not isinstance(mat, dict):
@@ -405,8 +414,12 @@ def _saved_task_for_run(cfg: Config, name: str) -> tuple[Path | None, str]:
         spec = json.loads(p.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return p, ""                         # 기존처럼 실행부가 원래 오류를 보고하게 둔다
-    if isinstance(spec, dict) and not str(spec.get("task", "")).strip():
-        return None, _DRAFT_RUN_ERROR
+    if isinstance(spec, dict):
+        if not str(spec.get("task", "")).strip():
+            return None, _DRAFT_RUN_ERROR
+        err = _validate_task_spec(spec, cfg)
+        if err:
+            return None, err
     return p, ""
 
 

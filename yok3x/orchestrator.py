@@ -32,6 +32,7 @@ from .config import Config
 from ._version import __version__
 
 SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
+SCORE_GATE_MODES = ("strict", "advisory")
 
 # 할루시네이션 방지 지침 — 모든 워커 프롬프트에 주입.
 ANTI_HALLUCINATION = (
@@ -171,6 +172,48 @@ class RunAborted(Exception):
         self.cause = cause
 
 
+def evaluate_score_gate(mode: str, *, has_verify_cmd: bool,
+                        verify_ok: bool | None, score: float | None,
+                        threshold: float) -> dict[str, Any]:
+    """SCORE와 객관 검증을 모드에 따라 판정한다. 외부 상태를 읽거나 쓰지 않는다."""
+    if mode not in SCORE_GATE_MODES:
+        raise RunAborted(
+            f"score_gate_mode 값 오류: {mode!r} (strict/advisory)",
+            cause="config_error")
+    if mode == "advisory" and not has_verify_cmd:
+        raise RunAborted(
+            "score_gate_mode=advisory에는 verify_cmd가 필요함",
+            cause="config_error")
+
+    observed_verify = bool(verify_ok) if has_verify_cmd else None
+    score_ok = score is not None and score >= threshold
+    if mode == "advisory":
+        passed = bool(observed_verify)
+        review_required = bool(passed and score is not None and score < threshold)
+    else:
+        passed = score_ok and (bool(observed_verify) if has_verify_cmd else True)
+        review_required = False
+
+    if has_verify_cmd and not observed_verify:
+        reason = "verify_failed"
+    elif score is None:
+        reason = "score_missing" if mode == "strict" else "score_unavailable"
+    elif score < threshold:
+        reason = ("score_below_threshold_review_required"
+                  if review_required else "score_below_threshold")
+    else:
+        reason = "passed"
+    return {
+        "mode": mode,
+        "passed": bool(passed),
+        "verify_ok": observed_verify,
+        "score": score,
+        "threshold": threshold,
+        "review_required": review_required,
+        "reason": reason,
+    }
+
+
 class Orchestrator:
     def __init__(self, cfg: Config, auto: bool | None = None,
                  ask: Callable[[str], str] | None = None):
@@ -199,6 +242,8 @@ class Orchestrator:
         # 태스크 옵션(코딩 기능): run_task_file이 세팅
         self.workdir: str | None = None      # 워커/검증 실행 디렉터리
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
+        self.score_gate_mode: str = "strict" # task 전용 SCORE 권한(strict/advisory)
+        self.gate: dict[str, Any] | None = None
         self.verify_timeout: int = 300       # verify_cmd 제한시간(초) — task로 재정의 가능
         self.context_globs: list[str] = []   # 레포 컨텍스트 주입 glob
         self.rubric: str = ""                # 채점표 파일 경로
@@ -1006,10 +1051,25 @@ class Orchestrator:
         """Producer-Reviewer: 한 모델이 만들고 다른 모델이 채점(멀티 에이전트 검수).
 
         코딩 강화: 레포 컨텍스트 주입 · 테스트/검증 게이트(객관) · rubric · 스톨 감지.
-        통과 조건 = SCORE >= pass_score **그리고** (verify_cmd 있으면) 검증 통과.
+        통과 조건은 score_gate_mode에 따른다. strict는 기존 SCORE 게이트를 유지하고,
+        advisory는 verify_cmd 통과만으로 종료하되 낮은 SCORE를 review_required로 남긴다.
         adversarial=True면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제(ARIS AD1).
         """
         self.pattern = "producer-reviewer"
+        # 워커 호출 전에 설정 오류를 확정한다. advisory를 strict로 조용히 폴백하지 않는다.
+        has_verify_cmd = bool(str(self.verify_cmd).strip())
+        evaluate_score_gate(
+            self.score_gate_mode, has_verify_cmd=has_verify_cmd,
+            verify_ok=None, score=None, threshold=pass_score)
+        self.gate = {
+            "mode": self.score_gate_mode,
+            "passed": False,
+            "verify_ok": None,
+            "score": None,
+            "threshold": pass_score,
+            "review_required": False,
+            "reason": "not_evaluated",
+        }
         if self.adversarial:
             reviewer = self._ensure_cross_family(producer, reviewer)
             self._log("[adversarial] 적대적 검수 모드 — 리뷰어가 반증 우선")
@@ -1040,7 +1100,7 @@ class Orchestrator:
 
             # 테스트/검증 게이트(객관): 통과 실패는 하드 신호
             verify_ok, verify_out = (True, "")
-            if self.verify_cmd:
+            if has_verify_cmd:
                 verify_ok, verify_out = self._run_verify()
 
             # Reviewer scoring is deliberately blind to the objective verify gate.  The
@@ -1056,25 +1116,30 @@ class Orchestrator:
             score = self.steps[-1].score
             issues_sig = self._defect_sig(rev.text)
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
-            passed = (score is not None and score >= pass_score) and verify_ok
+            self.gate = evaluate_score_gate(
+                self.score_gate_mode, has_verify_cmd=has_verify_cmd,
+                verify_ok=verify_ok, score=score, threshold=pass_score)
+            passed = self.gate["passed"]
             # 캘리브레이션 라벨: verify_cmd가 있어야 지상진실. 없으면 label 없음(상관 제외).
             # 라운드별 원자료를 보존해 downstream이 last-only/all/클러스터링을 고를 수 있게 한다.
             self._calib_rounds.append({
                 "score": score, "round": rnd,     # round=이 관측의 라운드 인덱스. rounds(총량)는 _finish에서
-                "verify_ok": (bool(verify_ok) if self.verify_cmd else None),
+                "verify_ok": (bool(verify_ok) if has_verify_cmd else None),
                 "backend": (self._worker(producer) or {}).get("backend"),
                 "effort": (self._worker(producer) or {}).get("effort") or None,
                 "reviewer": rev.backend,
                 "threshold": pass_score, "gate_pass": bool(passed),
+                "gate_mode": self.score_gate_mode,
             })
             if passed:
-                self._log(f"[review] 통과 기준({pass_score}) + 검증 충족 — 종료")
+                suffix = " · 검토 필요" if self.gate["review_required"] else ""
+                self._log(f"[review] 게이트 통과({self.score_gate_mode}){suffix} — 종료")
                 break
 
             feedback_parts = []
             if rev.ok:
                 feedback_parts.append(f"<!-- 검수 r{rnd} -->\n{rev.text}")
-            if self.verify_cmd and not verify_ok:
+            if has_verify_cmd and not verify_ok:
                 feedback_parts.append(
                     f"<!-- 검증 r{rnd} -->\n[직전 검증 실패]\n{knot.clip(verify_out, 2000)}")
             round_feedback = "\n\n".join(feedback_parts)
@@ -1195,7 +1260,12 @@ class Orchestrator:
         knot.save(self.cfg, f"run-{self.run_id}",
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",
                   tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
-        self._save_status("done", {"materialized": mat} if mat.get("enabled") else None)
+        status_extra = {}
+        if mat.get("enabled"):
+            status_extra["materialized"] = mat
+        if self.gate is not None:
+            status_extra["gate"] = self.gate
+        self._save_status("done", status_extra or None)
         self._log_calibration()
         self._log(f"[done] 최종 산출물: {out}")
 
@@ -1224,7 +1294,8 @@ class Orchestrator:
                 backend=c.get("backend"), effort=c.get("effort"),
                 rounds=total_rounds, score=c.get("score"), verify_ok=c.get("verify_ok"),
                 reviewer=c.get("reviewer"), threshold=c.get("threshold"),
-                gate_pass=c.get("gate_pass"), round=c.get("round"),
+                gate_pass=c.get("gate_pass"), gate_mode=c.get("gate_mode"),
+                round=c.get("round"),
                 **(totals if i == last else empty_totals))
                 for i, c in enumerate(self._calib_rounds)]
             path = self.cfg.paths.runs.parent / "calibration.jsonl"   # .yok3x/calibration.jsonl
@@ -1434,6 +1505,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         return f"aborted: {msg}"
     # task가 지정하면 우선, 없으면 yok3x.json 전역 기본값을 상속(프로젝트 전체 게이트).
     orch.verify_cmd = spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
+    orch.score_gate_mode = spec.get("score_gate_mode", "strict")
     orch.verify_timeout = int(spec.get("verify_timeout_sec")
                               or cfg.yok3x.get("verify_timeout_sec", 300))
     orch.context_globs = spec.get("context_globs", []) or []
@@ -1468,6 +1540,16 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     orch.run_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(orch.run_dir / "manifest.json", manifest)
     try:
+        if orch.score_gate_mode not in SCORE_GATE_MODES:
+            raise RunAborted(
+                f"score_gate_mode 값 오류: {orch.score_gate_mode!r} (strict/advisory)",
+                cause="config_error")
+        if pattern == "producer-reviewer":
+            evaluate_score_gate(
+                orch.score_gate_mode,
+                has_verify_cmd=bool(str(orch.verify_cmd).strip()),
+                verify_ok=None, score=None,
+                threshold=float(spec.get("pass_score", 8.0)))
         acquire_context = ""
         acquire_spec = spec.get("acquire")
         if "acquire" in spec:
