@@ -86,7 +86,11 @@ def build_state(cfg: Config) -> dict:
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
             _ra = usage._weekly_reset_at(v.reading)
-            ps = usage.daily_pace_status(cfg, b, usage.precise_weekly_pct(cfg, b, v.reading),
+            # 이번 주(리셋 이후) 실제 사용을 우선(7d 롤링은 리셋 전 사용까지 포함해 상한 과다차감).
+            _cur = usage.weekly_used_since_reset(cfg, b, _ra)
+            if _cur is None:
+                _cur = usage.precise_weekly_pct(cfg, b, v.reading)
+            ps = usage.daily_pace_status(cfg, b, _cur,
                                          today=usage._pacing_day_key(_ra), reset_at=_ra,
                                          today_used=usage.today_used_pct(cfg, b, _ra))
             if ps:

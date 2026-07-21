@@ -1109,6 +1109,23 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_weekly_used_since_reset_not_rolling(tmp_path, monkeypatch):
+    """상한 누적은 7d 롤링(리셋 전 포함)이 아니라 이번 주(리셋 이후) 실제 사용이어야 한다(사용자 지적)."""
+    import time as _t
+    from yok3x import limits
+    cfg = Config.load(tmp_path)
+    now = _t.time()
+    reset = now + 5 * 24 * 3600                    # 지난 리셋 = 2일 전
+    # since-reset(2일)=136토큰 / 롤링(7일)=272토큰, cap=1000 → 13.6% vs 27.2%
+    monkeypatch.setattr(limits, "_claude_root", lambda conf: tmp_path)
+    monkeypatch.setattr(limits, "_resolve_claude_caps", lambda conf: (0.0, 1000.0))
+    monkeypatch.setattr(limits, "_rolling_claude_tokens",
+                        lambda root, n, secs: 136 if secs < 3 * 24 * 3600 else 272)
+    assert usage.weekly_used_since_reset(cfg, "claude", reset) == 13.6   # 이번 주(롤링 27.2 아님)
+    assert usage.weekly_used_since_reset(cfg, "claude", None) is None     # reset_at 없으면 None
+    assert usage.weekly_used_since_reset(cfg, "codex", reset) is None     # 타 백엔드 None
+
+
 def test_pacing_day_aligns_to_reset_not_midnight():
     """하루 경계는 자정이 아니라 리셋 시각(예: 오후 6시)에 정렬된다(사용자 지적)."""
     from datetime import datetime

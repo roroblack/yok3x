@@ -307,8 +307,8 @@ def main(argv: list[str] | None = None) -> int:
               f"캡={float(dp.get('pct_of_weekly', 0.2)) * 100:.0f}%p  mode={dp.get('mode', 'warn')}")
         for b in usage.BACKEND_KEYS:
             r = limits.probe(cfg, b)
-            wk = usage.precise_weekly_pct(cfg, b, r)
             _ra = usage._weekly_reset_at(r)
+            wk = usage.weekly_used_since_reset(cfg, b, _ra) or usage.precise_weekly_pct(cfg, b, r)
             st = usage.daily_pace_status(cfg, b, wk, today=usage._pacing_day_key(_ra),
                                          reset_at=_ra, today_used=usage.today_used_pct(cfg, b, _ra))
             if st:

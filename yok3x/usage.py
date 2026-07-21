@@ -210,6 +210,26 @@ def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> 
     return None
 
 
+def weekly_used_since_reset(cfg: Config, backend: str, reset_at: float | None) -> float | None:
+    """**이번 주(마지막 리셋 이후) 실제 사용률**. 7d 롤링%는 리셋 전 사용까지 포함해(예: 롤링 27%인데
+    리셋 이후는 13.6%) 상한을 과다 차감한다(사용자 지적: 상한 0.9% 버그). claude는 마지막 리셋
+    (reset_at − 7일) 이후 실제 토큰으로 이번 주 사용을 정확히 낸다. reset_at 없음/타 백엔드는 None."""
+    if backend != "claude" or not reset_at or not math.isfinite(reset_at):
+        return None
+    try:
+        conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+        now = time.time()
+        last_reset = reset_at - 7 * 86400.0
+        secs = max(0.0, now - last_reset)
+        tok = limits._rolling_claude_tokens(limits._claude_root(conf), now, secs)
+        _, cap7 = limits._resolve_claude_caps(conf)
+        if cap7 and cap7 > 0 and tok >= 0:
+            return round(100.0 * tok / cap7, 1)
+    except Exception:
+        pass
+    return None
+
+
 def precise_weekly_pct(cfg: Config, backend: str,
                        reading: "limits.LimitReading | None") -> float | None:
     """페이싱용 7d%. 소스 used_percent는 **정수로 양자화**돼(예: 17.28%가 17%로) 하루치가 1% 미만이면
@@ -441,7 +461,8 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
                 _ra = _weekly_reset_at(reading)
-                pace = daily_pace_status(cfg, backend, precise_weekly_pct(cfg, backend, reading),
+                _cur = weekly_used_since_reset(cfg, backend, _ra) or precise_weekly_pct(cfg, backend, reading)
+                pace = daily_pace_status(cfg, backend, _cur,
                                          today=_pacing_day_key(_ra), reset_at=_ra,
                                          today_used=today_used_pct(cfg, backend, _ra))
                 if pace and pace["level"] != "ok":

@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — 페이싱 상한 누적을 '이번 주(리셋 이후)'로 (사용자 지적 버그, Claude 구현)
+
+- 상한이 0.9%로 나오던 버그. 상한 계산의 누적이 **7d 롤링%**(리셋 전 사용까지 포함)라 과다 차감됐다.
+  실측: 롤링 27.2%인데 **리셋 이후 실제는 13.6%**. 리셋 이후로 계산하면 상한 14.8~28%(>14%, 사용자 예상 일치).
+- `weekly_used_since_reset(cfg, backend, reset_at)`: claude는 마지막 리셋(reset_at−7일) 이후 실제 토큰으로
+  이번 주 사용률 계산. daily_pace_status의 current_pct(상한 누적 기준)로 이 값을 우선 사용, 없으면 7d 롤링 폴백.
+  guiserver·cli·usage 콜러 배선. 테스트 1(mock 토큰: since-reset 13.6 vs 롤링 27.2).
+- 한계: reset_at 필요(GUI oauth 경로엔 있음, transcript 폴백엔 없어 롤링 폴백). codex는 transcript 없어 롤링 유지. 282 passed.
+
 ## 미출시(dev) · 2026-07-21 — 페이싱 하루 경계를 리셋 시각에 정렬 (사용자 지적, Claude 구현)
 
 - 앞선 today_used가 하루 경계를 **자정**으로 잡았는데, 실제 주간 리셋은 자정이 아니다(사용자: 한국 오후 6시).
