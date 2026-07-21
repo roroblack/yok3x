@@ -1109,18 +1109,18 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
-def test_daily_pace_forward_sustainable_rate(tmp_path):
-    """이후 지속가능 일일률 = 남은 예산(100-현재) ÷ 남은 일수. 과사용하면 줄어든 값이 나온다."""
+def test_daily_pace_forward_only_when_over_daily_cap(tmp_path):
+    """이후 지속가능 일일률은 **일간 상한을 초과했을 때만** 표시. under면 이월이라 None."""
     import time as _t
     cfg = Config.load(tmp_path)
-    cfg.yok3x["guard"]["daily_pace"].update(enabled=True)
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, strategy="catch_up")
     now = _t.time()
-    # 76% 사용 · 리셋 3d23h 후 → D=4 → (100-76)/4 = 6.0
+    # codex 76%·리셋 3d23h → catch_up 상한=0(과사용) · used=0 → 0>=0 초과 → (100-76)/4=6.0 표시
     over = usage.daily_pace_status(cfg, "codex", 76.0, reset_at=now + (3 * 24 + 23) * 3600)
-    assert over["forward_daily"] == 6.0
-    # 24% 사용 · 리셋 5d1h 후 → D=6 → (100-24)/6 ≈ 12.7
+    assert round(over["cap"], 1) == 0.0 and over["forward_daily"] == 6.0
+    # claude 24%·리셋 5d1h → 상한=4%p, used=0 → 0<4 under(이월) → forward_daily None(나눗셈 안 보임)
     under = usage.daily_pace_status(cfg, "claude", 24.0, reset_at=now + (5 * 24 + 1) * 3600)
-    assert under["forward_daily"] == 12.7
+    assert round(under["cap"], 1) == 4.0 and under["forward_daily"] is None
     # 리셋 정보 없으면 표시 생략(None)
     assert usage.daily_pace_status(cfg, "codex", 50.0, reset_at=None)["forward_daily"] is None
 

@@ -297,11 +297,11 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         level = "warn"
     else:
         level = "ok"
-    # 이후 지속가능 일일률: 남은 주간예산(100-현재)을 남은 일수로 나눈 값. 과사용해서 오늘 상한이
-    # 줄면(또는 0이면) '그럼 다음날부터 하루 몇 %씩 쓰면 리셋까지 균등하게 쓰나'를 보여준다.
-    # 리셋 정보 없으면 None(표시 생략). current는 라이브 7d%라 정수 단위(소수 없음)일 수 있다.
+    # 이후 지속가능 일일률: **일간 사용량을 초과했을 때만**(used>=cap) 의미가 있다(사용자). 오늘 상한
+    # 안에서 쓰고 있으면(under) 남은 분은 다음날로 이월되므로(catch_up이 내일 상한을 올림) 나눗셈을
+    # 보이지 않는다. 초과 시엔 '리셋까지 남은 예산(100-현재)을 남은 일수로 나눠 하루 몇 %씩'을 안내.
     forward_daily = None
-    if reset_at and math.isfinite(reset_at):
+    if reset_at and math.isfinite(reset_at) and used >= cap:
         remaining_days = max(1, min(7, math.ceil((reset_at - time.time()) / 86400.0)))
         forward_daily = round(max(0.0, 100.0 - current) / remaining_days, 1)
     return {"used": used, "cap": cap, "soft": soft, "blocked": blocked,
