@@ -1109,6 +1109,22 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_daily_pace_forward_sustainable_rate(tmp_path):
+    """이후 지속가능 일일률 = 남은 예산(100-현재) ÷ 남은 일수. 과사용하면 줄어든 값이 나온다."""
+    import time as _t
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True)
+    now = _t.time()
+    # 76% 사용 · 리셋 3d23h 후 → D=4 → (100-76)/4 = 6.0
+    over = usage.daily_pace_status(cfg, "codex", 76.0, reset_at=now + (3 * 24 + 23) * 3600)
+    assert over["forward_daily"] == 6.0
+    # 24% 사용 · 리셋 5d1h 후 → D=6 → (100-24)/6 ≈ 12.7
+    under = usage.daily_pace_status(cfg, "claude", 24.0, reset_at=now + (5 * 24 + 1) * 3600)
+    assert under["forward_daily"] == 12.7
+    # 리셋 정보 없으면 표시 생략(None)
+    assert usage.daily_pace_status(cfg, "codex", 50.0, reset_at=None)["forward_daily"] is None
+
+
 def test_daily_pace_sticky_block_survives_rolloff_and_probe_fail(tmp_path, monkeypatch):
     # codex 리뷰 반영: pause는 cap 도달 후 값이 낮아져도(롤오프) 자동 재개 안 함(sticky). 승인/자정만 해제.
     import datetime as _dt

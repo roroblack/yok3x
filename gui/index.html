@@ -624,8 +624,11 @@ function render(s){
       const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
       const capTxt=(t.pace&&t.pace.strategy==="catch_up"&&base!=null&&Math.round(cap)!==Math.round(base))
         ?`상한 ${cap}%p(균등 ${base}%p)` : `상한 ${cap}%p`;
+      // 이후 지속가능 일일률: 남은 예산÷남은일수. 과사용해 오늘 상한이 줄었을 때 '다음날부터 하루 몇%'를 보여준다.
+      const fd=t.pace?t.pace.forward_daily:null;
+      const fdTxt=(fd!=null)?` · 이후 하루 ~${fd}%`:"";
       const pl=(isWk&&t.pace)
-        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도 표기) · 창 리셋까지">오늘 ${t.pace.used}%p / ${capTxt}${rstTxt?` · ${rstTxt}`:""}${tok?` · ${tok}`:""}</span>`
+        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도) · 리셋까지 · 이후 하루=남은예산÷남은일수(지속가능률)">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}${tok?` · ${tok}`:""}</span>`
         :`<span class="rst">${rstTxt}${tok?` · ${tok}`:""}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>

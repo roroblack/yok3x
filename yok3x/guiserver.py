@@ -92,6 +92,7 @@ def build_state(cfg: Config) -> dict:
                         "soft": round(ps["soft"], 1), "base_cap": round(ps["base_cap"], 1),
                         "strategy": ps["strategy"],
                         "start": round(ps["current"] - ps["used"], 1),  # 오늘 아침 7d 기준선
+                        "forward_daily": ps.get("forward_daily"),       # 이후 지속가능 일일률
                         "level": ps["level"], "blocked": ps["blocked"], "approved": ps["approved"]}
         tools.append({
             "backend": b, "level": v.level, "ratio": round(v.ratio, 3),

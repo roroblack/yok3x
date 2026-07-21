@@ -297,10 +297,18 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         level = "warn"
     else:
         level = "ok"
+    # 이후 지속가능 일일률: 남은 주간예산(100-현재)을 남은 일수로 나눈 값. 과사용해서 오늘 상한이
+    # 줄면(또는 0이면) '그럼 다음날부터 하루 몇 %씩 쓰면 리셋까지 균등하게 쓰나'를 보여준다.
+    # 리셋 정보 없으면 None(표시 생략). current는 라이브 7d%라 정수 단위(소수 없음)일 수 있다.
+    forward_daily = None
+    if reset_at and math.isfinite(reset_at):
+        remaining_days = max(1, min(7, math.ceil((reset_at - time.time()) / 86400.0)))
+        forward_daily = round(max(0.0, 100.0 - current) / remaining_days, 1)
     return {"used": used, "cap": cap, "soft": soft, "blocked": blocked,
             "current": current, "level": level, "mode": mode, "approved": approved,
             # 균등 기준선(고정 q)도 함께 노출 — 유동 상한이 원래 하루치 대비 얼마인지 보이게.
-            "base_cap": q, "strategy": dp["strategy"]}
+            "base_cap": q, "strategy": dp["strategy"],
+            "forward_daily": forward_daily}
 
 
 def pace_block_active(cfg: Config, backend: str, today: str | None = None) -> bool:
