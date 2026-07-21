@@ -290,6 +290,78 @@ def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
     assert sum(r["tokens"] or 0 for r in records) == (records[-1]["tokens"] or 0)
 
 
+@pytest.mark.parametrize("adversarial", [False, True])
+def test_reviewer_is_blind_to_verify_result(mock_root, monkeypatch, adversarial):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["adversarial_review"] = adversarial
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "verify command sentinel"
+    verify_sentinel = "VERIFY_OUTPUT_SENTINEL"
+    calls = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        calls.append((task_kind, task, extra_context))
+        o._step_i += 1
+        score = 9.0 if task_kind == "critic" else None
+        text = "SCORE: 9\nindependent review" if task_kind == "critic" else "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (False, verify_sentinel))
+    o.run_producer_reviewer(
+        "blind review", "claude-main", "codex-critic", max_rounds=1)
+
+    reviewer_calls = [(task, context) for kind, task, context in calls if kind == "critic"]
+    assert len(reviewer_calls) == 1
+    reviewer_prompt = "\n".join(reviewer_calls[0])
+    assert verify_sentinel not in reviewer_prompt
+    assert "verify command sentinel" not in reviewer_prompt
+    assert "테스트/검증 결과" not in reviewer_prompt
+
+
+def test_verify_failure_stays_hard_gate_and_reaches_next_producer(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "verify command"
+    verify_sentinel = "FAILURE_DIAGNOSTIC_SENTINEL"
+    calls = []
+    events = []
+    verify_results = iter([(False, verify_sentinel), (True, "ok")])
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        calls.append((task_kind, task, extra_context))
+        events.append(task_kind)
+        o._step_i += 1
+        score = 9.0 if task_kind == "critic" else None
+        text = "SCORE: 9\nlooks good" if task_kind == "critic" else f"artifact {task_kind}"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    def fake_verify():
+        events.append("verify")
+        return next(verify_results)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", fake_verify)
+    o.run_producer_reviewer(
+        "hard gate", "claude-main", "codex-critic", max_rounds=2)
+
+    assert [kind for kind, _, _ in calls] == ["build", "critic", "revise", "critic"]
+    assert events == ["build", "verify", "critic", "revise", "verify", "critic"]
+    revise_context = next(context for kind, _, context in calls if kind == "revise")
+    assert verify_sentinel in revise_context
+    assert all(verify_sentinel not in context for kind, _, context in calls if kind == "critic")
+
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [record["score"] for record in records] == [9.0, 9.0]
+    assert [record["verify_ok"] for record in records] == [False, True]
+    assert [record["gate_pass"] for record in records] == [False, True]
+
+
 def test_calibration_logging_failure_does_not_break_run(mock_root, monkeypatch):
     o = Orchestrator(Config.load(mock_root), auto=True)
     o._calib_rounds.append({"score": 1.0, "round": 1})

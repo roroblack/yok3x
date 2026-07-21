@@ -90,8 +90,8 @@ REVIEW_GUARD = (
 ADVERSARIAL_REVIEW = (
     "다음 산출물을 적대적으로 검수하라. 너의 목표는 통과시키는 것이 아니라 '무너뜨리는 것'이다. "
     "가장 강한 반례·미검증 가정·엣지케이스 실패·보안/정확성 결함을 적극적으로 찾아라. 근거 없이 "
-    "'동작한다'고 주장된 부분을 지목하고 반증 가능한 구체적 시나리오를 제시하라. 테스트/검증 결과가 "
-    "실패면 통과시키지 마라. 첫 줄에 'SCORE: <0-10>'(엄격), 이후 치명 결함부터 나열하고 재현·수정 "
+    "'동작한다'고 주장된 부분을 지목하고 반증 가능한 구체적 시나리오를 제시하라. "
+    "첫 줄에 'SCORE: <0-10>'(엄격), 이후 치명 결함부터 나열하고 재현·수정 "
     "지시를 써라. 확신이 없으면 낮은 점수를 줘라.")
 
 # 근거 없는 과잉 확신 표현(가벼운 휴리스틱)
@@ -1043,14 +1043,14 @@ class Orchestrator:
             if self.verify_cmd:
                 verify_ok, verify_out = self._run_verify()
 
+            # Reviewer scoring is deliberately blind to the objective verify gate.  The
+            # score remains an independent signal instead of learning the gate's label.
             rev_blocks = [f"[산출물]\n{knot.clip(artifact, 6000)}"]
             if rubric:
                 rev_blocks.append(rubric)
-            if self.verify_cmd:
-                rev_blocks.append(f"[테스트/검증 결과] exit={'0(통과)' if verify_ok else 'nonzero(실패)'}\n{verify_out[:1200]}")
             review_instr = ADVERSARIAL_REVIEW if self.adversarial else (
                 "다음 산출물을 채점하라. 첫 줄 'SCORE: <0-10>', 이후 결함과 수정 지시. "
-                "테스트/검증 결과가 실패면 통과시키지 마라.")
+                "산출물과 rubric만 근거로 독립적으로 평가하라.")
             rev = self.call_worker(reviewer, review_instr, "critic",
                                    extra_context="\n\n".join(rev_blocks))
             score = self.steps[-1].score
@@ -1071,6 +1071,14 @@ class Orchestrator:
                 self._log(f"[review] 통과 기준({pass_score}) + 검증 충족 — 종료")
                 break
 
+            feedback_parts = []
+            if rev.ok:
+                feedback_parts.append(f"<!-- 검수 r{rnd} -->\n{rev.text}")
+            if self.verify_cmd and not verify_ok:
+                feedback_parts.append(
+                    f"<!-- 검증 r{rnd} -->\n[직전 검증 실패]\n{knot.clip(verify_out, 2000)}")
+            round_feedback = "\n\n".join(feedback_parts)
+
             # 조건부 라우팅(에스컬레이션, LangGraph 조건부엣지 이식): 낮은 점수가 지속되면 다음
             # 라운드부터 워커를 1회 전환한다. 통과 아닐 때만, prev_sig 초기화(워커가 바뀌면 스톨
             # 비교가 무효 — codex 리뷰 반영). 대상은 시작 전 검증(부재 시 spec 오류로 실패).
@@ -1084,7 +1092,7 @@ class Orchestrator:
                                 if self.adversarial else esc["to_reviewer"])
                 escalated = True
                 prev_sig = None            # 워커 전환 → 스톨 시그니처 초기화(오탐 방지)
-                artifact += f"\n\n<!-- 검수 r{rnd} -->\n{rev.text}" if rev.ok else ""
+                artifact += f"\n\n{round_feedback}" if round_feedback else ""
                 self._log(f"[escalate] round {rnd} score={score} → producer={producer}, reviewer={reviewer}")
                 continue                   # 새 워커로 다음 라운드(이번 라운드 스톨 판정 건너뜀)
 
@@ -1099,7 +1107,7 @@ class Orchestrator:
                           tags=["stall", "run"], source="orchestrator")
                 break
             prev_sig = sig
-            artifact += f"\n\n<!-- 검수 r{rnd} -->\n{rev.text}" if rev.ok else ""
+            artifact += f"\n\n{round_feedback}" if round_feedback else ""
         self._finish(task, artifact)
 
     # ------------------------------------------------------------ finish

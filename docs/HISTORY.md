@@ -5,6 +5,24 @@
 ---
 
 
+## 미출시(dev) · 2026-07-20 — [작업E] 심판 캘리브레이션 **라벨 누출 제거** (codex 발견·구현·Claude 검토)
+
+- **핵심 발견(codex)**: producer-reviewer 루프가 verify를 먼저 실행하고 그 통과/실패 결과를
+  **리뷰어에게 보여준 뒤** SCORE를 받고 있었다. 즉 SCORE가 verify_ok의 예측이 아니라 **정답을 본 후 평가**.
+  calibration.jsonl의 (SCORE, verify_ok) 상관이 오염 → 작업B의 "수집 파이프라인 완비"는 캘리브레이션
+  목적상 틀렸다. (아이러니: N0'에선 심판을 빈 디렉터리에 격리해 pass/fail을 숨겼는데, 제품은 대놓고 노출 중이었음.)
+- 수정: (E-1) rev_blocks에서 verify 결과 블록 제거 + 일반/적대적 리뷰 지시문의 verify 참조 제거 →
+  리뷰어는 산출물·rubric만 보고 **독립 채점**. (E-2) 하드 게이트 `score>=th AND verify_ok` 불변 —
+  SCORE 9라도 verify 실패면 불통과. (E-3) verify 실패 진단은 **다음 라운드 producer**에게 전달(수정 계속).
+  (E-4) 호출 수 불변(라운드당 producer 1 + reviewer 1, 리뷰어 2배 호출 없음).
+- 부수 이점: 기존엔 리뷰어가 "테스트 실패→저점"을 앵무새처럼 반복해 SCORE 독립정보 희박.
+  blind면 SCORE가 테스트가 못 잡는 품질을 재고, verify 하드게이트와 합쳐 독립 신호 2개가 됨.
+- 잔여 위험(codex 신고, 하네스 레벨 아님): producer가 진단을 산출물에 복사하거나 도구형 리뷰어가
+  run.log를 뒤지면 간접 노출 가능. 호출 인자 기준 누출은 제거됨.
+- Claude 검토: artifact가 다음 라운드 producer 전에 prod.text로 교체되므로 리뷰어는 append된
+  verify_out을 못 봄(누출 없음 확인). clip은 앞70%/뒤30% 보존이라 끝에 붙은 verify 진단이 살아남음.
+- 222 passed(신규: blind 검증 파라미터화 2 + 하드게이트/진단전달 1). scope guard 준수: 임계 8.0 불변.
+
 ## 미출시(dev) · 2026-07-20 — [작업B] 심판 캘리브레이션 실데이터 수집 강화 (codex 구현·Claude 검토)
 
 - N0'가 드러낸 "게이트 임계 8.0이 정상 코드 전량 반려(최고 SCORE 7.0)"에 대응. 새 임계를 정하려면
