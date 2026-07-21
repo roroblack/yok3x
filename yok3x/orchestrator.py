@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -35,6 +36,10 @@ from ._version import __version__
 SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
 SCORE_GATE_MODES = ("strict", "advisory")
 REVIEW_BASE_MAX_BYTES = 2_000_000
+STAGE_MAX_FILES_DEFAULT = 5_000
+STAGE_IGNORED_NAMES = {
+    ".git", "node_modules", ".yok3x", "yok3x-out", "__pycache__", ".tmp",
+}
 
 # 할루시네이션 방지 지침 — 모든 워커 프롬프트에 주입.
 ANTI_HALLUCINATION = (
@@ -400,8 +405,8 @@ class Orchestrator:
             return "[채점표 rubric]\n" + knot.clip(p.read_text(encoding="utf-8-sig", errors="replace"), 3000)
         return ""
 
-    def _run_verify(self) -> tuple[bool, str]:
-        """테스트/린트 게이트: verify_cmd 를 workdir에서 실제 실행(객관 검증)."""
+    def _run_verify(self, cwd: str | Path | None = None) -> tuple[bool, str]:
+        """테스트/린트 게이트를 지정 cwd(기본 workdir)에서 실제 실행한다."""
         import shlex as _shlex
         import subprocess as _sp
         self._step_i += 1
@@ -410,7 +415,8 @@ class Orchestrator:
         try:
             proc = _sp.run(cmd, shell=True, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           cwd=self.workdir or None, timeout=self.verify_timeout)
+                           cwd=str(cwd) if cwd is not None else (self.workdir or None),
+                           timeout=self.verify_timeout)
             ok = proc.returncode == 0
             out = ((proc.stdout or "") + (proc.stderr or "")).strip()
         except _sp.TimeoutExpired:
@@ -423,6 +429,146 @@ class Orchestrator:
                                   checklist=[] if ok else ["검증 실패(테스트/린트 비정상 종료)"]))
         self._log(f"[verify] {'통과' if ok else '실패'}: {cmd}")
         return ok, out
+
+    @staticmethod
+    def _stage_copy_ignore(directory: str, names: list[str]) -> set[str]:
+        """copytree 제외 규칙. 심볼릭 링크는 원본 밖 쓰기 통로가 될 수 있어 복사하지 않는다."""
+        base = Path(directory)
+        ignored = set()
+        for name in names:
+            path = base / name
+            if (name in STAGE_IGNORED_NAMES or name.endswith(".pyc")
+                    or path.is_symlink()):
+                ignored.add(name)
+        return ignored
+
+    def _stage_tree_stats(self, source: Path) -> tuple[int, int]:
+        """copytree와 같은 제외 규칙으로 복사 전 파일 수·대략 바이트를 센다."""
+        files = 0
+        total_bytes = 0
+        for directory, dirnames, filenames in os.walk(source, followlinks=False):
+            ignored_dirs = self._stage_copy_ignore(directory, dirnames)
+            dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
+            ignored_files = self._stage_copy_ignore(directory, filenames)
+            for name in filenames:
+                if name in ignored_files:
+                    continue
+                path = Path(directory) / name
+                files += 1
+                total_bytes += path.stat().st_size
+        return files, total_bytes
+
+    @staticmethod
+    def _remove_stage(path: Path) -> None:
+        """Windows 읽기전용 복사본도 지울 수 있게 권한을 풀고 스테이징을 정리한다."""
+        def make_writable_and_retry(func, target, _exc_info):
+            os.chmod(target, 0o700)
+            func(target)
+
+        shutil.rmtree(path, onerror=make_writable_and_retry)
+
+    def _run_round_verify(self, artifact: str, rnd: int) -> tuple[bool, str, str]:
+        """후보가 있으면 격리 사본에서 검증하고, 준비 실패 시 원본 검증으로 명시적으로 열화한다."""
+        blocks = artifacts.parse_file_blocks(artifact or "")
+        if not self.workdir or not blocks:
+            ok, out = self._run_verify()
+            return ok, out, "original_tree"
+
+        plan = artifacts.plan_files(blocks, overwrite=True)
+        for rejected in plan.rejected:
+            self._log(
+                f"[verify-stage] round {rnd}: 후보 거부 {rejected['path']} — "
+                f"{rejected['reason']}")
+        # 일부 블록만 적용하면 reviewer가 본 후보 전체와 verify 대상이 달라진다.
+        # 하나라도 거부되면 candidate 라벨을 만들지 않고 기존 원본 검증으로 fail-closed 한다.
+        if plan.rejected or not plan.accepted:
+            self._log(
+                f"[verify-stage] round {rnd}: 후보 전체를 안전하게 적용할 수 없음 "
+                "— 원본 verify 폴백")
+            ok, out = self._run_verify()
+            return ok, out, "original_tree"
+
+        stage_parent: Path | None = None
+        try:
+            source = Path(self.workdir)
+            max_files = int((self.changes or {}).get(
+                "stage_max_files", STAGE_MAX_FILES_DEFAULT))
+            file_count, total_bytes = self._stage_tree_stats(source)
+            self._log(
+                f"[verify-stage] round {rnd}: workdir files={file_count} "
+                f"bytes≈{total_bytes} stage_max_files={max_files}")
+            if file_count > max_files:
+                self._log(
+                    f"[verify-stage] round {rnd}: 파일 상한 초과({file_count}>{max_files}) "
+                    "— 원본 verify 폴백")
+                ok, out = self._run_verify()
+                return ok, out, "original_tree"
+
+            stage_parent = Path(tempfile.mkdtemp(
+                prefix=f"yok3x_stage_{self.run_id}_r{rnd}_"))
+            stage_root = stage_parent / "workdir"
+            shutil.copytree(source, stage_root, ignore=self._stage_copy_ignore)
+            real_source = source.resolve()
+            real_stage = stage_root.resolve()
+            writes: list[tuple[artifacts.FileBlock, Path]] = []
+            for fb in plan.accepted:
+                source_path = source / fb.path
+                try:
+                    source_path.resolve().relative_to(real_source)
+                except (OSError, ValueError):
+                    self._log(
+                        f"[verify-stage] round {rnd}: 후보 거부 {fb.path} — "
+                        "base의 해석된 경로가 workdir 밖")
+                    continue
+                if self._path_uses_symlink(source, fb.path):
+                    self._log(
+                        f"[verify-stage] round {rnd}: 후보 거부 {fb.path} — "
+                        "base 심볼릭 경로 제외")
+                    continue
+
+                dest = stage_root / fb.path
+                if self._path_uses_symlink(stage_root, fb.path):
+                    self._log(
+                        f"[verify-stage] round {rnd}: 후보 거부 {fb.path} — "
+                        "스테이징 심볼릭 경로 제외")
+                    continue
+                try:
+                    dest.resolve().relative_to(real_stage)
+                except (OSError, ValueError):
+                    self._log(
+                        f"[verify-stage] round {rnd}: 후보 거부 {fb.path} — "
+                        "해석된 경로가 스테이징 밖")
+                    continue
+                writes.append((fb, dest))
+
+            if len(writes) != len(plan.accepted):
+                self._log(
+                    f"[verify-stage] round {rnd}: 후보 전체를 안전하게 적용할 수 없음 "
+                    "— 원본 verify 폴백")
+                ok, out = self._run_verify()
+                return ok, out, "original_tree"
+            for fb, dest in writes:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_bytes(dest, fb.content.encode("utf-8"))
+            self._log(
+                f"[verify-stage] round {rnd}: 후보 {len(writes)}파일 검증 → {stage_root}")
+            ok, out = self._run_verify(cwd=stage_root)
+            return ok, out, "candidate"
+        except Exception as exc:
+            self._log(
+                f"[verify-stage] round {rnd}: 스테이징 실패: "
+                f"{type(exc).__name__}: {exc} — 원본 verify 폴백")
+            ok, out = self._run_verify()
+            return ok, out, "original_tree"
+        finally:
+            if stage_parent is not None:
+                try:
+                    self._remove_stage(stage_parent)
+                    self._log(f"[verify-stage] round {rnd}: 스테이징 정리 완료")
+                except Exception as exc:
+                    self._log(
+                        f"[verify-stage] round {rnd}: 스테이징 정리 실패: "
+                        f"{type(exc).__name__}: {exc}")
 
     def _checklist(self, res: BackendResult) -> list[str]:
         """검증 체크리스트: 실패 항목만 기록."""
@@ -1124,9 +1270,9 @@ class Orchestrator:
             artifact = prod.text
 
             # 테스트/검증 게이트(객관): 통과 실패는 하드 신호
-            verify_ok, verify_out = (True, "")
+            verify_ok, verify_out, verify_scope = (True, "", "original_tree")
             if has_verify_cmd:
-                verify_ok, verify_out = self._run_verify()
+                verify_ok, verify_out, verify_scope = self._run_round_verify(artifact, rnd)
 
             # Reviewer scoring is deliberately blind to the objective verify gate.  The
             # score remains an independent signal instead of learning the gate's label.
@@ -1145,12 +1291,11 @@ class Orchestrator:
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,
                 verify_ok=verify_ok, score=score, threshold=pass_score)
             passed = self.gate["passed"]
-            # 현재 verify는 후보가 아니라 workdir 원본을 본다. F1-d 스테이징 전에는 라벨로 쓰지 않는다.
             # 라운드별 원자료를 보존해 downstream이 last-only/all/클러스터링을 고를 수 있게 한다.
             self._calib_rounds.append({
                 "score": score, "round": rnd,     # round=이 관측의 라운드 인덱스. rounds(총량)는 _finish에서
                 "verify_ok": (bool(verify_ok) if has_verify_cmd else None),
-                "verify_scope": "original_tree",
+                "verify_scope": verify_scope,
                 "backend": (self._worker(producer) or {}).get("backend"),
                 "effort": (self._worker(producer) or {}).get("effort") or None,
                 "reviewer": rev.backend,

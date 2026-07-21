@@ -94,13 +94,19 @@ pytest -q                   # 격리·버전 일관성·스톨·3패턴 E2E·가
   "verify_timeout_sec": 300,                 // 게이트 제한시간
   "context_globs": ["src/**/*.py"],          // 레포 컨텍스트 주입(글자 제한 repo_context_max_chars)
   "rubric": "rubric.md",                     // 채점표를 검수 프롬프트에 주입
-  "changes": {"mode": "review"} }            // 원본은 건드리지 않고 diff+후보 검토 번들 생성
+  "changes": {"mode": "review",              // 원본은 건드리지 않고 diff+후보 검토 번들 생성
+              "stage_max_files": 5000} }        // 후보 verify용 workdir 복사 파일수 상한
 ```
 
 - `changes.mode=review`는 모든 패턴의 최종 산출물에서 `file:` 블록을 읽어
   `workdir/yok3x-out/<run_id>/`에 후보 파일, `changes.diff`, `changes.json`을 만든다.
-  `workdir`의 대상 파일은 base 비교용으로만 읽으며 적용·수락·거절·후보 verify는 하지 않는다.
+  `workdir`의 대상 파일은 base 비교용으로만 읽으며 원본에 적용·수락·거절하지 않는다.
   base는 UTF-8 텍스트만, 파일당 최대 2MB까지 읽고 그 밖의 입력은 번들에 스킵 사유를 기록한다.
+
+- producer-reviewer에서 `verify_cmd`·`workdir`·`file:` 후보가 모두 있으면 `.git`, `node_modules`,
+  `.yok3x`, `yok3x-out`, `__pycache__`, `.tmp`, `*.pyc`, 심볼릭 링크를 제외한 격리 사본에 후보를
+  적용해 검증한다. 원본은 복사원으로만 읽고 스테이징은 매 라운드 즉시 삭제한다. 복사 파일 수가
+  `changes.stage_max_files`(기본 5000)를 넘거나 준비가 실패하면 로그를 남기고 기존 원본 검증으로 폴백한다.
 
 - `verify_cmd`·`verify_timeout_sec`는 **yok3x.json에 전역 기본값**으로 두면 모든 태스크가 상속한다(task가 지정하면 우선). 예: 프로젝트 전체 게이트로 `"verify_cmd": "pytest -q"` 한 줄.
 - 스톨 감지: 점수 + **리뷰어가 지적한 결함**이 직전 라운드와 동일하면 수렴 실패로 조기 종료(+knot 기록). 순서·번호·가벼운 재서술에는 견딘다.

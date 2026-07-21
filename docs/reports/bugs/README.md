@@ -29,6 +29,7 @@
 | [22](BUG-22-send-not-attaching-to-selected-task.md) | 전송이 선택한 작업에 안 붙고 무제목/전체로 감(라벨 CRUD 이동 회귀) | 높음 | — | ✅ |
 | [23](BUG-23-materialize-status-overwritten.md) | 산출물 게시 결과가 status.json에서 유실(_finish 이중 저장) | 중간 | — | ✅ |
 | [24](BUG-24-gui-renders-mock-data-on-server-loss.md) | 서버 끊기면 GUI가 mock 사용량을 실데이터처럼 표시(연결 끊김 표시 없음) | 높음 | — | ✅ |
+| [25](BUG-25-verify-ignored-worker-candidate.md) | verify가 워커 후보 대신 원본 트리를 검사 | 높음 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

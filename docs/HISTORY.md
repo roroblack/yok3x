@@ -4,6 +4,21 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [F1-f] 후보 스테이징 verify — **T-1 언블록** (codex 구현·Claude 검토)
+
+- F1-b가 격리만 하던 것(verify가 후보 아닌 원본 트리 검사, BUG-25)을 **실제 수정**. producer-reviewer
+  라운드의 `file:` 후보를 workdir 격리 사본에 전체 파일로 적용한 뒤 그 cwd에서 `verify_cmd`를 실행한다.
+  후보 결과가 `evaluate_score_gate`의 verify 입력이 되며 calibration에 실제 대상 따라 `verify_scope=
+  candidate|original_tree` 기록. → **이제부터 materialize/review + verify_cmd 런은 유효 라벨(candidate) 축적**.
+- 원본은 복사원으로만 읽고 `.git`·의존성/런 산출물·캐시·심볼릭 링크를 제외. 후보 경로는 artifacts 검증 +
+  resolve/심볼릭 방어. **하나라도 거부되면 fail-closed로 원본 폴백**(부분 적용=reviewer가 본 후보와 불일치 방지).
+  시스템 temp는 성공·실패 모두 `finally`에서 정리. 상한(`changes.stage_max_files` 기본 5000) 초과·실패 폴백.
+- 게이트 판정·**reviewer blind(작업E)**·materialize/review 동작 불변.
+- **Claude 독립 검토(실제 pytest subprocess E2E)**: broken base + 수정 후보 → verify **통과**(scope=candidate),
+  broken 후보 → **실패**, **원본 workdir 불변**(원본 foo.py BUG 그대로), 스테이징 잔여물 **0개**,
+  후보 verify_ok가 게이트로 흐름, rev_blocks에 verify_out 없음(blind 유지). **258 passed**(신규 8).
+- 리포트: `docs/reports/bugs/BUG-25-verify-ignored-worker-candidate.md`. **T-1 선행조건 해소**(TODO 반영 필요).
+
 ## 미출시(dev) · 2026-07-21 — [F1-d] 수정모드 review bundle MVP (codex 구현·Claude 검토)
 
 - 사용자 제안 "수정모드". codex 합의: 새 패턴 아닌 공통 change-set 게이트. 이번은 **읽기전용 번들 생성까지**.

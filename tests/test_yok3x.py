@@ -514,6 +514,164 @@ def test_verify_failure_stays_hard_gate_and_reaches_next_producer(mock_root, mon
     assert [record["gate_pass"] for record in records] == [False, True]
 
 
+def _candidate_verify_fixture(tmp_path, candidate="fixed"):
+    """원본은 실패하고 app.txt 후보가 정확히 fixed일 때만 통과하는 실제 verify 환경."""
+    import sys
+
+    cfg = Config.load(tmp_path)
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    app = workdir / "app.txt"
+    app.write_text("broken", encoding="utf-8")
+    (workdir / "check.py").write_text(
+        "from pathlib import Path\n"
+        "value = Path('app.txt').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if value == 'fixed' else 1)\n",
+        encoding="utf-8",
+    )
+    orch = Orchestrator(cfg, auto=True)
+    orch.workdir = str(workdir)
+    orch.verify_cmd = f'"{sys.executable}" check.py'
+    artifact = f"```file:app.txt\n{candidate}\n```"
+    return orch, app, artifact
+
+
+def test_candidate_verify_passes_in_stage_preserves_original_and_cleans(tmp_path, monkeypatch):
+    import hashlib
+
+    orch, original, artifact = _candidate_verify_fixture(tmp_path)
+    before = hashlib.sha256(original.read_bytes()).hexdigest()
+    stage_base = tmp_path / "stages"
+    stage_base.mkdir()
+    real_mkdtemp = orchestrator.tempfile.mkdtemp
+    monkeypatch.setattr(
+        orchestrator.tempfile, "mkdtemp",
+        lambda prefix: real_mkdtemp(prefix=prefix, dir=stage_base))
+
+    ok, output, scope = orch._run_round_verify(artifact, 1)
+
+    assert ok is True and output == ""
+    assert scope == "candidate"
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == before
+    assert original.read_text(encoding="utf-8") == "broken"
+    assert list(stage_base.iterdir()) == []
+
+
+def test_candidate_verify_failure_is_candidate_scoped(tmp_path):
+    orch, original, artifact = _candidate_verify_fixture(tmp_path, "still-broken")
+
+    ok, _, scope = orch._run_round_verify(artifact, 2)
+
+    assert ok is False
+    assert scope == "candidate"
+    assert original.read_text(encoding="utf-8") == "broken"
+
+
+def test_verify_without_candidate_keeps_original_tree_behavior(tmp_path, monkeypatch):
+    orch, _, _ = _candidate_verify_fixture(tmp_path)
+    monkeypatch.setattr(
+        orchestrator.shutil, "copytree",
+        lambda *args, **kwargs: pytest.fail("후보 없는 런은 스테이징하면 안 됨"))
+
+    ok, _, scope = orch._run_round_verify("ordinary text output", 1)
+
+    assert ok is False
+    assert scope == "original_tree"
+    assert orch.materialize == {} and orch.changes == {}
+
+
+def test_candidate_verify_drives_strict_gate_and_calibration_scope(tmp_path, monkeypatch):
+    orch, original, artifact = _candidate_verify_fixture(tmp_path)
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        orch._step_i += 1
+        if task_kind == "critic":
+            text, score = "SCORE: 9\nindependent approval", 9.0
+        else:
+            text, score = artifact, None
+        orch.steps.append(orchestrator.StepLog(
+            orch._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *args, **kwargs: None)
+
+    orch.run_producer_reviewer(
+        "fix app", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert orch.gate["passed"] is True
+    assert orch.gate["verify_ok"] is True
+    assert original.read_text(encoding="utf-8") == "broken"
+    records = [json.loads(line) for line in
+               (orch.cfg.paths.runs.parent / "calibration.jsonl").read_text(
+                   encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert records[0]["verify_scope"] == "candidate"
+    assert records[0]["gate_pass"] is True
+
+
+def test_staging_copy_failure_falls_back_and_cleans(tmp_path, monkeypatch):
+    orch, original, artifact = _candidate_verify_fixture(tmp_path)
+    stage_base = tmp_path / "failed-stages"
+    stage_base.mkdir()
+    real_mkdtemp = orchestrator.tempfile.mkdtemp
+    monkeypatch.setattr(
+        orchestrator.tempfile, "mkdtemp",
+        lambda prefix: real_mkdtemp(prefix=prefix, dir=stage_base))
+    monkeypatch.setattr(
+        orchestrator.shutil, "copytree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("copy denied")))
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        orch._step_i += 1
+        text = "SCORE: 9\nreview" if task_kind == "critic" else artifact
+        score = 9.0 if task_kind == "critic" else None
+        orch.steps.append(orchestrator.StepLog(
+            orch._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *args, **kwargs: None)
+    orch.run_producer_reviewer(
+        "copy failure", "claude-main", "codex-critic", max_rounds=1)
+
+    assert orch.gate["passed"] is False        # broken 원본 verify로 정상 폴백
+    assert orch._calib_rounds[0]["verify_scope"] == "original_tree"
+    status = json.loads((orch.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "done"           # 준비 실패가 런 자체를 죽이지 않음
+    assert original.read_text(encoding="utf-8") == "broken"
+    assert list(stage_base.iterdir()) == []
+    log = (orch.run_dir / "run.log").read_text(encoding="utf-8")
+    assert "스테이징 실패: OSError: copy denied — 원본 verify 폴백" in log
+
+
+def test_stage_file_limit_skips_copy_and_falls_back(tmp_path, monkeypatch):
+    orch, _, artifact = _candidate_verify_fixture(tmp_path)
+    orch.changes = {"stage_max_files": 1}       # app.txt + check.py = 2
+    monkeypatch.setattr(
+        orchestrator.shutil, "copytree",
+        lambda *args, **kwargs: pytest.fail("상한 초과면 copytree를 호출하면 안 됨"))
+
+    ok, _, scope = orch._run_round_verify(artifact, 1)
+
+    assert ok is False
+    assert scope == "original_tree"
+    log = (orch.run_dir / "run.log").read_text(encoding="utf-8")
+    assert "파일 상한 초과(2>1) — 원본 verify 폴백" in log
+
+
+def test_unsafe_file_block_prevents_partial_candidate_label(tmp_path):
+    orch, original, artifact = _candidate_verify_fixture(tmp_path)
+    artifact += "\n```file:../escape.txt\nevil\n```"
+
+    ok, _, scope = orch._run_round_verify(artifact, 1)
+
+    assert ok is False                         # valid 일부만 적용해 통과시키지 않음
+    assert scope == "original_tree"
+    assert original.read_text(encoding="utf-8") == "broken"
+    assert not (tmp_path / "escape.txt").exists()
+
+
 def test_calibration_logging_failure_does_not_break_run(mock_root, monkeypatch):
     o = Orchestrator(Config.load(mock_root), auto=True)
     o._calib_rounds.append({"score": 1.0, "round": 1})
