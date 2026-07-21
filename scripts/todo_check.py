@@ -47,12 +47,16 @@ def load_records() -> list[dict]:
 
 def independent_labeled(records: list[dict]) -> list[dict]:
     """런당 1관측 = 그 런의 라벨된(verify_ok가 bool, score가 수) 최종 라운드 레코드.
-    독립성 확보를 위해 run_id로 묶고 최대 round를 대표로 쓴다."""
+    독립성 확보를 위해 run_id로 묶고 최대 round를 대표로 쓴다.
+    F1-b: verify가 후보를 검증한(verify_scope=='candidate') 레코드만 유효 라벨.
+    original_tree/None(과거·F1-d 이전)은 준비도 과대계상을 막기 위해 제외한다."""
     by_run: dict[str, dict] = {}
     for r in records:
         rid = r.get("run_id")
         s, v = r.get("score"), r.get("verify_ok")
-        if rid is None or not isinstance(v, bool) or not isinstance(s, (int, float)):
+        if (r.get("verify_scope") != "candidate"
+                or rid is None or not isinstance(v, bool)
+                or not isinstance(s, (int, float))):
             continue
         cur = by_run.get(rid)
         if cur is None or (r.get("round") or 0) >= (cur.get("round") or 0):

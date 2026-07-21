@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import math
 
-# 라운드별 캘리브레이션 레코드 스키마. label=verify_ok(지상진실)이 있어야 상관에 쓰인다.
+# 라운드별 캘리브레이션 레코드 스키마. 후보를 검증한 verify_ok만 지상진실로 쓴다.
 FIELDS = ("run_id", "ts", "pattern", "backend", "effort", "rounds",
-          "score", "verify_ok", "tokens", "cost_usd", "duration_ms", "issues",
+          "score", "verify_ok", "verify_scope", "tokens", "cost_usd", "duration_ms", "issues",
           "reviewer", "threshold", "gate_pass", "gate_mode", "round")
 
 
@@ -27,11 +27,13 @@ def make_record(**kw) -> dict:
 
 
 def _labeled(records: list[dict]) -> list[dict]:
-    """상관/혼동에 쓸 수 있는 레코드 = score 있고 verify_ok가 bool(지상진실 존재)인 것만."""
+    """상관/혼동에는 후보 자체를 검증한 유한 SCORE+bool 라벨만 쓴다."""
     out = []
     for r in records:
         s, v = r.get("score"), r.get("verify_ok")
-        if isinstance(s, (int, float)) and isinstance(v, bool) and math.isfinite(float(s)):
+        if (r.get("verify_scope") == "candidate"
+                and isinstance(s, (int, float)) and isinstance(v, bool)
+                and math.isfinite(float(s))):
             out.append(r)
     return out
 

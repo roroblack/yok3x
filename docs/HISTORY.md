@@ -5,6 +5,20 @@
 ---
 
 
+## 미출시(dev) · 2026-07-21 — [F1-b] verify 원본검증 오염 방지 (codex 구현·Claude 검토)
+
+- 확정된 문제: producer 프롬프트가 "파일 편집 말고 텍스트로만 답하라"(orchestrator.py) →
+  워커는 후보를 workdir에 쓰지 않는다. 그런데 `_run_verify`는 workdir에서 실행 →
+  **후보 미반영 원본 트리를 검증**. calibration의 verify_ok가 SCORE가 평가한 후보와 무관(라벨 오염).
+- 최소·안전 조치(진짜 후보검증은 F1-d 스테이징에서): calibration FIELDS에 `verify_scope` 추가,
+  현재 producer-reviewer 관측을 **`original_tree`**로 기록. `_labeled`가 **`candidate`만** 지상진실로
+  인정(fail-closed) → 과거·현재 오염 관측을 상관·혼동에서 제외. `summarize`는 지금 데이터에 n_labeled=0.
+- 게이트 동작(strict/advisory)·프롬프트·verify 실행위치 **불변**. 라벨 신뢰성만 격리.
+- **Claude 검토가 잡은 것**(codex 자진신고): `scripts/todo_check.py`의 준비도 필터가 verify_scope를
+  안 봐서 original_tree를 유효로 세 **준비도 과대계상** → candidate만 세도록 수정(실증: orig 12→0, cand 12→12).
+- 결과: T-1(캘리브레이션 검증)은 사실상 **F1-d 스테이징 완료가 선행**임이 명확해짐(TODO/계획서 반영).
+- 244 passed(신규 2 + todo_check 수정).
+
 ## 미출시(dev) · 2026-07-21 — [F1-a/c] advisory 게이트: SCORE 권한 분리 (codex 구현·Claude 검토)
 
 - 배경: PDF 교육자료 원칙("실제 테스트 합격 코드를 AI 주관 점수만으로 떨어뜨리지 말자") + 웹리서치

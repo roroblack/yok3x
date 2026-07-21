@@ -3,7 +3,7 @@ from yok3x import calibration as C
 
 
 def _r(score, ok):
-    return C.make_record(score=score, verify_ok=ok, run_id="r")
+    return C.make_record(score=score, verify_ok=ok, verify_scope="candidate", run_id="r")
 
 
 def test_point_biserial_strong_and_zero_correlation():

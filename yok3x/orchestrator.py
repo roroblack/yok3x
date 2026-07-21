@@ -1120,11 +1120,12 @@ class Orchestrator:
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,
                 verify_ok=verify_ok, score=score, threshold=pass_score)
             passed = self.gate["passed"]
-            # 캘리브레이션 라벨: verify_cmd가 있어야 지상진실. 없으면 label 없음(상관 제외).
+            # 현재 verify는 후보가 아니라 workdir 원본을 본다. F1-d 스테이징 전에는 라벨로 쓰지 않는다.
             # 라운드별 원자료를 보존해 downstream이 last-only/all/클러스터링을 고를 수 있게 한다.
             self._calib_rounds.append({
                 "score": score, "round": rnd,     # round=이 관측의 라운드 인덱스. rounds(총량)는 _finish에서
                 "verify_ok": (bool(verify_ok) if has_verify_cmd else None),
+                "verify_scope": "original_tree",
                 "backend": (self._worker(producer) or {}).get("backend"),
                 "effort": (self._worker(producer) or {}).get("effort") or None,
                 "reviewer": rev.backend,
@@ -1293,6 +1294,7 @@ class Orchestrator:
                 run_id=self.run_id, ts=ts, pattern=self.pattern,
                 backend=c.get("backend"), effort=c.get("effort"),
                 rounds=total_rounds, score=c.get("score"), verify_ok=c.get("verify_ok"),
+                verify_scope=c.get("verify_scope"),
                 reviewer=c.get("reviewer"), threshold=c.get("threshold"),
                 gate_pass=c.get("gate_pass"), gate_mode=c.get("gate_mode"),
                 round=c.get("round"),

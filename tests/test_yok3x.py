@@ -237,9 +237,34 @@ def test_calibration_make_record_rejects_unknown_and_fills_missing():
     with pytest.raises(TypeError, match="verify_passed"):
         calibration.make_record(score=7, verify_passed=True)
 
-    rec = calibration.make_record(score=7, verify_ok=True)
+    rec = calibration.make_record(score=7, verify_ok=True, verify_scope="candidate")
     assert rec["score"] == 7 and rec["verify_ok"] is True
+    assert rec["verify_scope"] == "candidate"
     assert rec["reviewer"] is None and rec["round"] is None and rec["gate_mode"] is None
+
+
+def test_calibration_labels_only_candidate_verify_scope():
+    candidate = calibration.make_record(
+        score=9, verify_ok=True, verify_scope="candidate")
+    original = calibration.make_record(
+        score=2, verify_ok=False, verify_scope="original_tree")
+    legacy = calibration.make_record(score=5, verify_ok=True)
+
+    assert calibration._labeled([candidate, original, legacy]) == [candidate]
+
+
+def test_calibration_summarize_excludes_original_tree_labels():
+    records = [
+        calibration.make_record(
+            score=9, verify_ok=True, verify_scope="original_tree"),
+        calibration.make_record(
+            score=2, verify_ok=False, verify_scope="original_tree"),
+    ]
+
+    summary = calibration.summarize(records)
+    assert summary["n_total"] == 2 and summary["n_labeled"] == 0
+    assert summary["pass_rate"] is None and summary["score_verify_corr"] is None
+    assert summary["confusion"]["n"] == 0
 
 
 @pytest.mark.parametrize(("mode", "has_verify", "verify_ok", "score", "passed"), [
@@ -408,7 +433,8 @@ def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
     assert all(r["threshold"] == 8.0 for r in records)
     assert all(r["gate_mode"] == "strict" for r in records)
     assert [r["gate_pass"] for r in records] == [False, False, True]
-    assert all(r["verify_ok"] is True for r in records)  # 저점 후보도 검증된 실측값
+    assert all(r["verify_ok"] is True for r in records)
+    assert all(r["verify_scope"] == "original_tree" for r in records)
     # rounds=총 라운드 수(전 행 동일), round=인덱스 — 둘이 중복이면 안 된다(검토 수정).
     assert all(r["rounds"] == 3 for r in records)
     # 런 합계는 마지막 행에만 — 전 행에 반복하면 파일 합산이 과대계상된다(검토 수정).
