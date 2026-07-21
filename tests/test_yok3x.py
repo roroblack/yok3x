@@ -1109,6 +1109,23 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_effective_reset_at_caches_across_oauth_flap(tmp_path):
+    """reset_at이 플랩(oauth↔transcript)해도 캐시로 안정: reading에서 사라져도 마지막 값 유지."""
+    import time as _t
+    from types import SimpleNamespace
+    cfg = Config.load(tmp_path)
+    future = _t.time() + 5 * 24 * 3600
+    r_ok = SimpleNamespace(windows=[SimpleNamespace(name="7d", used_percent=20.0, resets_at=future)])
+    r_none = SimpleNamespace(windows=[SimpleNamespace(name="7d", used_percent=20.0, resets_at=None)])
+    assert usage.effective_reset_at(cfg, "claude", r_ok) == future        # 캐시됨
+    assert usage.effective_reset_at(cfg, "claude", r_none) == future      # 플랩해도 캐시 유지
+    # 캐시가 과거면 주 단위로 전진(미래 유지)
+    past = SimpleNamespace(windows=[SimpleNamespace(name="7d", used_percent=20.0, resets_at=_t.time() - 3 * 86400)])
+    usage.effective_reset_at(cfg, "claude", past)                         # 과거값 캐시
+    v = usage.effective_reset_at(cfg, "claude", r_none)
+    assert v is not None and v > _t.time()                               # 미래로 전진
+
+
 def test_weekly_used_since_reset_not_rolling(tmp_path, monkeypatch):
     """상한 누적은 7d 롤링(리셋 전 포함)이 아니라 이번 주(리셋 이후) 실제 사용이어야 한다(사용자 지적)."""
     import time as _t

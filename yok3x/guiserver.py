@@ -85,7 +85,7 @@ def build_state(cfg: Config) -> dict:
                 for w in (v.reading.windows if v.reading else [])]
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
-            _ra = usage._weekly_reset_at(v.reading)
+            _ra = usage.effective_reset_at(cfg, b, v.reading)   # 캐시 폴백(oauth 플랩 대비)
             # 이번 주(리셋 이후) 실제 사용을 우선(7d 롤링은 리셋 전 사용까지 포함해 상한 과다차감).
             _cur = usage.weekly_used_since_reset(cfg, b, _ra)
             if _cur is None:

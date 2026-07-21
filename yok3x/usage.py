@@ -261,6 +261,29 @@ def _weekly_reset_at(reading: "limits.LimitReading | None") -> float | None:
     return None
 
 
+def effective_reset_at(cfg: Config, backend: str,
+                       reading: "limits.LimitReading | None") -> float | None:
+    """7d 리셋 epoch — reading에 있으면 그 값(+pace.json에 캐시), 없으면(oauth 실패→transcript 폴백)
+    마지막 캐시값을 쓴다. reset_at이 플랩해도 since-reset 상한·하루 경계가 안정된다(사용자 지적:
+    상한 0.7% 고착 = reset_at None → 롤링 폴백 + stale 키). 캐시가 과거면 주 단위로 전진(리셋 주기적)."""
+    ra = _weekly_reset_at(reading)
+    st = _load_pace(cfg)
+    rec = st.get(backend) if isinstance(st.get(backend), dict) else {}
+    if ra and math.isfinite(ra):
+        if rec.get("reset_at_cache") != ra:
+            rec["reset_at_cache"] = ra
+            st[backend] = rec
+            _save_pace(cfg, st)
+        return ra
+    cached = rec.get("reset_at_cache")
+    if cached and math.isfinite(float(cached)):
+        c, now = float(cached), time.time()
+        while c < now:                            # 지난 값이면 주 단위 전진(리셋은 7일 주기)
+            c += 7 * 86400.0
+        return c
+    return None
+
+
 def _pace_file(cfg: Config) -> Path:
     return cfg.paths.yok3x_dir / "pace.json"
 
@@ -460,7 +483,7 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
-                _ra = _weekly_reset_at(reading)
+                _ra = effective_reset_at(cfg, backend, reading)
                 _cur = weekly_used_since_reset(cfg, backend, _ra) or precise_weekly_pct(cfg, backend, reading)
                 pace = daily_pace_status(cfg, backend, _cur,
                                          today=_pacing_day_key(_ra), reset_at=_ra,
