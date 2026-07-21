@@ -120,8 +120,31 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("action", nargs="?", choices=["status", "approve"], default="status")
     sp.add_argument("backend", nargs="?", help="approve 대상 backend(claude/codex)")
 
+    sp = sub.add_parser("review", help="review bundle 표시·수락·거절")
+    sp.add_argument("run_id")
+    action = sp.add_mutually_exclusive_group()
+    action.add_argument("--accept", nargs="*", metavar="PATH",
+                        help="후보 적용(경로 생략 시 unchanged 외 전체)")
+    action.add_argument("--reject", action="store_true", help="트리 변경 없이 거절 기록")
+
     a = p.parse_args(argv)
     cfg = Config.load(".")
+
+    if a.cmd == "review":
+        from . import review as review_bundle
+        try:
+            root = review_bundle.find_bundle(cfg, a.run_id)
+            bundle = review_bundle.load_bundle(root)
+            if a.accept is not None:
+                return 1 if review_bundle.accept_bundle(root, bundle, a.accept) else 0
+            if a.reject:
+                review_bundle.reject_bundle(root, a.run_id)
+                return 0
+            review_bundle.show_bundle(root, bundle)
+            return 0
+        except review_bundle.ReviewError as exc:
+            print(f"[error] {exc}", file=sys.stderr)
+            return 2
 
     if a.cmd == "init":
         cfg = scaffold(".", use_mock=a.mock)

@@ -4,6 +4,17 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [F1-g] review bundle 수락/거절 CLI (codex 구현·Claude 검토)
+
+- `yok3x review <run_id>`로 workdir/run_dir 기반 번들을 자동 탐색해 status·바이트·상한 적용 diff를 읽기전용 표시.
+- `--accept [경로 ...]`는 경로/심볼릭·현재 base SHA-256·후보 proposed SHA-256을 파일별 순수 판정
+  (`review.decide_file_application`)한 뒤 같은 디렉터리 임시 파일→`os.replace`로 승격한다. 신규 충돌과
+  스테일 base는 중단하고 나머지는 계속(all-settled). 쓰기 직전 심볼릭/외부경로 재확인(TOCTOU 완화).
+- `--reject`는 workdir를 바꾸지 않고 번들 `review.log`에 거절 결정을 남긴다. 강제·hunk·worktree·GUI·재실행 없음.
+- **Claude 독립 검토(E2E 실측)**: ①base 일치 수락 → 적용, ②**스테일(번들 생성 후 원본 변경) → 중단·미적용,
+  사람 수정 그대로 유지**(핵심 안전), ③거절 → 트리 불변·review.log 기록. **266 passed**(신규 8). LLM 호출 0.
+- ※ 이 작업까지 "codex 구현·Claude 검토" 패턴. **이후 역할 정정**: 구현=Claude 메인 / 검토=codex(가벼운 리뷰만).
+
 ## 미출시(dev) · 2026-07-21 — [F1-f] 후보 스테이징 verify — **T-1 언블록** (codex 구현·Claude 검토)
 
 - F1-b가 격리만 하던 것(verify가 후보 아닌 원본 트리 검사, BUG-25)을 **실제 수정**. producer-reviewer

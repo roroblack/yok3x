@@ -93,6 +93,11 @@ def _bad_path(raw: str) -> str:
     return ""
 
 
+def validate_relative_path(raw: str) -> str:
+    """공개 경로 검증 API. 안전하면 빈 문자열, 위험하면 거부 사유를 돌려준다."""
+    return _bad_path(raw)
+
+
 def plan_files(blocks: list[FileBlock], *, existing: set[str] | None = None,
                overwrite: bool = False, max_files: int = 20,
                max_bytes_per_file: int = 512_000, max_total_bytes: int = 2_000_000) -> Plan:

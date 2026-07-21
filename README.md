@@ -100,8 +100,13 @@ pytest -q                   # 격리·버전 일관성·스톨·3패턴 E2E·가
 
 - `changes.mode=review`는 모든 패턴의 최종 산출물에서 `file:` 블록을 읽어
   `workdir/yok3x-out/<run_id>/`에 후보 파일, `changes.diff`, `changes.json`을 만든다.
-  `workdir`의 대상 파일은 base 비교용으로만 읽으며 원본에 적용·수락·거절하지 않는다.
+  생성 시 `workdir`의 대상 파일은 base 비교용으로만 읽으며 원본에 적용하지 않는다.
   base는 UTF-8 텍스트만, 파일당 최대 2MB까지 읽고 그 밖의 입력은 번들에 스킵 사유를 기록한다.
+
+- `yok3x review <run_id>`는 status와 diff를 읽기전용으로 표시한다. `--accept [경로 ...]`는 현재
+  파일의 base SHA-256을 다시 확인한 파일만 원자적으로 승격하며, 경로를 생략하면 `unchanged` 외 전체를
+  판정한다. 한 파일이 스테일이어도 나머지는 계속 판정한다. `--reject`는 workdir를 바꾸지 않고 번들에
+  거절 감사 로그만 남긴다. 경로탈출·workdir 밖 해석·대상/후보 심볼릭 링크에는 강제 적용 옵션이 없다.
 
 - producer-reviewer에서 `verify_cmd`·`workdir`·`file:` 후보가 모두 있으면 `.git`, `node_modules`,
   `.yok3x`, `yok3x-out`, `__pycache__`, `.tmp`, `*.pyc`, 심볼릭 링크를 제외한 격리 사본에 후보를

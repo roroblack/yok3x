@@ -2275,6 +2275,179 @@ def test_review_mode_enables_file_block_prompt_contract(tmp_path):
     assert A.FILES_CONTRACT in o.prepare_call("claude-main", "build", "build").prompt
 
 
+# ------------------------------------------------ review bundle 사람 결정 CLI (F1-g)
+def _make_cli_review_bundle(workdir, files, run_id="run_review_cli"):
+    """files={path: proposed_text}; 현재 workdir 내용을 base로 실제 F1-d 번들을 만든다."""
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(workdir)
+    o = O.Orchestrator(cfg, auto=True)
+    o.run_id = run_id
+    o.run_dir = cfg.paths.runs / run_id
+    o.workdir = str(workdir)
+    o.changes = {"mode": "review"}
+    blocks = "\n".join(f"```file:{path}\n{text}\n```" for path, text in files.items())
+    return Path(o._review_changes(blocks)["root"])
+
+
+def test_review_decision_is_pure_for_hash_collision_and_paths():
+    import hashlib
+    from yok3x.review import decide_file_application
+
+    base = hashlib.sha256(b"old").hexdigest()
+    proposed = hashlib.sha256(b"new").hexdigest()
+    modified = {"path": "src/app.py", "status": "modified",
+                "base_sha256": base, "proposed_sha256": proposed}
+    common = {"current_exists": True, "candidate_sha256": proposed}
+
+    assert decide_file_application(
+        modified, current_sha256=base, **common).allowed
+    assert not decide_file_application(
+        modified, current_sha256=hashlib.sha256(b"stale").hexdigest(), **common).allowed
+    assert not decide_file_application(
+        {"path": "new.py", "status": "new", "base_sha256": None,
+         "proposed_sha256": proposed}, current_exists=True,
+        current_sha256=None, candidate_sha256=proposed).allowed
+    assert not decide_file_application(
+        {**modified, "path": "../escape.py"}, current_sha256=base, **common).allowed
+    assert not decide_file_application(
+        modified, current_sha256=base, path_has_symlink=True, **common).allowed
+
+
+def test_review_cli_show_is_read_only_and_prints_status_diff(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    target = tmp_path / "app.txt"
+    target.write_bytes(b"old")
+    root = _make_cli_review_bundle(tmp_path, {"app.txt": "new"})
+    before = {p.relative_to(tmp_path): p.read_bytes()
+              for p in tmp_path.rglob("*") if p.is_file()}
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["review", root.name]) == 0
+    output = capsys.readouterr().out
+    after = {p.relative_to(tmp_path): p.read_bytes()
+             for p in tmp_path.rglob("*") if p.is_file()}
+    assert before == after
+    assert "[modified] app.txt" in output
+    assert "--- a/app.txt" in output and "+new" in output
+
+
+def test_review_cli_accept_matching_base_is_atomic(tmp_path, monkeypatch, capsys):
+    from yok3x import cli, review as review_module
+
+    target = tmp_path / "app.txt"
+    target.write_bytes(b"old")
+    root = _make_cli_review_bundle(tmp_path, {"app.txt": "new"})
+    real_replace = review_module.os.replace
+    replaced = []
+
+    def observing_replace(source, destination):
+        replaced.append((Path(source), Path(destination)))
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(review_module.os, "replace", observing_replace)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["review", root.name, "--accept", "app.txt"]) == 0
+
+    assert target.read_bytes() == b"new"
+    assert any(destination == target and source.parent == target.parent
+               for source, destination in replaced)
+    assert "요약: 적용 1 · 중단 0 · 스킵 0" in capsys.readouterr().out
+
+
+def test_review_cli_accept_is_all_settled_on_stale_file(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    stale = tmp_path / "stale.txt"
+    good = tmp_path / "good.txt"
+    stale.write_bytes(b"old-a")
+    good.write_bytes(b"old-b")
+    root = _make_cli_review_bundle(
+        tmp_path, {"stale.txt": "new-a", "good.txt": "new-b"})
+    stale.write_bytes(b"changed-after-bundle")
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["review", root.name, "--accept"]) == 1
+    assert stale.read_bytes() == b"changed-after-bundle"
+    assert good.read_bytes() == b"new-b"
+    output = capsys.readouterr().out
+    assert "stale.txt — 현재 파일의 base 해시 불일치" in output
+    assert "요약: 적용 1 · 중단 1 · 스킵 0" in output
+
+
+def test_review_cli_accept_new_collision_does_not_overwrite(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    root = _make_cli_review_bundle(tmp_path, {"new.txt": "candidate"})
+    target = tmp_path / "new.txt"
+    target.write_bytes(b"created-later")
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["review", root.name, "--accept"]) == 1
+    assert target.read_bytes() == b"created-later"
+    assert "신규 대상이 이미 존재함" in capsys.readouterr().out
+
+
+def test_review_cli_rejects_escape_and_symlink_candidate(tmp_path, monkeypatch, capsys):
+    import hashlib
+    from yok3x import cli
+
+    root = _make_cli_review_bundle(tmp_path, {"linked.txt": "candidate"})
+    manifest_path = root / "changes.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw = b"escape"
+    manifest["files"].append({
+        "path": "../escape.txt", "status": "new", "base_sha256": None,
+        "proposed_sha256": hashlib.sha256(raw).hexdigest(),
+        "base_bytes": 0, "proposed_bytes": len(raw),
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (root.parent / "escape.txt").write_bytes(raw)
+    linked_candidate = root / "linked.txt"
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path, "is_symlink",
+        lambda path: path == linked_candidate or real_is_symlink(path))
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["review", root.name, "--accept"]) == 1
+    output = capsys.readouterr().out
+    assert "linked.txt — 후보 경로에 심볼릭 링크" in output
+    assert "../escape.txt — 위험한 경로" in output
+    assert not (tmp_path.parent / "escape.txt").exists()
+    assert "요약: 적용 0 · 중단 2 · 스킵 0" in output
+
+
+def test_review_cli_reject_records_only_in_bundle(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    target = tmp_path / "app.txt"
+    target.write_bytes(b"old")
+    root = _make_cli_review_bundle(tmp_path, {"app.txt": "new"})
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["review", root.name, "--reject"]) == 0
+    assert target.read_bytes() == b"old"
+    assert (root / "app.txt").read_bytes() == b"new"
+    assert "rejected run_id=" in (root / "review.log").read_text(encoding="utf-8")
+    assert "거절됨" in capsys.readouterr().out
+
+
+def test_review_bundle_discovery_supports_run_dir_base(tmp_path):
+    from yok3x import review as review_module
+
+    cfg = Config.load(tmp_path)
+    run_id = "run_without_workdir"
+    root = cfg.paths.runs / run_id / "yok3x-out" / run_id
+    root.mkdir(parents=True)
+    (root / "changes.json").write_text(
+        json.dumps({"mode": "review", "files": [], "rejected": []}), encoding="utf-8")
+    (root / "changes.diff").write_text("", encoding="utf-8")
+
+    assert review_module.find_bundle(cfg, run_id) == root
+
+
 def test_daily_pace_catch_up_cap(tmp_path):
     """유동(catch-up) 하루 상한: 덜 썼으면 상한↑(안전캡 2×q), 많이 썼으면↓, 폴백은 고정 q.
     사용자 시나리오: 2일 지나고 0% 사용 → 오늘 28%p(=이틀치 몰아쓰기, 안전캡)."""
