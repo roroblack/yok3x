@@ -150,8 +150,9 @@ def _pace_cfg(cfg: Config, backend: str) -> dict:
     dp["soft_frac"] = min(0.99, max(0.0, sf)) if math.isfinite(sf) else 0.8
     if dp.get("mode") not in ("warn", "pause"):
         dp["mode"] = "warn"
-    # 하루 상한 산정 전략: fixed(고정 pct_of_weekly) | catch_up(남은 일수로 유동 — 덜 썼으면 상한↑).
-    if dp.get("strategy") not in ("fixed", "catch_up"):
+    # 하루 상한 산정 전략: fixed(고정 pct_of_weekly) | catch_up(기준선 따라잡기, 초과 시 즉시 조임·안 쓰면 회복)
+    # | spread(남은 예산을 남은 일수로 균등 분배 — 초과분도 고르게 펴서 상한이 덜 급격히 떨어짐).
+    if dp.get("strategy") not in ("fixed", "catch_up", "spread"):
         dp["strategy"] = "fixed"
     try:                                          # catch_up 안전 캡 배수(하루 상한 ≤ max_cap_mult×q)
         mm = float(dp.get("max_cap_mult", 2.0))
@@ -226,6 +227,32 @@ def _catch_up_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
     return min(max_mult * q, raw)
 
 
+def _spread_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
+                now: float | None = None) -> float:
+    """spread 전략: 남은 예산(100−u0)을 남은 일수로 **균등 분배**. 초과했을 때 상한을 즉시 확
+    낮추는 catch_up과 달리 초과분도 남은 날에 고르게 편다(하루 상한이 덜 급격히 떨어짐).
+    안전 캡 max_mult×q 유지. 리셋 정보 없으면 고정 q 폴백."""
+    if not reset_at or not math.isfinite(reset_at):
+        return q
+    now = now if now is not None else time.time()
+    remaining = reset_at - now
+    if not math.isfinite(remaining):
+        return q
+    D = max(1, min(7, math.ceil(remaining / 86400.0)))
+    raw = max(0.0, 100.0 - max(0.0, u0)) / D
+    return min(max_mult * q, raw)
+
+
+def _daily_cap(strategy: str, q: float, u0: float, reset_at: float | None,
+               max_mult: float, now: float | None = None) -> float:
+    """전략별 하루 상한. fixed=고정 q · catch_up=기준선 따라잡기(즉시 조임) · spread=균등 분배."""
+    if strategy == "catch_up":
+        return _catch_up_cap(q, u0, reset_at, max_mult, now)
+    if strategy == "spread":
+        return _spread_cap(q, u0, reset_at, max_mult, now)
+    return q                                       # fixed
+
+
 def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
                       today: str | None = None, reset_at: float | None = None) -> dict | None:
     """하루 페이싱 상태. current_pct=현재 7d used_percent(실측). enabled off / 7d 없으면 None.
@@ -252,8 +279,7 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     # 새 날(자정) 또는 새 창(주간 리셋)이면 기준 초기화. u0·cap_today를 당일 고정(사용할수록 상한이
     # 줄어드는 문제 방지 — codex). cap_today는 이 시점에 한 번 계산해 하루 동안 유지.
     if rec.get("date") != today or rec.get("win") != win_gen:
-        cap_today = (_catch_up_cap(q, current, reset_at, dp["max_cap_mult"])
-                     if dp["strategy"] == "catch_up" else q)
+        cap_today = _daily_cap(dp["strategy"], q, current, reset_at, dp["max_cap_mult"])
         rec = {"date": today, "win": win_gen, "start_pct": current, "last_pct": current,
                "used_today": 0.0, "blocked": False, "cap_today": cap_today,
                "strat": dp["strategy"]}
@@ -261,8 +287,8 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     elif rec.get("strat") != dp["strategy"]:
         # 하루 중 전략을 바꾸면 즉시 반영한다(당일 재초기화 없이). u0는 오늘 첫 실측(start_pct)을
         # 그대로 써 사용량 누적을 보존한다 — current로 재계산하면 몰아쓴 뒤 상한이 줄어든다.
-        rec["cap_today"] = (_catch_up_cap(q, float(rec.get("start_pct", current)), reset_at,
-                                          dp["max_cap_mult"]) if dp["strategy"] == "catch_up" else q)
+        rec["cap_today"] = _daily_cap(dp["strategy"], q, float(rec.get("start_pct", current)),
+                                      reset_at, dp["max_cap_mult"])
         rec["strat"] = dp["strategy"]
         changed = True
     else:

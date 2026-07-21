@@ -1109,6 +1109,26 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_daily_pace_strategy_options_distinct(tmp_path):
+    """세 전략이 뚜렷이 구분: fixed=고정 · catch_up=즉시조임 · spread=균등분산(초과 시 핵심 차이)."""
+    import time as _t
+    cfg = Config.load(tmp_path)
+    now = _t.time()
+    reset = now + (3 * 24 + 23) * 3600            # D=4, k=4 → 과사용 케이스로 옵션 차이 확인
+    caps = {}
+    for strat in ("fixed", "catch_up", "spread"):
+        cfg.yok3x["guard"]["daily_pace"].update(enabled=True, strategy=strat)
+        r = usage.daily_pace_status(cfg, f"s_{strat}", 76.0, today=f"d-{strat}", reset_at=reset)
+        caps[strat] = round(r["cap"], 1)
+    assert caps["fixed"] == 14.0                   # 고정
+    assert caps["catch_up"] == 0.0                 # 56-76 → 즉시 0 조임
+    assert caps["spread"] == 6.0                   # (100-76)/4 → 균등분산
+    # 알 수 없는 전략은 fixed로 폴백
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, strategy="bogus")
+    assert round(usage.daily_pace_status(cfg, "s_bogus", 76.0, today="d-b",
+                                         reset_at=reset)["cap"], 1) == 14.0
+
+
 def test_daily_pace_forward_only_when_over_daily_cap(tmp_path):
     """이후 지속가능 일일률은 **일간 상한을 초과했을 때만** 표시. under면 이월이라 None."""
     import time as _t

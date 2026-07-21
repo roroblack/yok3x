@@ -403,7 +403,8 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <div><label class="f">상한 배분 방식</label>
           <div class="seg" id="pacestratseg">
             <button data-ps="fixed" onclick="savePaceStrategy('fixed')" title="매일 고정 상한(위 %p 균등)">균등(고정)</button>
-            <button data-ps="catch_up" onclick="savePaceStrategy('catch_up')" title="남은 리셋 일수로 유동 조정. 덜 썼으면 상한↑(안 쓴 예산 재분배), 많이 썼으면↓. 안전캡 2배.">유동(남은일수 배분)</button>
+            <button data-ps="catch_up" onclick="savePaceStrategy('catch_up')" title="기준선 따라잡기: 덜 썼으면 상한↑(이월), 초과하면 상한을 즉시 확 낮추고(조임) 안 쓰면 회복. 안전캡 2배.">유동(따라잡기)</button>
+            <button data-ps="spread" onclick="savePaceStrategy('spread')" title="남은 예산(100−현재)을 남은 일수로 균등 분배. 초과분도 남은 날에 고르게 펴서 상한이 덜 급격히 떨어진다(catch_up의 즉시 조임과 대비). 안전캡 2배.">분산(남은일수 균등)</button>
           </div></div>
       </div>
       <div id="pace-status" style="margin-top:8px"></div>
@@ -620,9 +621,9 @@ function render(s){
       const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
       // 페이싱이 있어도 리셋 시간을 덮어쓰지 않는다 — 오늘 소비/상한 + 리셋까지 + 토큰을 모두 보여준다.
       const rstTxt=w.reset?`리셋 ${w.reset}`:"";
-      // 유동(catch_up)이고 상한이 균등 기준선과 다르면 '상한 18%p(균등 14%p)'로 둘 다 보여준다.
+      // 유동(catch_up)·분산(spread)이고 상한이 균등 기준선과 다르면 '상한 18%p(균등 14%p)'로 둘 다 보여준다.
       const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
-      const capTxt=(t.pace&&t.pace.strategy==="catch_up"&&base!=null&&Math.round(cap)!==Math.round(base))
+      const capTxt=(t.pace&&(t.pace.strategy==="catch_up"||t.pace.strategy==="spread")&&base!=null&&Math.round(cap)!==Math.round(base))
         ?`상한 ${cap}%p(균등 ${base}%p)` : `상한 ${cap}%p`;
       // 이후 지속가능 일일률: 남은 예산÷남은일수. 과사용해 오늘 상한이 줄었을 때 '다음날부터 하루 몇%'를 보여준다.
       const fd=t.pace?t.pace.forward_daily:null;
