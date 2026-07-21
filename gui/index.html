@@ -768,7 +768,7 @@ async function pickWorkspace(){
   }catch(e){alert("폴더 선택 실패(`yok3x gui`로 실행해야 함): "+e);}
 }
 async function saveWorkspace(path){
-  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspace:path})}); load();}catch(e){}
+  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspace:path})}); load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 function clearWorkspace(){ document.getElementById("c-workspace").value=""; saveWorkspace(""); }
 // 작업별 workdir — 전역 워크스페이스(c-workspace)와 달리 **작업 폼의 일부**라 즉시 저장하지 않는다.
@@ -787,30 +787,30 @@ async function toggleFailover(){
   const turnOn=document.getElementById("swfo").classList.contains("off");  // off면 켜는 것
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({failover_enabled:turnOn})});
     if(r.ok){document.getElementById("swfo").classList.toggle("off",!turnOn);document.getElementById("fotext").textContent=turnOn?"ON":"OFF";}
-  }catch(e){}
+  }catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 async function toggleOffline(){
   const turnOn=document.getElementById("swof").classList.contains("off");  // off면 켜는 것
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({offline_enabled:turnOn})});
     if(r.ok){document.getElementById("swof").classList.toggle("off",!turnOn);document.getElementById("oftext").textContent=turnOn?"ON":"OFF";}
-  }catch(e){}
+  }catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 // claude 토큰 자동갱신 on/off. 끄면 토큰 만료 시 실측(5h/7d)이 원장 추정으로 폴백돼 창이 사라진다.
 async function toggleAutoRefresh(){
   const turnOn=document.getElementById("swar").classList.contains("off");
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_refresh:turnOn})});
     if(r.ok){document.getElementById("swar").classList.toggle("off",!turnOn);document.getElementById("artext").textContent=turnOn?"ON":"OFF";load();}
-  }catch(e){}
+  }catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 async function saveGuardRatios(){
   const soft=(+document.getElementById("softr").value)/100, hard=(+document.getElementById("hardr").value)/100;
-  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soft_ratio:soft,hard_ratio:hard})});load();}catch(e){}
+  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({soft_ratio:soft,hard_ratio:hard})});load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 async function togglePace(){
   const turnOn=document.getElementById("swpace").classList.contains("off");
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({daily_pace:{enabled:turnOn}})});
     if(r.ok){document.getElementById("swpace").classList.toggle("off",!turnOn);document.getElementById("pacetext").textContent=turnOn?"ON":"OFF";}
-    load();}catch(e){}
+    load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 async function savePace(mode){
   if(mode) document.querySelectorAll('#pacemodeseg button').forEach(b=>b.classList.toggle('on',b.dataset.pm===mode)); // 즉시 반영
@@ -818,18 +818,29 @@ async function savePace(mode){
   if(mode) body.daily_pace.mode=mode;
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     const j=await r.json(); document.getElementById("board-msg"); paceSaved(r.ok?"저장됨 ✓":("실패: "+(j.error||r.status)));
-    load();}catch(e){}
+    load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 function resetPaceCap(){const c=document.getElementById("pacecap");c.value=14;document.getElementById("pacecapval").textContent="14";savePace();}
 // 상한 배분 방식: 균등(fixed) vs 유동(catch_up, 남은 리셋 일수로 재분배)
 async function savePaceStrategy(strategy){
   document.querySelectorAll('#pacestratseg button').forEach(b=>b.classList.toggle('on',b.dataset.ps===strategy));
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({daily_pace:{strategy}})});
-    const j=await r.json(); paceSaved(r.ok?"저장됨 ✓":("실패: "+(j.error||r.status))); load();}catch(e){}
+    const j=await r.json(); paceSaved(r.ok?"저장됨 ✓":("실패: "+(j.error||r.status))); load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 function paceSaved(msg){const el=document.getElementById("pace-saved"); if(el){el.textContent=msg; clearTimeout(window._psT); window._psT=setTimeout(()=>{el.textContent="";},2000);}}
+// 설정 저장/토글 fetch 실패를 조용히 삼키지 않고 사용자에게 알린다(BUG-24 동류 방지). 3초 토스트.
+function toast(msg){
+  let t=document.getElementById("toast");
+  if(!t){t=document.createElement("div");t.id="toast";
+    t.style.cssText="position:fixed;bottom:16px;left:50%;transform:translateX(-50%);"
+      +"background:rgba(200,60,60,.96);color:#fff;padding:8px 14px;border-radius:6px;"
+      +"font-size:12px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,.35)";
+    document.body.appendChild(t);}
+  t.textContent=msg; t.style.display="block";
+  clearTimeout(window._tT); window._tT=setTimeout(()=>{t.style.display="none";},3000);
+}
 async function paceApprove(b){
-  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pace_approve:b})});load();}catch(e){}
+  try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pace_approve:b})});load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 function renderPaceStatus(s){
   const el=document.getElementById("pace-status"); if(!el) return;
@@ -852,7 +863,7 @@ function renderPaceStatus(s){
 async function savePlan(p){
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plan:p})});
     if(r.ok){document.querySelectorAll('#planseg button').forEach(b=>b.classList.toggle('on',b.dataset.plan===p));}
-    load();}catch(e){}
+    load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
 function fillSel(id,list,sel){const el=document.getElementById(id);if(el&&el.dataset.filled!=="1"+list.join()){el.innerHTML=opts(list,sel);el.dataset.filled="1"+list.join();}}
 function renderConsole(s,rn){
