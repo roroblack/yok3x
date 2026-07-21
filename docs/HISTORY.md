@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [F1-d] 수정모드 review bundle MVP (codex 구현·Claude 검토)
+
+- 사용자 제안 "수정모드". codex 합의: 새 패턴 아닌 공통 change-set 게이트. 이번은 **읽기전용 번들 생성까지**.
+- 모든 패턴의 `_finish` 공통 후처리에 task `changes:{"mode":"review"}` opt-in 추가.
+  materialize와 독립적으로 `file:` 출력 계약을 켜고 후보·`changes.diff`·`changes.json`을 런별 격리 루트에 보존한다.
+- workdir 파일은 UTF-8 base로만 **읽어** new/modified/unchanged와 SHA-256·바이트를 기록한다.
+  위험 상대경로·workdir 밖 해석·심볼릭·비 UTF-8/NUL 파일은 스킵·기록하며 **원본 적용/verify는 하지 않는다**.
+  `_review_root`는 materialize의 사용자지정 root와 달리 **항상 고정 격리**(workdir/yok3x-out/<run_id>).
+- **codex 자체 구현 중 잡은 것**: 원본 덮을 수 있던 custom root → 고정 격리 root, 마지막 개행 없는 diff 손상,
+  CRLF 파싱 변조, 예약 메타파일(changes.json/diff) 충돌 → 회귀 테스트로 보강.
+- **Claude 독립 검토(E2E 실측)**: workdir 원본 파일 **불변 확인**(수정 후보 게시 후 원본 sha256 그대로),
+  후보가 격리 루트에만 쓰임, status(modified/new) 정확, base_sha256이 실제 원본과 일치, diff에 수정 반영.
+  잔여(codex 신고): base 2MB 상한·비UTF-8 제외·로컬 공격자 디렉터리교체 TOCTOU(로컬 도구라 저위험). **251 passed**(신규 7).
+
 
 ## 미출시(dev) · 2026-07-21 — [F1-b] verify 원본검증 오염 방지 (codex 구현·Claude 검토)
 

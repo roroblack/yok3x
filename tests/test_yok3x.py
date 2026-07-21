@@ -1898,6 +1898,14 @@ def test_artifacts_parse_only_file_fences():
     assert blocks[0].content == "<h1>hi</h1>"
 
 
+def test_artifacts_file_fence_crlf_does_not_leave_carriage_return():
+    from yok3x import artifacts as A
+
+    blocks = A.parse_file_blocks("```file:x.txt\r\nfirst\r\nsecond\r\n```\r\n")
+
+    assert blocks == [A.FileBlock("x.txt", "first\r\nsecond")]
+
+
 def test_artifacts_reject_dangerous_paths():
     from yok3x import artifacts as A
     bad = ["../evil", "/etc/passwd", "C:/x", "a/../b", "foo/", "CON", "aux.log", "con.txt ", "x\ty"]
@@ -1947,6 +1955,166 @@ def test_materialize_disabled_by_default(tmp_path):
     # materialize 미설정이면 아무것도 안 함
     assert o._materialize_outputs("```file:x.txt\ny\n```") == {"enabled": False}
     assert not (tmp_path / "yok3x-out").exists()
+
+
+def test_review_changes_disabled_preserves_existing_behavior(tmp_path):
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    wd = tmp_path / "proj"; wd.mkdir()
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+
+    assert o._review_changes("```file:x.txt\ny\n```") == {"enabled": False}
+    assert not (wd / "yok3x-out").exists()
+
+
+def test_review_bundle_status_diff_hashes_and_read_only_base(tmp_path):
+    import difflib
+    import hashlib
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(tmp_path)
+    wd = tmp_path / "proj"; wd.mkdir()
+    original_modified = b"old\n"
+    original_same = "같음\n".encode("utf-8")
+    (wd / "modified.txt").write_bytes(original_modified)
+    (wd / "same.txt").write_bytes(original_same)
+    before = {p.name: p.read_bytes() for p in wd.iterdir() if p.is_file()}
+
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    o.changes = {"mode": "review"}
+    final = ("```file:new.txt\nfresh\n\n```\n"
+             "```file:modified.txt\nnew\n\n```\n"
+             "```file:same.txt\n같음\n\n```")
+    result = o._review_changes(final)
+    root = Path(result["root"])
+    bundle = json.loads((root / "changes.json").read_text(encoding="utf-8"))
+    records = {item["path"]: item for item in bundle["files"]}
+
+    assert result["files"] == [
+        {"path": "new.txt", "status": "new"},
+        {"path": "modified.txt", "status": "modified"},
+        {"path": "same.txt", "status": "unchanged"},
+    ]
+    assert records["new.txt"] == {
+        "path": "new.txt", "status": "new", "base_sha256": None,
+        "proposed_sha256": hashlib.sha256(b"fresh\n").hexdigest(),
+        "base_bytes": 0, "proposed_bytes": len(b"fresh\n"),
+    }
+    assert records["modified.txt"] == {
+        "path": "modified.txt", "status": "modified",
+        "base_sha256": hashlib.sha256(original_modified).hexdigest(),
+        "proposed_sha256": hashlib.sha256(b"new\n").hexdigest(),
+        "base_bytes": len(original_modified), "proposed_bytes": len(b"new\n"),
+    }
+    assert records["same.txt"]["base_sha256"] == hashlib.sha256(original_same).hexdigest()
+    assert records["same.txt"]["proposed_sha256"] == hashlib.sha256(original_same).hexdigest()
+    assert records["same.txt"]["base_bytes"] == records["same.txt"]["proposed_bytes"]
+
+    expected = "".join(difflib.unified_diff(
+        [], ["fresh\n"], fromfile="a/new.txt", tofile="b/new.txt"))
+    expected += "".join(difflib.unified_diff(
+        ["old\n"], ["new\n"], fromfile="a/modified.txt", tofile="b/modified.txt"))
+    assert (root / "changes.diff").read_text(encoding="utf-8") == expected
+    assert (root / "new.txt").read_bytes() == b"fresh\n"
+    assert (root / "modified.txt").read_bytes() == b"new\n"
+    assert (root / "same.txt").read_bytes() == original_same
+    assert {p.name: p.read_bytes() for p in wd.iterdir() if p.is_file()} == before
+
+
+def test_review_bundle_rejects_escape_and_finish_records_summary(tmp_path, monkeypatch):
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(tmp_path)
+    wd = tmp_path / "proj"; wd.mkdir()
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    o.changes = {"mode": "review"}
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *args, **kwargs: None)
+
+    o._finish("review", "```file:ok.txt\nok\n```\n```file:../escape.txt\nbad\n```")
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    root = Path(status["changes"]["root"])
+    bundle = json.loads((root / "changes.json").read_text(encoding="utf-8"))
+
+    assert status["changes"] == {
+        "mode": "review",
+        "files": [{"path": "ok.txt", "status": "new"}],
+        "root": str(root),
+    }
+    assert any(item["path"] == "../escape.txt" for item in bundle["rejected"])
+    assert not (tmp_path / "escape.txt").exists()
+    assert "[changes] 검토 번들 1파일(new=1/modified=0/unchanged=0)" in (
+        o.run_dir / "run.log").read_text(encoding="utf-8")
+
+
+def test_review_bundle_isolated_root_and_no_newline_diff(tmp_path):
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(tmp_path)
+    wd = tmp_path / "proj"; wd.mkdir()
+    victim = wd / "victim.txt"
+    victim.write_bytes(b"old")
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    # review가 materialize.root를 재사용하면 victim을 덮어쓰는 치명적 회귀다.
+    o.materialize = {"enabled": True, "root": str(wd), "overwrite": True}
+    o.changes = {"mode": "review"}
+
+    materialized = o._materialize_outputs(
+        "```file:victim.txt\nnew\n```\n```file:changes.json\ncollision\n```")
+    result = o._review_changes("```file:victim.txt\nnew\n```")
+    root = Path(result["root"])
+
+    assert root == wd / "yok3x-out" / o.run_id
+    assert Path(materialized["root"]) == root
+    assert any(item["path"] == "changes.json" for item in materialized["rejected"])
+    assert victim.read_bytes() == b"old"
+    assert (root / "victim.txt").read_bytes() == b"new"
+    assert (root / "changes.diff").read_text(encoding="utf-8") == (
+        "--- a/victim.txt\n"
+        "+++ b/victim.txt\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "\\ No newline at end of file\n"
+        "+new\n"
+        "\\ No newline at end of file\n")
+
+
+def test_review_bundle_rejects_symlinked_base_path(tmp_path, monkeypatch):
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(tmp_path)
+    wd = tmp_path / "proj"; wd.mkdir()
+    linked = wd / "linked"; linked.mkdir()
+    target = linked / "victim.txt"; target.write_bytes(b"outside")
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path, "is_symlink",
+        lambda path: path == linked or real_is_symlink(path))
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    o.changes = {"mode": "review"}
+
+    result = o._review_changes("```file:linked/victim.txt\nchanged\n```")
+    bundle = json.loads(
+        (Path(result["root"]) / "changes.json").read_text(encoding="utf-8"))
+
+    assert result["files"] == []
+    assert any("심볼릭" in item["reason"] for item in bundle["rejected"])
+    assert target.read_bytes() == b"outside"
+
+
+def test_review_mode_enables_file_block_prompt_contract(tmp_path):
+    from yok3x import artifacts as A
+    from yok3x import orchestrator as O
+
+    cfg = Config.load(tmp_path)
+    o = O.Orchestrator(cfg, auto=True)
+    o.changes = {"mode": "review"}
+
+    assert A.FILES_CONTRACT in o.prepare_call("claude-main", "build", "build").prompt
 
 
 def test_daily_pace_catch_up_cap(tmp_path):

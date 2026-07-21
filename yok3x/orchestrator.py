@@ -12,8 +12,9 @@
 """
 from __future__ import annotations
 
-import json
+import difflib
 import hashlib
+import json
 import math
 import os
 import re
@@ -33,6 +34,7 @@ from ._version import __version__
 
 SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
 SCORE_GATE_MODES = ("strict", "advisory")
+REVIEW_BASE_MAX_BYTES = 2_000_000
 
 # 할루시네이션 방지 지침 — 모든 워커 프롬프트에 주입.
 ANTI_HALLUCINATION = (
@@ -108,6 +110,25 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
                 mode="w", encoding="utf-8", dir=path.parent,
                 prefix=f".{path.name}.", suffix=".tmp", delete=False) as tmp:
             json.dump(data, tmp, ensure_ascii=False, indent=2)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """같은 디렉터리의 임시 파일을 완성한 뒤 바이트 파일을 원자적으로 교체한다."""
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False) as tmp:
+            tmp.write(data)
             tmp_path = Path(tmp.name)
         os.replace(tmp_path, path)
         tmp_path = None
@@ -252,6 +273,9 @@ class Orchestrator:
         # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
         # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
         self.materialize: dict = {}
+        # 공통 change-set 후처리(opt-in). 현재는 읽기전용 검토 번들만 지원한다.
+        # {"mode":"review"}; 후보는 격리 루트에만 쓰고 workdir의 base는 읽기만 한다.
+        self.changes: dict = {}
         # 심판 캘리브레이션(F0): 루프의 모든 score·verify_ok 관측치를 _finish가 기록.
         self._calib_rounds: list[dict[str, Any]] = []
         # G-1: 순차 pipeline 재개에서만 채워지는 성공 prefix 캐시.
@@ -551,7 +575,8 @@ class Orchestrator:
                          "API·파일을 지어내지 말고, 명확화를 되묻지 말고 합리적 가정으로 곧장 구현하라.")
             # 산출물 게시(opt-in)가 켜졌을 때만 파일 경로 명시 계약을 준다. 워커는 여전히 파일을
             # 쓰지 않는다 — 경로를 '선언'만 하고, 실제 쓰기는 오케스트레이터가 검증 후 수행한다.
-            if (self.materialize or {}).get("enabled"):
+            if ((self.materialize or {}).get("enabled")
+                    or self._review_enabled()):
                 parts.append(artifacts.FILES_CONTRACT)
         else:
             parts.append(f"[역할] {w['role']}")
@@ -1187,6 +1212,14 @@ class Orchestrator:
         base = Path(self.workdir) if self.workdir else self.run_dir
         return base / "yok3x-out" / self.run_id
 
+    def _review_enabled(self) -> bool:
+        return isinstance(self.changes, dict) and self.changes.get("mode") == "review"
+
+    def _review_root(self) -> Path:
+        """검토 번들은 사용자 지정 게시 root와 무관하게 항상 런별 격리한다."""
+        base = Path(self.workdir) if self.workdir else self.run_dir
+        return base / "yok3x-out" / self.run_id
+
     def _materialize_outputs(self, final_output: str) -> dict:
         """final_output의 `​```file:<path>` 블록을 검증해 실제 파일로 게시한다.
 
@@ -1196,7 +1229,11 @@ class Orchestrator:
         conf = self.materialize or {}
         if not conf.get("enabled"):
             return {"enabled": False}
-        root = self._materialize_root()
+        # review와 함께 켜졌을 때는 사용자 지정 materialize.root가 원본을 가리켜도
+        # 절대 쓰지 않고 두 후처리 모두 고정 격리 루트를 공유한다.
+        root = (self._review_root()
+                if self._review_enabled()
+                else self._materialize_root())
         blocks = artifacts.parse_file_blocks(final_output or "")
         if not blocks:
             self._log("[out] 게시할 파일 없음 — 워커가 ```file:<경로> 블록을 내지 않았다")
@@ -1209,6 +1246,14 @@ class Orchestrator:
         plan = artifacts.plan_files(blocks, existing=existing,
                                     overwrite=bool(conf.get("overwrite")),
                                     max_files=int(conf.get("max_files", 20)))
+        if self._review_enabled():
+            safe = []
+            for fb in plan.accepted:
+                if fb.path.split("/", 1)[0].lower() in {"changes.json", "changes.diff"}:
+                    plan.rejected.append({"path": fb.path, "reason": "검토 번들 예약 경로"})
+                else:
+                    safe.append(fb)
+            plan.accepted = safe
         written: list[dict] = []
         try:
             root.mkdir(parents=True, exist_ok=True)
@@ -1240,6 +1285,169 @@ class Orchestrator:
         return {"enabled": True, "ok": bool(written), "root": str(root),
                 "written": written, "rejected": plan.rejected}
 
+    @staticmethod
+    def _path_uses_symlink(base: Path, relative_path: str) -> bool:
+        """base 아래 상대경로 구성요소 중 심볼릭 링크가 있으면 True."""
+        current = base
+        for part in Path(relative_path).parts:
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
+
+    @staticmethod
+    def _review_diff(path: str, base: str, proposed: str) -> str:
+        """한 UTF-8 텍스트 후보의 unified diff를 만든다."""
+        lines = difflib.unified_diff(
+            base.splitlines(keepends=True),
+            proposed.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+        rendered = []
+        for line in lines:
+            rendered.append(line)
+            if not line.endswith("\n"):
+                rendered.append("\n\\ No newline at end of file\n")
+        return "".join(rendered)
+
+    def _review_changes(self, final_output: str) -> dict:
+        """file 블록을 base와 비교해 읽기전용 검토 번들을 격리 루트에 게시한다."""
+        if not self._review_enabled():
+            return {"enabled": False}
+
+        root = self._review_root()
+        blocks = artifacts.parse_file_blocks(final_output or "")
+        plan = artifacts.plan_files(
+            blocks,
+            overwrite=True,
+        )
+        # 번들 메타데이터와 후보 경로가 충돌하면 메타데이터를 보존한다.
+        accepted = []
+        for fb in plan.accepted:
+            if fb.path.split("/", 1)[0].lower() in {"changes.json", "changes.diff"}:
+                plan.rejected.append({"path": fb.path, "reason": "검토 번들 예약 경로"})
+            elif "\x00" in fb.content:
+                plan.rejected.append({"path": fb.path, "reason": "binary/NUL 후보 제외"})
+            else:
+                accepted.append(fb)
+
+        records: list[dict[str, Any]] = []
+        diffs: list[str] = []
+        try:
+            bundle_base = Path(self.workdir) if self.workdir else self.run_dir
+            bundle_relative = str(Path("yok3x-out") / self.run_id)
+            if self._path_uses_symlink(bundle_base, bundle_relative):
+                raise OSError("검토 번들 루트에 심볼릭 경로가 있음")
+            root.mkdir(parents=True, exist_ok=True)
+            real_root = root.resolve()
+            base_root = Path(self.workdir) if self.workdir else None
+            real_base_root = base_root.resolve() if base_root is not None else None
+
+            for fb in accepted:
+                dest = root / fb.path
+                if self._path_uses_symlink(root, fb.path):
+                    plan.rejected.append({"path": fb.path, "reason": "후보 심볼릭 경로 제외"})
+                    continue
+                try:
+                    dest.resolve().relative_to(real_root)
+                except (OSError, ValueError):
+                    plan.rejected.append({
+                        "path": fb.path,
+                        "reason": "후보의 해석된 경로가 번들 루트 밖(심볼릭 등)",
+                    })
+                    continue
+
+                base_text = ""
+                base_raw: bytes | None = None
+                if base_root is not None and real_base_root is not None:
+                    base_path = base_root / fb.path
+                    try:
+                        base_path.resolve().relative_to(real_base_root)
+                    except (OSError, ValueError):
+                        plan.rejected.append({
+                            "path": fb.path,
+                            "reason": "base의 해석된 경로가 workdir 밖",
+                        })
+                        continue
+                    if self._path_uses_symlink(base_root, fb.path):
+                        plan.rejected.append({"path": fb.path, "reason": "base 심볼릭 경로 제외"})
+                        continue
+                    if base_path.exists():
+                        if not base_path.is_file():
+                            plan.rejected.append({"path": fb.path, "reason": "base가 일반 파일이 아님"})
+                            continue
+                        try:
+                            with base_path.open("rb") as base_file:
+                                base_raw = base_file.read(REVIEW_BASE_MAX_BYTES + 1)
+                            if len(base_raw) > REVIEW_BASE_MAX_BYTES:
+                                plan.rejected.append({
+                                    "path": fb.path,
+                                    "reason": f"base 크기 상한({REVIEW_BASE_MAX_BYTES}B) 초과",
+                                })
+                                continue
+                            base_text = base_raw.decode("utf-8")
+                        except UnicodeDecodeError:
+                            plan.rejected.append({"path": fb.path, "reason": "base가 UTF-8 텍스트가 아님"})
+                            continue
+                        if "\x00" in base_text:
+                            plan.rejected.append({"path": fb.path, "reason": "binary/NUL base 제외"})
+                            continue
+
+                proposed_raw = fb.content.encode("utf-8")
+                if base_raw is None:
+                    status = "new"
+                elif base_text == fb.content:
+                    status = "unchanged"
+                else:
+                    status = "modified"
+
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_bytes(dest, proposed_raw)
+
+                record = {
+                    "path": fb.path,
+                    "status": status,
+                    "base_sha256": (hashlib.sha256(base_raw).hexdigest()
+                                    if base_raw is not None else None),
+                    "proposed_sha256": hashlib.sha256(proposed_raw).hexdigest(),
+                    "base_bytes": len(base_raw) if base_raw is not None else 0,
+                    "proposed_bytes": len(proposed_raw),
+                }
+                records.append(record)
+                if status != "unchanged":
+                    diffs.append(self._review_diff(fb.path, base_text, fb.content))
+
+            bundle = {"mode": "review", "files": records, "rejected": plan.rejected}
+            _atomic_write_bytes(root / "changes.diff", "".join(diffs).encode("utf-8"))
+            _atomic_write_json(root / "changes.json", bundle)
+        except OSError as e:
+            self._log(f"[changes] 검토 번들 실패: {type(e).__name__}: {e}")
+            return {
+                "enabled": True,
+                "mode": "review",
+                "root": str(root),
+                "files": [{"path": r["path"], "status": r["status"]} for r in records],
+                "rejected": plan.rejected,
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+        counts = {name: sum(r["status"] == name for r in records)
+                  for name in ("new", "modified", "unchanged")}
+        self._log(
+            f"[changes] 검토 번들 {len(records)}파일("
+            f"new={counts['new']}/modified={counts['modified']}/"
+            f"unchanged={counts['unchanged']}) → {root}")
+        for rejected in plan.rejected:
+            self._log(f"[changes] 스킵: {rejected['path']} — {rejected['reason']}")
+        return {
+            "enabled": True,
+            "mode": "review",
+            "root": str(root),
+            "files": [{"path": r["path"], "status": r["status"]} for r in records],
+            "rejected": plan.rejected,
+        }
+
     def _finish(self, task: str, final_output: str) -> None:
         out = self.run_dir / "final_output.md"
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -1250,6 +1458,14 @@ class Orchestrator:
         except Exception as e:                       # 게시 실패가 런을 깨지 않게
             self._log(f"[out] 게시 예외: {type(e).__name__}: {e}")
             mat = {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}"}
+        try:
+            changes = self._review_changes(final_output or "")
+        except Exception as e:                       # 번들 실패도 기존 런 완료를 깨지 않게
+            self._log(f"[changes] 검토 번들 예외: {type(e).__name__}: {e}")
+            changes = {
+                "enabled": True, "mode": "review", "root": str(self._review_root()),
+                "files": [], "error": f"{type(e).__name__}: {e}",
+            }
         # 주의: 여기서 바로 _save_status 하지 않는다 — 아래 최종 _save_status가 덮어써 materialized가
         # 유실된다(E2E에서 발견). 최종 저장에 함께 실어 한 번만 기록한다.
         # 주의: brief.md에 런 '출력'을 덮어쓰지 않는다. 과거엔 그렇게 했다가, 다음 런 프롬프트에
@@ -1264,6 +1480,12 @@ class Orchestrator:
         status_extra = {}
         if mat.get("enabled"):
             status_extra["materialized"] = mat
+        if changes.get("enabled"):
+            status_extra["changes"] = {
+                "mode": changes["mode"],
+                "files": changes["files"],
+                "root": changes["root"],
+            }
         if self.gate is not None:
             status_extra["gate"] = self.gate
         self._save_status("done", status_extra or None)
@@ -1486,6 +1708,13 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     # 산출물 게시(opt-in). "이 폴더에 X 만들어줘"는 그 폴더 하위 신규 파일 생성에 대한 작업단위
     # 승인으로 본다(codex 권고) — 파일마다 다시 묻지 않는다. 단 덮어쓰기는 명시해야 한다.
     orch.materialize = spec.get("materialize") or {}
+    raw_changes = spec.get("changes")
+    changes_error = ""
+    if raw_changes is not None and not isinstance(raw_changes, dict):
+        changes_error = "changes가 객체가 아님"
+    elif isinstance(raw_changes, dict) and raw_changes.get("mode") not in (None, "review"):
+        changes_error = "changes.mode가 잘못됨(review만 지원)"
+    orch.changes = raw_changes if isinstance(raw_changes, dict) else {}
     # 작업 그룹 라벨(콘솔 작업별 뷰용): label 키가 있으면 그 값(빈값 허용=무제목),
     # 키 자체가 없으면(등록된 task 파일) 파일명으로 폴백.
     _lbl = spec.get("label")
@@ -1496,6 +1725,11 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     task = spec["task"]
     orch.pattern = pattern
     orch.task_desc = task
+    if changes_error:
+        print(f"[error] {changes_error}")
+        orch._save_status("aborted", {
+            "reason": changes_error, "cause": "config_error", "resumable": False})
+        return f"aborted: {changes_error}"
     if resume_dir is not None:
         orch.resume_from = resume_dir.name
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 # ```file:상대/경로.ext  ... ``` — 언어가 아니라 경로를 info string에 명시하게 한다.
 # (```html 같은 언어 펜스는 '추측'이 되므로 대상이 아니다.)
 _FILE_FENCE_RE = re.compile(
-    r"^[ \t]*```[ \t]*file:[ \t]*(?P<path>[^\n`]+?)[ \t]*\r?\n(?P<body>.*?)^[ \t]*```[ \t]*$",
+    r"^[ \t]*```[ \t]*file:[ \t]*(?P<path>[^\n`]+?)[ \t]*\r?\n(?P<body>.*?)^[ \t]*```[ \t]*\r?$",
     re.M | re.S)
 
 # 워커 프롬프트에 주입할 출력 계약. 경로를 명시하게 만드는 것이 이 기능의 안전 근거다.
@@ -52,8 +52,10 @@ def parse_file_blocks(text: str) -> list[FileBlock]:
     out: list[FileBlock] = []
     for m in _FILE_FENCE_RE.finditer(text or ""):
         body = m.group("body")
-        if body.endswith("\n"):
-            body = body[:-1]                 # 닫는 펜스 앞 개행은 내용이 아니다
+        if body.endswith("\r\n"):
+            body = body[:-2]                 # 닫는 펜스 앞 CRLF는 내용이 아니다
+        elif body.endswith("\n"):
+            body = body[:-1]                 # 닫는 펜스 앞 LF는 내용이 아니다
         out.append(FileBlock(path=m.group("path").strip(), content=body))
     return out
 
