@@ -1109,6 +1109,24 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_pacing_day_aligns_to_reset_not_midnight():
+    """하루 경계는 자정이 아니라 리셋 시각(예: 오후 6시)에 정렬된다(사용자 지적)."""
+    from datetime import datetime
+    now = datetime(2026, 7, 21, 11, 0, 0).timestamp()      # 오전 11시
+    reset = datetime(2026, 7, 26, 18, 0, 0).timestamp()    # 5일 후 오후 6시
+    start = usage._pacing_day_start(reset, now)
+    ds = datetime.fromtimestamp(start)
+    assert ds.hour == 18 and ds.day == 20                  # 전날 오후 6시(자정 아님)
+    # 리셋 시각(18시)을 지나면 새 하루로 넘어간다
+    after = datetime(2026, 7, 21, 20, 0, 0).timestamp()
+    ds2 = datetime.fromtimestamp(usage._pacing_day_start(reset, after))
+    assert ds2.hour == 18 and ds2.day == 21
+    # 레코드 초기화 키도 경계마다 달라진다
+    assert usage._pacing_day_key(reset, now) != usage._pacing_day_key(reset, after)
+    # reset_at 없으면 자정 폴백
+    assert usage._pacing_day_key(None, now) == "2026-07-21"
+
+
 def test_daily_pace_today_used_override(tmp_path):
     """today_used(자정 이후 실제 토큰 사용률)가 주어지면 7d% 델타 대신 그 값을 오늘 소비로 쓴다.
     7d%가 롤오프로 안 움직여 델타가 0이어도 오늘 실제 사용을 정확히 보여준다(사용자 지적)."""

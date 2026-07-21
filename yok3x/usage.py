@@ -172,17 +172,35 @@ def _weekly_pct(reading: "limits.LimitReading | None") -> float | None:
     return max(pref) if pref else None
 
 
-def today_used_pct(cfg: Config, backend: str) -> float | None:
-    """**오늘(자정 이후) 실제 사용률**. 7d 롤링% 델타는 오래된 사용이 빠지는 롤오프에 상쇄돼 오늘
-    사용을 못 잡고 0으로 뭉갠다(사용자 지적 '오늘 0%p' 버그). claude는 자정 이후 실제 소비 토큰으로
-    정확히 계산한다(예: 6.4%). cap 미보정/토큰 없음/타 백엔드는 None → 기존 7d% 델타 방식 폴백."""
+def _pacing_day_start(reset_at: float | None, now: float | None = None) -> float:
+    """'페이싱 하루'의 시작 시각. 하루 경계는 **자정이 아니라 실제 리셋 시각에 정렬**한다(주간 창이
+    예: 오후 6시에 리셋되면 하루도 오후 6시~오후 6시). reset_at에서 86400초씩 뒤로 물러난 경계 중
+    now 직전(≤now)의 것. reset_at 없으면 달력 자정 폴백."""
+    now = now if now is not None else time.time()
+    if not reset_at or not math.isfinite(reset_at):
+        return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    days_ahead = math.ceil((reset_at - now) / 86400.0)
+    return reset_at - days_ahead * 86400.0
+
+
+def _pacing_day_key(reset_at: float | None, now: float | None = None) -> str:
+    """리셋 정렬된 페이싱 하루 식별 키(레코드 일일 초기화용). 경계가 바뀌면 값이 바뀐다."""
+    if not reset_at or not math.isfinite(reset_at):
+        return (datetime.fromtimestamp(now) if now else datetime.now()).strftime("%Y-%m-%d")
+    return f"pd{int(round(_pacing_day_start(reset_at, now)))}"
+
+
+def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> float | None:
+    """**오늘(리셋 정렬 하루 시작 이후) 실제 사용률**. 7d 롤링% 델타는 롤오프에 상쇄돼 오늘 사용을
+    0으로 뭉갠다(사용자 지적). claude는 하루 시작 이후 실제 소비 토큰으로 정확히 계산한다(예: 6.4%).
+    하루 경계는 자정이 아니라 **리셋 시각에 정렬**(reset_at 기준). 토큰 없음/타 백엔드/미보정은 None."""
     if backend != "claude":
         return None
     try:
         conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
         now = time.time()
-        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        secs = max(0.0, now - midnight)
+        day_start = _pacing_day_start(reset_at, now)
+        secs = max(0.0, now - day_start)
         tok = limits._rolling_claude_tokens(limits._claude_root(conf), now, secs)
         _, cap7 = limits._resolve_claude_caps(conf)
         if cap7 and cap7 > 0 and tok >= 0:
@@ -422,9 +440,10 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
+                _ra = _weekly_reset_at(reading)
                 pace = daily_pace_status(cfg, backend, precise_weekly_pct(cfg, backend, reading),
-                                         reset_at=_weekly_reset_at(reading),
-                                         today_used=today_used_pct(cfg, backend))
+                                         today=_pacing_day_key(_ra), reset_at=_ra,
+                                         today_used=today_used_pct(cfg, backend, _ra))
                 if pace and pace["level"] != "ok":
                     tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
                             + ("(승인 필요)" if pace["level"] == "stop" else ""))   # 동일 severity라도 표시

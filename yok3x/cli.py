@@ -308,8 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         for b in usage.BACKEND_KEYS:
             r = limits.probe(cfg, b)
             wk = usage.precise_weekly_pct(cfg, b, r)
-            st = usage.daily_pace_status(cfg, b, wk, reset_at=usage._weekly_reset_at(r),
-                                         today_used=usage.today_used_pct(cfg, b))
+            _ra = usage._weekly_reset_at(r)
+            st = usage.daily_pace_status(cfg, b, wk, today=usage._pacing_day_key(_ra),
+                                         reset_at=_ra, today_used=usage.today_used_pct(cfg, b, _ra))
             if st:
                 print(f"  {b:7s} 오늘소비 {st['used']:.0f}/{st['cap']:.0f}%p  "
                       f"level={st['level']}{' (승인됨)' if st['approved'] else ''}")

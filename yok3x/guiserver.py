@@ -85,9 +85,10 @@ def build_state(cfg: Config) -> dict:
                 for w in (v.reading.windows if v.reading else [])]
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
+            _ra = usage._weekly_reset_at(v.reading)
             ps = usage.daily_pace_status(cfg, b, usage.precise_weekly_pct(cfg, b, v.reading),
-                                         reset_at=usage._weekly_reset_at(v.reading),
-                                         today_used=usage.today_used_pct(cfg, b))
+                                         today=usage._pacing_day_key(_ra), reset_at=_ra,
+                                         today_used=usage.today_used_pct(cfg, b, _ra))
             if ps:
                 pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
                         "soft": round(ps["soft"], 1), "base_cap": round(ps["base_cap"], 1),
