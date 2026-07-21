@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, calibration, knot, reserve, usage
+from . import acquire, artifacts, calibration, knot, reserve, triage, usage
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -278,6 +278,7 @@ class Orchestrator:
         # few-shot 예시(E): build/revise(Resolver/생산자)에만 주입. ACQUIRE Questioner/Answerer(task_kind
         # =general)엔 주입 안 함(조기가설 방지). 사용자 입력이라 프롬프트에 '[예시]' 데이터로만 넣는다.
         self.examples: str = ""
+        self.triage: dict | None = None   # T1 트리아지 추천(관측용, 자동 적용 안 함)
         # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
         # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
         self.materialize: dict = {}
@@ -336,6 +337,8 @@ class Orchestrator:
             }
             if self.resume_from:
                 data["resume_from"] = self.resume_from
+            if self.triage:                         # T1 추천(관측용) — GUI 배지·override 데이터 수집
+                data["triage"] = self.triage
             if extra:
                 data.update(extra)
             _atomic_write_json(self.run_dir / "status.json", data)
@@ -1912,6 +1915,17 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     if "adversarial" in spec:                       # task가 명시하면 우선, 없으면 config 기본
         orch.adversarial = bool(spec.get("adversarial"))
     orch.escalate = spec.get("escalate") or {}      # 조건부 라우팅(에스컬레이션) 규칙
+    # T1 자동 트리아지: 착수 전 실행 형태를 **추천만** 한다(자동 적용 X). 로그·status로 관측만 남기고
+    # 실제 실행은 spec 그대로. F0처럼 미검증 판단기라 override·실제결과와 함께 나중에 보정.
+    try:
+        orch.triage = triage.estimate_execution(spec)
+        _t = orch.triage
+        orch._log(f"[triage] 추천(적용 안 함): pattern={_t['pattern']} tier={_t['tier']} "
+                  f"max_rounds={_t['max_rounds']} skip_review={_t['skip_review']} "
+                  f"신뢰도={_t['confidence']} · {' / '.join(_t['reasons'])}")
+    except Exception as exc:                          # 추천 실패가 실행을 막지 않게
+        orch.triage = None
+        orch._log(f"[triage] 추천 생성 실패(무시): {type(exc).__name__}: {exc}")
     manifest = _make_manifest(orch, spec, spec_bytes)
     if resume_dir is not None:
         supported, reason = _resume_supported(spec, cfg)

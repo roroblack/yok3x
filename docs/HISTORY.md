@@ -4,6 +4,17 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [T1] 자동 트리아지 순수 규칙 (Claude 구현)
+
+- `yok3x/triage.py::estimate_execution(spec)` — 착수 전 실행 형태를 **추천만**(자동 적용 X, 호출0, 의존성0).
+  4축 분리(복잡도·실패영향도·검증가능성·비용) → {pattern, tier(direct|local|api), max_rounds(상한1~2),
+  skip_review, confidence, axes, reasons}. 런 시작 시 `[triage]` 로그 + status.triage 기록(override 데이터 수집).
+- 핵심 규칙(리포트 합의): **규모≠위험** — '한 줄 배포'는 저복잡이어도 고영향→api·검토생략 금지.
+  **검토 생략은 가장 위험** → 저영향 AND 검증가능(verify_cmd) AND 저복잡만 후보. verify 없으면 절대 불가.
+  복잡도·영향도 엇갈리면 신뢰도↓·사람판단 권장. escalate(실제 신호)는 유지, 트리아지는 앞의 시작점만.
+- 한계 명시: 복잡도를 태스크 길이로 근사 → '장황하지만 쉬운 것 과대' 가능(리포트 인지). 추천 전용이라 무해.
+  테스트 3(규모≠위험·검토생략 조건·반환 형태). 277 passed. 잔여: GUI 추천 배지(소).
+
 ## 미출시(dev) · 2026-07-21 — [E] few-shot 예시 필드 + [C정리] (Claude 구현)
 
 - **E**: task spec `examples`(문자열/리스트) → build/revise(Resolver/생산자) 프롬프트에 `[예시]` 블록 주입.

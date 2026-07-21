@@ -261,6 +261,34 @@ def test_examples_spec_accepts_list_and_string(mock_root):
     assert "ex1" in spec.prompt and "ex2" in spec.prompt
 
 
+# ----------------------------------------------- T1 자동 트리아지(추천 전용)
+def test_triage_scale_is_not_risk_high_impact_stays_cautious():
+    """규모≠위험: '한 줄 배포'는 저복잡이어도 고영향 → api·검토생략 금지."""
+    from yok3x import triage
+    r = triage.estimate_execution({
+        "task": "deploy.yaml replicas를 3으로", "workdir": "/prod",
+        "materialize": {"enabled": True}, "verify_cmd": "pytest"})
+    assert r["tier"] == "api" and r["skip_review"] is False
+
+
+def test_triage_skip_review_only_when_low_impact_verifiable_low_complexity():
+    from yok3x import triage
+    ok = triage.estimate_execution({"task": "짧은 작업", "verify_cmd": "pytest"})
+    assert ok["pattern"] == "direct" and ok["skip_review"] is True
+    # verify 없으면 검토 생략 절대 불가(객관 신호 없음)
+    no_v = triage.estimate_execution({"task": "짧은 작업"})
+    assert no_v["skip_review"] is False
+
+
+def test_triage_is_recommendation_only_shape():
+    from yok3x import triage
+    r = triage.estimate_execution({"task": "x", "pattern": "producer-reviewer", "max_rounds": 3})
+    assert set(r) == {"pattern", "tier", "max_rounds", "skip_review",
+                      "confidence", "axes", "reasons"}
+    assert 1 <= r["max_rounds"] <= 2         # 보수적 상한(escalate가 실제로 올린다)
+    assert isinstance(r["reasons"], list) and r["reasons"]
+
+
 # ----------------------------------------------- 심판 캘리브레이션 원자료
 def test_calibration_make_record_rejects_unknown_and_fills_missing():
     with pytest.raises(TypeError, match="verify_passed"):
