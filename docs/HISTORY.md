@@ -4,6 +4,18 @@
 
 ---
 
+## 미출시(dev) · 2026-07-21 — [G-2] producer-reviewer 재개 (**Claude 구현** — 역할 정정 후 첫 작업)
+
+- 로드맵 G-2. 기존 재개(G-1)는 순차 pipeline만 허용했으나, replay는 `call_key`(프롬프트 내용 해시) 기반이라
+  **패턴 무관**하다. 막던 건 `_resume_supported`의 pipeline 한정 게이트 하나 → producer-reviewer 허용으로 완화.
+- **escalate/stall 상태는 별도 코드 없이 재계산됨**: 재생된 라운드 결과(결정적)로 루프를 재실행하면
+  prev_sig·escalated·producer/reviewer 교체·artifact 누적이 원래와 동일하게 재현된다. call_key도 동일해져
+  완료 라운드는 재생, 중단 지점부터 실제 실행.
+- 제외 유지(pipeline과 동일): parallel(비결정 순서)·acquire(preflight LLM)·materialize/changes(루프 밖 부작용).
+- 테스트 2개: ①라운드1(producer+reviewer) 재생→라운드2 실행→게이트 통과, ②**escalate로 producer가
+  codex-main으로 교체된 뒤 중단→재개 시 라운드3 producer=codex-main 재계산 확인**(G-2 최대 위험 검증). 268 passed.
+- ※ 역할 정정 후 첫 작업: **Claude 구현**. codex 검토는 codex 쿼터 75%라 보류(요청 시 가능).
+
 ## 미출시(dev) · 2026-07-21 — [F1-g] review bundle 수락/거절 CLI (codex 구현·Claude 검토)
 
 - `yok3x review <run_id>`로 workdir/run_dir 기반 번들을 자동 탐색해 status·바이트·상한 적용 diff를 읽기전용 표시.

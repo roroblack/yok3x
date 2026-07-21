@@ -133,6 +133,110 @@ def test_resume_replays_success_prefix_without_backend_or_usage(resume_env, monk
     assert json.loads(replay_file.read_text(encoding="utf-8"))["replayed"] is True
 
 
+def _pr_task_file(cfg: Config) -> Path:
+    """G-2: producer-reviewer 재개 테스트용 task 파일."""
+    path = cfg.paths.root / "pr.json"
+    path.write_text(json.dumps({
+        "pattern": "producer-reviewer", "task": "재개 테스트 PR",
+        "producer": "claude-main", "reviewer": "codex-critic",
+        "max_rounds": 3, "pass_score": 8.0,
+    }, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_producer_reviewer_resume_replays_completed_rounds(resume_env, monkeypatch):
+    """G-2: 라운드1(producer+reviewer) 완료 후 라운드2 producer에서 중단 →
+    재개 시 라운드1 두 호출은 재생(백엔드/과금 0), 라운드2부터 실제 실행."""
+    cfg, _ = resume_env
+    task_file = _pr_task_file(cfg)
+
+    # 원런: call1 producer→draft1, call2 reviewer→SCORE 5(계속), call3 라운드2 producer→중단
+    calls = 0
+
+    def interrupted(name, backend_spec, prompt, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return BackendResult(name, True, text="draft1", total_tokens=10, cost_usd=0.1)
+        if calls == 2:
+            return BackendResult(name, True, text="SCORE: 5\n결함 A", total_tokens=10, cost_usd=0.1)
+        raise RunAborted("중단", cause="user_abort")
+
+    monkeypatch.setattr(orchestrator, "run_backend", interrupted)
+    assert str(run_task_file(cfg, task_file, auto=True)).startswith("aborted")
+    source_run_id = _run_ids(cfg)[-1]
+
+    # 재개: 라운드2 producer→draft2, 라운드2 reviewer→SCORE 9(통과) 만 실제 호출돼야
+    prompts = []
+    usage_calls = []
+    outputs = iter(("draft2", "SCORE: 9\n통과"))
+
+    def backend(name, backend_spec, prompt, **kwargs):
+        prompts.append(prompt)
+        return BackendResult(name, True, text=next(outputs), total_tokens=7, cost_usd=0.1)
+
+    monkeypatch.setattr(orchestrator, "run_backend", backend)
+    monkeypatch.setattr(usage, "record", lambda *a, **k: usage_calls.append(a))
+
+    assert run_task_file(cfg, task_file, auto=True, resume_run_id=source_run_id) == "done"
+    # 라운드1 두 호출은 재생(실제 백엔드 0), 라운드2 두 호출만 실제
+    assert len(prompts) == 2
+    assert len(usage_calls) == 2
+    status = _latest_resumed_status(cfg, source_run_id)
+    assert [step["replayed"] for step in status["steps"]] == [True, True, False, False]
+    # 게이트 통과로 완료
+    assert status["gate"]["passed"] is True
+
+
+def test_producer_reviewer_resume_recomputes_escalate_state(resume_env, monkeypatch):
+    """G-2 핵심 위험: escalate로 producer가 교체된 뒤 중단 → 재개 시 교체 상태가
+    재생된 라운드 결과로 결정적으로 재계산돼야(라운드3 producer=codex-main) call_key가 맞아 재생/실행."""
+    cfg, _ = resume_env
+    path = cfg.paths.root / "pr_esc.json"
+    path.write_text(json.dumps({
+        "pattern": "producer-reviewer", "task": "escalate 재개",
+        "producer": "claude-main", "reviewer": "codex-critic",
+        "max_rounds": 4, "pass_score": 8.0,
+        "escalate": {"after_round": 2, "if_score_below": 6, "to_producer": "codex-main"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    # 원런: r1(prod,rev SCORE5) r2(prod,rev SCORE5→escalate) r3 prod(codex-main)에서 중단
+    seq = iter([
+        ("draft1", "claude-main"), ("SCORE: 5\nA", "codex-critic"),
+        ("draft2", "claude-main"), ("SCORE: 5\nA", "codex-critic"),
+    ])
+    calls = 0
+
+    def interrupted(name, backend_spec, prompt, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            text, _ = next(seq)
+            return BackendResult(name, True, text=text, total_tokens=10, cost_usd=0.1)
+        raise RunAborted("중단", cause="user_abort")
+
+    monkeypatch.setattr(orchestrator, "run_backend", interrupted)
+    assert str(run_task_file(cfg, path, auto=True)).startswith("aborted")
+    source_run_id = _run_ids(cfg)[-1]
+
+    # 재개: r1·r2 4호출 재생, r3 producer(codex-main)→draft3, r3 reviewer→SCORE 9(통과)만 실제
+    seen_workers = []
+    outputs = iter(("draft3", "SCORE: 9\nok"))
+
+    def backend(name, backend_spec, prompt, **kwargs):
+        seen_workers.append(name)
+        return BackendResult(name, True, text=next(outputs), total_tokens=7, cost_usd=0.1)
+
+    monkeypatch.setattr(orchestrator, "run_backend", backend)
+    assert run_task_file(cfg, path, auto=True, resume_run_id=source_run_id) == "done"
+    # r1·r2 재생 후 r3부터 실제 — r3 producer가 escalate된 codex-main이어야(교체 상태 재계산 증명)
+    status = _latest_resumed_status(cfg, source_run_id)
+    replayed = [s["replayed"] for s in status["steps"]]
+    assert replayed[:4] == [True, True, True, True] and replayed[4] is False
+    assert status["steps"][4]["worker"] == "codex-main"  # escalate 재계산됨
+    assert status["gate"]["passed"] is True
+
+
 def test_manifest_rejects_spec_and_worker_model_drift(resume_env, monkeypatch):
     cfg, task_file, source_run_id = _complete_run(resume_env, monkeypatch)
     original = task_file.read_text(encoding="utf-8")

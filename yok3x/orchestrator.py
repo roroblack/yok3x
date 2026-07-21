@@ -1721,15 +1721,18 @@ def resolve_model(cfg: Config, task_kind: str, available=None,
 
 
 def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
-    """G-1은 acquire/materialize 없는 순차 pipeline만 허용한다."""
-    if spec.get("pattern", "producer-reviewer") != "pipeline":
-        return False, "재개는 pattern=pipeline에서만 지원합니다"
+    """순차 pipeline·producer-reviewer 재개 지원(G-1 pipeline, G-2 producer-reviewer).
+    두 패턴 모두 call_key 기반 성공 prefix 재생이라 결정적으로 재현된다. producer-reviewer의
+    escalate/stall 상태는 재생된 라운드 결과로 루프를 재실행하며 자연히 재계산된다.
+    parallel(비결정 순서)·acquire(preflight LLM)·materialize/changes(루프 밖 부작용)는 제외."""
+    if spec.get("pattern", "producer-reviewer") not in ("pipeline", "producer-reviewer"):
+        return False, "재개는 pattern=pipeline 또는 producer-reviewer에서만 지원합니다"
     parallel = ((cfg.yok3x.get("guard") or {}).get("parallel") or {})
     if parallel.get("enabled", False):
-        return False, "재개는 guard.parallel.enabled=false인 순차 pipeline에서만 지원합니다"
-    for key in ("acquire", "materialize"):
+        return False, "재개는 guard.parallel.enabled=false(순차)에서만 지원합니다"
+    for key in ("acquire", "materialize", "changes"):
         if key in spec:
-            return False, f"재개는 {key}가 없는 pipeline에서만 지원합니다"
+            return False, f"재개는 {key}가 없을 때만 지원합니다"
     return True, ""
 
 
