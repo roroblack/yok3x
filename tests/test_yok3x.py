@@ -1109,6 +1109,20 @@ def test_daily_pace_accumulate_delta_and_levels(tmp_path):
     assert nxt["used"] == 0.0 and nxt["level"] == "ok"
 
 
+def test_daily_pace_today_used_override(tmp_path):
+    """today_used(자정 이후 실제 토큰 사용률)가 주어지면 7d% 델타 대신 그 값을 오늘 소비로 쓴다.
+    7d%가 롤오프로 안 움직여 델타가 0이어도 오늘 실제 사용을 정확히 보여준다(사용자 지적)."""
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, strategy="fixed")
+    # 7d%는 그대로(델타 0)여도 today_used=6.5면 오늘 소비 6.5로 나온다
+    usage.daily_pace_status(cfg, "claude", 27.0, today="2026-07-21")  # 첫 관측(델타 0)
+    r = usage.daily_pace_status(cfg, "claude", 27.0, today="2026-07-21", today_used=6.5)
+    assert r["used"] == 6.5 and round(r["cap"], 1) == 14.0
+    # today_used 없으면 기존 델타 방식(0)
+    r2 = usage.daily_pace_status(cfg, "claude", 27.0, today="2026-07-21")
+    assert r2["used"] == 0.0
+
+
 def test_daily_pace_strategy_options_distinct(tmp_path):
     """세 전략이 뚜렷이 구분: fixed=고정 · catch_up=즉시조임 · spread=균등분산(초과 시 핵심 차이)."""
     import time as _t

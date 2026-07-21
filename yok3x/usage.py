@@ -172,6 +172,48 @@ def _weekly_pct(reading: "limits.LimitReading | None") -> float | None:
     return max(pref) if pref else None
 
 
+def today_used_pct(cfg: Config, backend: str) -> float | None:
+    """**오늘(자정 이후) 실제 사용률**. 7d 롤링% 델타는 오래된 사용이 빠지는 롤오프에 상쇄돼 오늘
+    사용을 못 잡고 0으로 뭉갠다(사용자 지적 '오늘 0%p' 버그). claude는 자정 이후 실제 소비 토큰으로
+    정확히 계산한다(예: 6.4%). cap 미보정/토큰 없음/타 백엔드는 None → 기존 7d% 델타 방식 폴백."""
+    if backend != "claude":
+        return None
+    try:
+        conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+        now = time.time()
+        midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        secs = max(0.0, now - midnight)
+        tok = limits._rolling_claude_tokens(limits._claude_root(conf), now, secs)
+        _, cap7 = limits._resolve_claude_caps(conf)
+        if cap7 and cap7 > 0 and tok >= 0:
+            return round(100.0 * tok / cap7, 1)
+    except Exception:
+        pass
+    return None
+
+
+def precise_weekly_pct(cfg: Config, backend: str,
+                       reading: "limits.LimitReading | None") -> float | None:
+    """페이싱용 7d%. 소스 used_percent는 **정수로 양자화**돼(예: 17.28%가 17%로) 하루치가 1% 미만이면
+    '오늘 사용량'이 0으로 뭉개지고 상한 누적도 부정확했다(사용자 지적 버그). claude는 토큰 기반으로
+    **소수 정밀도**(17.28%)를 낼 수 있으니 그걸 쓴다. 단 cap 미보정 시 토큰이 캐시로 크게 부풀 수 있어
+    (768% 전례), 정수 소스와 5%p 이내로 근접할 때만 정밀값을 신뢰한다. 그 외/타 백엔드는 소스 폴백."""
+    base = _weekly_pct(reading)
+    if base is None or backend != "claude":
+        return base
+    try:
+        conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+        tok7 = limits.claude_rolling_tokens(conf, "7d")
+        _, cap7 = limits._resolve_claude_caps(conf)
+        if cap7 and cap7 > 0 and tok7 and tok7 > 0:
+            precise = 100.0 * tok7 / cap7
+            if abs(precise - base) <= 5.0:        # 보정된 상태(정수 소스에 근접) → 정밀값 채택
+                return precise
+    except Exception:
+        pass
+    return base
+
+
 def _weekly_reset_at(reading: "limits.LimitReading | None") -> float | None:
     """정확히 '7d' 집계 창의 리셋 epoch(catch-up 페이싱의 남은 일수 계산용). 없으면 None."""
     for w in (getattr(reading, "windows", None) or []):
@@ -254,9 +296,11 @@ def _daily_cap(strategy: str, q: float, u0: float, reset_at: float | None,
 
 
 def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
-                      today: str | None = None, reset_at: float | None = None) -> dict | None:
+                      today: str | None = None, reset_at: float | None = None,
+                      today_used: float | None = None) -> dict | None:
     """하루 페이싱 상태. current_pct=현재 7d used_percent(실측). enabled off / 7d 없으면 None.
-    오늘소비 = '첫 관측 이후 7d%의 양의 증분 누적'(롤오프 상쇄 완화). pause 모드는 cap 도달 시
+    today_used(있으면): 오늘 실제 사용률을 직접 지정(자정 이후 실제 토큰 — 7d% 델타 롤오프 뭉갬 대체).
+    오늘소비 = today_used가 있으면 그 값, 없으면 '첫 관측 이후 7d%의 양의 증분 누적'. pause 모드는 cap 도달 시
     blocked를 저장해 값이 낮아져도 자동 재개하지 않고 승인/자정까지 정지 유지.
     reset_at(7d 창 리셋 epoch)이 있고 strategy=catch_up이면 남은 일수로 유동 상한을 낸다."""
     dp = _pace_cfg(cfg, backend)
@@ -303,7 +347,9 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     # 하루 상한은 당일 초기화 때 고정한 cap_today(없으면 고정 q로 폴백 — 옛 레코드 호환).
     cap = float(rec.get("cap_today", q))
     soft = cap * dp["soft_frac"]
-    used = float(rec.get("used_today", 0.0))
+    # 오늘 사용: today_used(자정 이후 실제 토큰)가 있으면 그걸 쓴다 — 7d% 델타는 롤오프로 오늘을
+    # 0으로 뭉개므로(사용자 지적). 없으면 기존 델타 누적 폴백.
+    used = float(today_used) if today_used is not None else float(rec.get("used_today", 0.0))
     if mode == "pause" and used >= cap and not rec.get("blocked"):
         rec["blocked"] = True                    # sticky: 그날은 정지 유지
         changed = True
@@ -376,8 +422,9 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
                 tag += " ⚠미보정(정지 유보; `yok3x calibrate` 권장)"
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
-                pace = daily_pace_status(cfg, backend, _weekly_pct(reading),
-                                         reset_at=_weekly_reset_at(reading))
+                pace = daily_pace_status(cfg, backend, precise_weekly_pct(cfg, backend, reading),
+                                         reset_at=_weekly_reset_at(reading),
+                                         today_used=today_used_pct(cfg, backend))
                 if pace and pace["level"] != "ok":
                     tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
                             + ("(승인 필요)" if pace["level"] == "stop" else ""))   # 동일 severity라도 표시
