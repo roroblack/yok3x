@@ -963,7 +963,7 @@ def statusline_capture(conf: dict[str, Any], raw: str) -> str:
     try:
         path = _statusline_path(conf)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"   # pid 고유 — 동시 렌더 시 공유 tmp 경합 방지
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
     except OSError:
