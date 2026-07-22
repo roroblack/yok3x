@@ -1282,6 +1282,61 @@ def test_p3_offline_failover(monkeypatch, tmp_path):
     assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # off면 강등 안 함
 
 
+def test_statusline_capture_and_probe(tmp_path):
+    """F-08: statusLine stdin JSON의 rate_limits를 캡처→프로브가 읽어 real=True 창(리셋시각 포함) 생성.
+    OAuth·네트워크 없이(1st-party·안전). 스키마: rate_limits.five_hour/seven_day.used_percentage/resets_at."""
+    import json, time
+    from yok3x import limits
+    cache = tmp_path / "statusline.json"
+    conf = {"statusline_path": str(cache)}
+    now = int(time.time())
+    stdin_json = json.dumps({
+        "model": {"id": "claude-x"},
+        "rate_limits": {
+            "five_hour": {"used_percentage": 23.5, "resets_at": now + 3600},
+            "seven_day": {"used_percentage": 41.2, "resets_at": now + 4 * 86400},
+        },
+    })
+    line = limits.statusline_capture(conf, stdin_json)
+    assert "5h 24%" in line and "7d 41%" in line and cache.exists()   # 상태줄 출력 + 캐시 저장
+    r = limits._probe_claude_statusline("claude", conf)
+    assert r.ok and r.real and r.source == "claude_statusline"
+    ws = {w.name: w for w in r.windows}
+    assert round(ws["5h"].used_percent, 1) == 23.5 and round(ws["7d"].used_percent, 1) == 41.2
+    assert ws["5h"].resets_at == now + 3600 and ws["7d"].resets_at == now + 4 * 86400
+
+
+def test_statusline_missing_rate_limits_falls_back(tmp_path):
+    """rate_limits 없는 stdin(세션 첫 응답 전·비 Pro/Max)이면 창을 안 만들고 프로브는 추정 폴백(지어내지 않음)."""
+    import json
+    from yok3x import limits
+    conf = {"statusline_path": str(tmp_path / "sl.json"), "projects_dir": str(tmp_path / "noproj")}
+    line = limits.statusline_capture(conf, json.dumps({"model": {"id": "x"}}))   # rate_limits 없음
+    assert "대기" in line
+    r = limits._probe_claude_statusline("claude", conf)
+    assert r.source == "claude_transcripts"           # statusline 아닌 추정으로 폴백
+
+
+def test_statusline_stale_falls_back(tmp_path):
+    """statusline 캐시가 max_stale보다 오래되면 추정 폴백."""
+    import json, time
+    from yok3x import limits
+    cache = tmp_path / "sl.json"
+    cache.write_text(json.dumps({"captured_at": time.time() - 5000, "windows":
+                     [{"name": "7d", "used_percent": 40, "resets_at": time.time() + 1,
+                       "window_minutes": 10080}]}), encoding="utf-8")
+    conf = {"statusline_path": str(cache), "statusline_max_stale_sec": 900,
+            "projects_dir": str(tmp_path / "noproj")}
+    assert limits._probe_claude_statusline("claude", conf).source == "claude_transcripts"
+
+
+def test_statusline_capture_bad_json_safe(tmp_path):
+    """깨진 stdin도 크래시 없이 빈 창으로 안전 처리(statusLine 렌더를 막지 않음)."""
+    from yok3x import limits
+    line = limits.statusline_capture({"statusline_path": str(tmp_path / "sl.json")}, "not json {{{")
+    assert line.startswith("yok3x")
+
+
 def test_claude_oauth_parses_live_5h_7d(monkeypatch, tmp_path):
     creds = tmp_path / ".credentials.json"
     creds.write_text(json.dumps({"claudeAiOauth": {

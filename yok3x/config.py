@@ -114,10 +114,12 @@ DEFAULT_YOK3X = {
     # gemini: CLI가 잔여 한도를 노출 안 함 → 원장(자체 일일 예산)으로 준수. command 로 외부도구 연결 가능.
     "limits": {
         "claude": {
-            # 사용량 추정: 로컬 트랜스크립트(~/.claude/**.jsonl) 토큰 합산. **OAuth usage 엔드포인트는
-            # 기본 미사용** — Anthropic 2026-04-04 정책이 서드파티의 구독 OAuth 토큰 사용을 제한(429).
-            # 라이브 실측이 필요하면 F-08(Claude Code statusline stdin JSON, 1st-party 경로)로 붙일 것.
-            "type": "claude_transcripts",  # "claude_oauth"(위험·정책차단)·"ledger"(끔)도 가능하나 비권장
+            # 사용량: F-08 statusline 우선(Claude Code가 stdin으로 주는 rate_limits, 1st-party·안전) →
+            # 없으면 로컬 트랜스크립트 추정으로 폴백. **OAuth usage 엔드포인트는 미사용** — Anthropic
+            # 2026-04-04 정책이 서드파티의 구독 OAuth 토큰 사용을 제한(429). statusline을 쓰려면
+            # Claude Code settings.json의 statusLine을 `yok3x statusline`으로 지정해야 실데이터가 흐른다.
+            "type": "claude_statusline",   # "claude_transcripts"(추정만)·"claude_oauth"(위험)·"ledger"(끔)
+            "statusline_max_stale_sec": 900,  # statusline 캐시가 이보다 오래되면 추정 폴백
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
             "max_stale_sec": 900,       # 실측 일시 실패(429/만료) 시 마지막 실측을 유지할 최대 시간
                                         # (원장으로 깜빡이는 대신 '⚠N분 전 실측' 표시)

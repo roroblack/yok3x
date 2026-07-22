@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-22 — F-08 statusline 라이브 사용량(R-01b, 사용자 요청, Claude 구현)
+
+- R-01(OAuth 폐기)의 안전한 대체재. Claude Code가 statusLine 명령에 **stdin으로** 주는 rate_limits를
+  수동 소비 — OAuth 토큰·Anthropic API·client_id 사칭 전무(1st-party 출력만, codex 권고 경로).
+- 스키마 권위 확인(guide 에이전트, code.claude.com/docs): rate_limits.five_hour/seven_day.{used_percentage,
+  resets_at(epoch초)}. Pro/Max·세션 첫 응답 후에만·각 창 독립 누락·API/enterprise 부재 → 없음/만료 시 추정 폴백.
+- 구현: `yok3x statusline` 핸들러(stdin→~/.yok3x/statusline.json 캐시+상태줄 출력, cwd 무관·경량) +
+  `claude_statusline` 프로브(real=True, 리셋시각 포함) + 기본 타입 전환. E2E: claude 실측 5h 92%/7d 38%,
+  **"168시간 롤링"→실제 리셋시각 복귀**. 신규 테스트 4(캡처·폴백·만료·깨진 JSON). 289 passed. → docs/statusline-setup.md.
+
 ## 미출시(dev) · 2026-07-22 — claude OAuth 사용량 프로브 중단(정책 차단·계정 안전) (BUG-27·R-01, 사용자 요청)
 
 - 외부 리서치 R-01 지목 → 코드·웹 교차검증: claude 프로브가 `type=claude_oauth`+`auto_refresh`로

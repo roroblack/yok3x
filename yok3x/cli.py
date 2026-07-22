@@ -99,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("name", nargs="?")
 
     sub.add_parser("limits", help="실제 구독 한도 probe 원본 확인(진단)")
+    sub.add_parser("statusline", help="Claude Code statusLine 핸들러(stdin JSON의 rate_limits 캡처+상태줄 출력)")
 
     sp = sub.add_parser("gui", help="브라우저 GUI 프로토타입(실데이터) 실행")
     sp.add_argument("--port", type=int, default=8760)
@@ -128,6 +129,18 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument("--reject", action="store_true", help="트리 변경 없이 거절 기록")
 
     a = p.parse_args(argv)
+
+    if a.cmd == "statusline":
+        # Claude Code가 매 렌더마다 임의 cwd에서 stdin JSON과 함께 호출한다. 프로젝트 config를 로드하지
+        # 않고(부작용·지연 방지) 경량 처리 — rate_limits를 홈 캐시(~/.yok3x/statusline.json)에 저장하고
+        # 상태줄만 출력. 실패해도 exit 0(비어 있으면 Claude Code가 빈 줄 표시)로 렌더를 막지 않는다.
+        from . import limits
+        try:
+            print(limits.statusline_capture({}, sys.stdin.read()))
+        except Exception:
+            print("")
+        return 0
+
     cfg = Config.load(".")
 
     if a.cmd == "review":

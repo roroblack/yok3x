@@ -303,6 +303,8 @@ def _probe_uncached(cfg: Config, backend: str) -> LimitReading:
             return _probe_claude_oauth(backend, conf, cfg)
         if typ == "claude_transcripts":
             return _probe_claude_transcripts(backend, conf)
+        if typ == "claude_statusline":
+            return _probe_claude_statusline(backend, conf)
         if typ == "command":
             return _probe_command(backend, conf)
         return LimitReading(backend, "ledger", ok=False, real=False,
@@ -906,6 +908,99 @@ def _probe_claude_transcripts(backend: str, conf: dict[str, Any]) -> LimitReadin
                             error="limits.claude.limit_5h_tokens/limit_7d_tokens 미설정")
     return LimitReading(backend, "claude_transcripts", ok=True, real=False,
                         windows=windows, detail=detail)
+
+
+# ------------------------------------ claude (statusline: Claude Code stdin JSON — 1st-party·안전)
+# F-08 / R-01b: Claude Code가 statusLine 명령에 **stdin으로** 넘기는 JSON의 rate_limits를 수동 소비한다.
+# OAuth 토큰·Anthropic 엔드포인트를 안 건드리는 컴플라이언트 경로(2026-04-04 정책 안전, codex 권고).
+# 공식 스키마(code.claude.com/docs/en/statusline): rate_limits.five_hour.{used_percentage, resets_at(epoch초)}
+# · rate_limits.seven_day.{...}. Pro/Max·세션 첫 API 응답 후에만 등장하고 각 창 독립 누락 가능
+# → 없음/만료 시 로컬 트랜스크립트 추정으로 폴백. `yok3x statusline`이 캐시를 쓰고 이 프로브가 읽는다.
+
+_SL_WINDOWS = (("five_hour", 300, "5h"), ("seven_day", 10080, "7d"))
+
+
+def _statusline_path(conf: dict[str, Any]) -> Path:
+    """rate_limits 캐시 경로. 계정 단위 데이터라 기본은 **사용자 홈**(cwd 무관 — Claude Code가 어느
+    프로젝트에서 호출하든 프로브와 같은 파일을 본다). conf.statusline_path로 재정의(테스트)."""
+    p = conf.get("statusline_path")
+    return Path(p) if p else (Path.home() / ".yok3x" / "statusline.json")
+
+
+def _extract_statusline_windows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """statusLine stdin JSON → 창 목록. rate_limits 없거나 각 창 누락은 조용히 건너뛴다(공식: 세션 첫
+    API 응답 전·비 Pro/Max엔 없음, 지어내지 않음). used_percentage(0~100)·resets_at(epoch초)만 신뢰."""
+    rl = data.get("rate_limits")
+    if not isinstance(rl, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for key, mins, name in _SL_WINDOWS:
+        seg = rl.get(key)
+        if not isinstance(seg, dict):
+            continue
+        up = _num(seg.get("used_percentage"))
+        if up is None:                       # 스키마 변동 방어(카멜 대체 키)
+            up = _num(seg.get("usedPercent"))
+        if up is None:
+            continue
+        reset = _num(seg.get("resets_at"))
+        if reset is None:                    # 공식은 epoch 정수지만 ISO도 관용 수용
+            reset = _parse_iso(seg.get("resets_at"))
+        out.append({"name": name, "used_percent": float(up),
+                    "resets_at": reset, "window_minutes": mins})
+    return out
+
+
+def statusline_capture(conf: dict[str, Any], raw: str) -> str:
+    """`yok3x statusline` 핸들러 본체: Claude Code stdin JSON에서 rate_limits를 뽑아 캐시에 원자적 저장하고
+    짧은 상태줄 문자열을 반환(호출측이 stdout 출력). 파싱 실패·rate_limits 부재도 안전(빈 창)."""
+    try:
+        data = json.loads(raw) if raw and raw.strip() else {}
+    except (json.JSONDecodeError, ValueError):
+        data = {}
+    windows = _extract_statusline_windows(data) if isinstance(data, dict) else []
+    payload = {"captured_at": time.time(), "windows": windows}
+    try:
+        path = _statusline_path(conf)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+    if windows:
+        body = " · ".join(f"{w['name']} {w['used_percent']:.0f}%" for w in windows)
+    else:
+        body = "usage 대기(첫 응답 후)"
+    return f"yok3x {body}"
+
+
+def _probe_claude_statusline(backend: str, conf: dict[str, Any]) -> LimitReading:
+    """F-08 프로브: `yok3x statusline`이 캐시한 Claude Code rate_limits를 읽는다(1st-party·안전).
+    신선하고 창이 있으면 real=True(리셋시각 포함). 없음/만료면 트랜스크립트 추정으로 폴백."""
+    max_stale = float(conf.get("statusline_max_stale_sec", 900))
+    payload: Any = None
+    try:
+        payload = json.loads(_statusline_path(conf).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, dict):
+        cap_at = _num(payload.get("captured_at"))
+        age = (time.time() - cap_at) if cap_at else float("inf")
+        windows = [Window(name=w.get("name", "?"),
+                          used_percent=float(_num(w.get("used_percent")) or 0.0),
+                          resets_at=_num(w.get("resets_at")),
+                          window_minutes=_int(w.get("window_minutes")))
+                   for w in (payload.get("windows") or [])
+                   if isinstance(w, dict) and _num(w.get("used_percent")) is not None]
+        if windows and age <= max_stale:
+            det = " · ".join(f"{w.name} {w.used_percent:.0f}%" for w in windows)
+            return LimitReading(backend, "claude_statusline", ok=True, real=True,
+                                windows=windows, detail=f"{det} (statusline {int(age)}s전)")
+    est = _probe_claude_transcripts(backend, conf)   # 폴백: 로컬 트랜스크립트 추정
+    if est.ok:
+        est.detail += "  (statusline 없음/만료 → 추정)"
+    return est
 
 
 def _rolling_claude_tokens(root: Path, now: float, window_sec: float) -> int:
