@@ -210,6 +210,21 @@ def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> 
     return None
 
 
+def reading_since_reset_pct(reading: "limits.LimitReading | None") -> float | None:
+    """실측 reading(oauth/statusline)의 7d used_percent — 페이싱 since-reset의 **가장 정확한 소스**.
+    바 게이지(창 used_percent)와 동일 소스라 페이싱 밴드가 바 채움과 어긋나지 않는다(사용자 지적:
+    바=OAuth·페이싱=트랜스크립트 불일치로 '상한까지 남은 부분' 밴드 소실). 실측 아니거나 7d 없으면 None."""
+    if reading is None or not getattr(reading, "real", False):
+        return None
+    for w in (getattr(reading, "windows", None) or []):
+        if getattr(w, "name", None) == "7d":
+            try:
+                return float(w.used_percent)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def weekly_used_since_reset(cfg: Config, backend: str, reset_at: float | None) -> float | None:
     """**이번 주(마지막 리셋 이후) 실제 사용률**. 7d 롤링%는 리셋 전 사용까지 포함해(예: 롤링 27%인데
     리셋 이후는 13.6%) 상한을 과다 차감한다(사용자 지적: 상한 0.9% 버그). claude는 마지막 리셋
@@ -514,12 +529,17 @@ def check_backend(cfg: Config, backend: str) -> GuardVerdict:
             # 하루 페이싱 — 실측(real) 7d에만 적용(미보정 추정으로 오정지 방지). 절대 한도에 '덧붙는' 층.
             if reading.real:
                 _ra = effective_reset_at(cfg, backend, reading)
-                _sr = weekly_used_since_reset(cfg, backend, _ra)   # None=토큰 없음(codex)
-                _cur = _sr if _sr is not None else precise_weekly_pct(cfg, backend, reading)
+                _r7 = reading_since_reset_pct(reading)   # 실측 7d%(바와 동일 소스) 우선
+                if _r7 is not None:
+                    _cur, _known = _r7, True
+                else:
+                    _sr = weekly_used_since_reset(cfg, backend, _ra)   # None=토큰 없음(codex)
+                    _cur = _sr if _sr is not None else precise_weekly_pct(cfg, backend, reading)
+                    _known = _sr is not None
                 pace = daily_pace_status(cfg, backend, _cur,
                                          today=_pacing_day_key(_ra), reset_at=_ra,
                                          today_used=today_used_pct(cfg, backend, _ra),
-                                         since_reset_known=_sr is not None)
+                                         since_reset_known=_known)
                 if pace and pace["level"] != "ok":
                     tag += (f" · 하루페이싱 {pace['used']:.0f}/{pace['cap']:.0f}%p"
                             + ("(승인 필요)" if pace["level"] == "stop" else ""))   # 동일 severity라도 표시

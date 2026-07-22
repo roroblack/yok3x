@@ -1337,6 +1337,19 @@ def test_statusline_capture_bad_json_safe(tmp_path):
     assert line.startswith("yok3x")
 
 
+def test_pacing_prefers_real_reading_7d(tmp_path):
+    """페이싱 since-reset은 실측 reading의 7d%를 우선(바 게이지와 동일 소스 → 밴드가 바 채움과 일치).
+    실측 아니면 None(트랜스크립트/롤링에 맡김). 사용자 지적: 바=OAuth·밴드=트랜스크립트 불일치."""
+    from yok3x import usage, limits
+    real = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("5h", 90.0), limits.Window("7d", 47.0)])
+    assert usage.reading_since_reset_pct(real) == 47.0
+    est = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                              windows=[limits.Window("7d", 30.0)])
+    assert usage.reading_since_reset_pct(est) is None   # 추정은 제외
+    assert usage.reading_since_reset_pct(None) is None
+
+
 def test_save_weekly_phase_persists_7d_reset(tmp_path):
     """실측 성공 시 7d 리셋 시각을 config.weekly_reset_epoch에 저장(폴백서 재사용할 주간 위상)."""
     from yok3x import limits
