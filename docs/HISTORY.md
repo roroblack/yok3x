@@ -4,6 +4,15 @@
 
 ---
 
+## 미출시(dev) · 2026-07-22 — claude OAuth 사용량 프로브 중단(정책 차단·계정 안전) (BUG-27·R-01, 사용자 요청)
+
+- 외부 리서치 R-01 지목 → 코드·웹 교차검증: claude 프로브가 `type=claude_oauth`+`auto_refresh`로
+  `api.anthropic.com/api/oauth/usage`를 구독 OAuth 토큰으로 60초마다 호출(429). **Anthropic 2026-04-04 정책**이
+  서드파티의 구독 OAuth 사용을 차단한 그 경로. (워커 디스패치=공식 CLI 서브프로세스는 1st-party라 안전·불변.)
+- 수정: claude 프로브를 로컬 트랜스크립트 추정(`claude_transcripts`)으로 전환+auto_refresh off. config.py 기본값·
+  live yok3x.json 모두. 라이브는 이미 429로 죽어 기능 손실 0, 계정 리스크만 제거. 285 passed. GUI 재기동.
+- 후속(R-01b): 라이브가 필요하면 F-08(Claude Code statusline stdin JSON, 1st-party) 사용. → BUG-27, README 색인.
+
 ## 미출시(dev) · 2026-07-22 — claude 상한 앵커에서 '오늘 사용' 제외(하루 안 안정) (BUG-26 후속, 사용자 지적)
 
 - claude "오늘 1%/상한 23.5%"가 오늘 쓸수록 상한이 계속 바뀜. 원인: 상한 앵커 u0=since_reset(오늘 포함)라

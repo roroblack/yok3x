@@ -31,6 +31,7 @@
 | [24](BUG-24-gui-renders-mock-data-on-server-loss.md) | 서버 끊기면 GUI가 mock 사용량을 실데이터처럼 표시(연결 끊김 표시 없음) | 높음 | — | ✅ |
 | [25](BUG-25-verify-ignored-worker-candidate.md) | verify가 워커 후보 대신 원본 트리를 검사 | 높음 | — | ✅ |
 | [26](BUG-26-codex-daily-cap-anchored-on-rolling-pct.md) | codex 하루 상한이 7d 롤링 %에 앵커돼 계속 줄어듦('상한만 줄고 사용량만 늘고') | 중간 | — | ✅ |
+| [27](BUG-27-claude-oauth-usage-probe-blocked-policy.md) | **claude 사용량 프로브가 정책 차단된 OAuth 엔드포인트를 60초마다 호출(계정 안전·429)** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

@@ -114,9 +114,10 @@ DEFAULT_YOK3X = {
     # gemini: CLI가 잔여 한도를 노출 안 함 → 원장(자체 일일 예산)으로 준수. command 로 외부도구 연결 가능.
     "limits": {
         "claude": {
-            # 라이브 실측: Max/Pro 구독 OAuth 토큰으로 /api/oauth/usage 조회(5h/7d used% + 리셋).
-            # codex의 app-server 실측에 대응. 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화.
-            "type": "claude_oauth",     # 추정만 원하면 "claude_transcripts", 끄려면 "ledger"
+            # 사용량 추정: 로컬 트랜스크립트(~/.claude/**.jsonl) 토큰 합산. **OAuth usage 엔드포인트는
+            # 기본 미사용** — Anthropic 2026-04-04 정책이 서드파티의 구독 OAuth 토큰 사용을 제한(429).
+            # 라이브 실측이 필요하면 F-08(Claude Code statusline stdin JSON, 1st-party 경로)로 붙일 것.
+            "type": "claude_transcripts",  # "claude_oauth"(위험·정책차단)·"ledger"(끔)도 가능하나 비권장
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
             "max_stale_sec": 900,       # 실측 일시 실패(429/만료) 시 마지막 실측을 유지할 최대 시간
                                         # (원장으로 깜빡이는 대신 '⚠N분 전 실측' 표시)
