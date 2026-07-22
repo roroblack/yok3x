@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-22 — A+B 계층형 claude 사용량: OAuth 재활성(백오프) + 주간 위상 폴백 (codex 공동설계, 사용자 요청)
+
+- 배경 재조사(웹): OAuth usage 429는 알려진 **버그**(#31637)지 밴 아님. 4-4 서드파티 차단은 **6-16 철회**
+  (Anthropic: Agent SDK·claude -p·서드파티 구독 사용 그대로). → R-01의 밴 위험 판단 과했음. statusLine은
+  이 SDK 환경에서 안 뜸(TTY 없음). rate_limits의 다른 프로그램 경로 없음(트랜스크립트·헤더 미저장 확인).
+- codex A+B 채택: **OAuth(저위험) 우선 → 실패 시 백오프 → transcripts+주간위상 폴백**.
+  - OAuth 재활성(`claude_oauth`) + **실패 백오프**: 429/네트워크 지수(최대 30분), 401/403 장기중단(재시도 무의미),
+    성공 시 해제. auto_refresh off 유지(client_id 사칭 없음). 실측 성공 시 5h/7d + 실제 리셋시각.
+  - **주간 위상**: 실측 성공 시 7d 리셋을 `weekly_reset_epoch`에 저장 → transcripts 폴백이 주 단위로 전개해
+    7d 창에 실제 리셋 카운트다운 부착("168시간 롤링" 해소). 7d는 고정 주간이라 위상 하나로 안정. 5h는 세션기반→롤링.
+  - 정직: 실측을 얻은 적 없으면 리셋 지어내지 않음. 오염된 pace 캐시(9999999999) 정정.
+- 실측: OAuth 성공 시 5h 66%/7d 45%/Fable 15% 실측+리셋; 백오프 시 transcripts 7d "Sun 07-26 18:00(4일 후)".
+  신규 테스트 3(위상 저장·transcripts 위상 적용·백오프). 293 passed. (기본값은 보수적 claude_statusline 유지.)
+
 ## 미출시(dev) · 2026-07-22 — F-08 statusline 라이브 사용량(R-01b, 사용자 요청, Claude 구현)
 
 - R-01(OAuth 폐기)의 안전한 대체재. Claude Code가 statusLine 명령에 **stdin으로** 주는 rate_limits를

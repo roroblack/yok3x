@@ -1337,6 +1337,60 @@ def test_statusline_capture_bad_json_safe(tmp_path):
     assert line.startswith("yok3x")
 
 
+def test_save_weekly_phase_persists_7d_reset(tmp_path):
+    """실측 성공 시 7d 리셋 시각을 config.weekly_reset_epoch에 저장(폴백서 재사용할 주간 위상)."""
+    from yok3x import limits
+    cfg = Config.load(tmp_path)
+    cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
+    ws = [limits.Window("5h", 10.0, resets_at=111.0), limits.Window("7d", 40.0, resets_at=222.0)]
+    limits._save_weekly_phase(cfg, ws)
+    assert cfg.yok3x["limits"]["claude"]["weekly_reset_epoch"] == 222.0   # 7d만
+
+
+def test_transcripts_applies_weekly_phase_reset(tmp_path):
+    """weekly_reset_epoch(과거 앵커)가 있으면 transcripts 7d 창에 미래로 롤포워드한 리셋을 붙인다
+    ('168시간 롤링' 대신 실제 카운트다운). 5h는 세션기반이라 롤링 유지."""
+    import time, json
+    from datetime import datetime, timezone
+    from yok3x import limits
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "s.jsonl").write_text(json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": {"usage": {"input_tokens": 500, "output_tokens": 500}}}) + "\n", encoding="utf-8")
+    now = time.time()
+    conf = {"projects_dir": str(root), "limit_5h_tokens": 100000, "limit_7d_tokens": 100000,
+            "weekly_reset_epoch": now - 2 * 86400}     # 2일 전 → +5일 후로 롤포워드돼야
+    r = limits._probe_claude_transcripts("claude", conf)
+    w = {x.name: x for x in r.windows}
+    assert w["7d"].resets_at is not None and w["7d"].resets_at > now   # 미래로 전개
+    assert (w["7d"].resets_at - now) < 7 * 86400                        # 7일 이내(한 주기)
+    assert w["5h"].resets_at is None                                    # 5h는 롤링 유지
+
+
+def test_oauth_backoff_on_failure(tmp_path, monkeypatch):
+    """OAuth 실패 시 백오프: 429/네트워크는 지수, 401/403은 장기 중단(재시도 무의미). 성공하면 해제."""
+    from yok3x import limits
+    limits._OAUTH_BACKOFF.pop("claude", None)
+    limits._OAUTH_LIVE_CACHE.pop("claude", None)
+    conf = {"min_interval_sec": 60, "projects_dir": str(tmp_path)}
+    # 429 실패 → 백오프 설정
+    monkeypatch.setattr(limits, "_fetch_claude_oauth_usage",
+                        lambda b, c: limits.LimitReading(b, "claude_oauth", ok=False, real=True,
+                                                         error="HTTP 429 호출 과다"))
+    limits._probe_claude_oauth("claude", conf)
+    assert "claude" in limits._OAUTH_BACKOFF and limits._OAUTH_BACKOFF["claude"][1] == 1
+    # 401 실패 → 장기 중단(delay 큼)
+    limits._OAUTH_BACKOFF.pop("claude", None)
+    monkeypatch.setattr(limits, "_fetch_claude_oauth_usage",
+                        lambda b, c: limits.LimitReading(b, "claude_oauth", ok=False, real=True,
+                                                         error="HTTP 401 토큰 만료/미인증"))
+    import time
+    limits._probe_claude_oauth("claude", conf)
+    assert limits._OAUTH_BACKOFF["claude"][0] - time.time() > 1800   # 401은 30분 초과 중단
+    limits._OAUTH_BACKOFF.pop("claude", None)
+
+
 def test_statusline_rejects_implausible_reset(tmp_path):
     """비현실적 resets_at(밀리초 오인·자리표시자 9999999999 등)은 None 폴백 — '95084일 후' 쓰레기 표시 방지.
     정상값(수시간~수일 내)은 유지."""

@@ -34,6 +34,15 @@ claude 프로브를 **로컬 트랜스크립트 추정(`claude_transcripts`)**�
 .seven_day` JSON을 읽는다(1st-party 경로, OAuth API 호출 없음). 함정: `resets_at` epoch/ISO 두 형식·일부
 플랜(API/enterprise/일부 OAuth Max) 필드 누락(claude-code#40094) — 방어 필요.
 
+## 후속 (2026-07-22 · 재조사 후 안전 재활성)
+
+초기 대응(전면 폐기)은 과했다. 재조사: OAuth usage 429는 **버그**(claude-code #31637)지 밴 아니고,
+4-4 서드파티 차단은 **6-16 철회**(Anthropic: 서드파티 구독 사용 그대로). → 밴 위험 낮음(단 정책 보장 없는
+unsupported access). codex 공동설계로 **A+B 계층형** 재도입: OAuth(auto_refresh off·**실패 백오프**:
+429 지수/401·403 장기중단) 우선 → 실패 시 transcripts+**주간 위상**(실측 7d 리셋을 `weekly_reset_epoch`에
+저장·전개) 폴백. 하드 두들김·client_id 사칭 없이 라이브를 회복하고, 실패해도 7d 리셋 카운트다운 유지.
+(기본값은 보수적으로 `claude_statusline` 유지, 헤드리스 라이브는 `claude_oauth` 권장.)
+
 ## 교훈
 
 워커 디스패치(공식 CLI 서브프로세스)는 1st-party 경유라 안전하지만, **사용량 프로브가 OAuth 토큰을 직접 쓰면

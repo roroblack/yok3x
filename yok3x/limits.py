@@ -500,6 +500,23 @@ def _latest_rate_limits(f: Path) -> dict | None:
 # 비공식·미문서 엔드포인트라 실패 시 트랜스크립트 추정 → 원장으로 명시적 열화한다.
 _CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 _OAUTH_LIVE_CACHE: dict[str, tuple[float, LimitReading]] = {}
+# 실패 백오프: {backend: (다음_허용_epoch, 연속실패수)}. 429는 지수 백오프(버그성 rate-limit을
+# 두들기지 않게), 401/403은 장기 중단(토큰 무효 — 재시도 무의미, Claude Code가 갱신하면 회복).
+_OAUTH_BACKOFF: dict[str, tuple[float, int]] = {}
+
+
+def _save_weekly_phase(cfg: "Config | None", windows: list) -> None:
+    """실측(oauth/statusline) 성공 시 7d 리셋 시각을 config.limits.claude.weekly_reset_epoch에 저장한다.
+    이후 트랜스크립트 폴백이 이 주간 위상을 전개해 7d 리셋 카운트다운을 보여준다(실측 유래, 지어내지 않음)."""
+    if cfg is None:
+        return
+    for w in windows or []:
+        if getattr(w, "name", None) == "7d" and getattr(w, "resets_at", None):
+            cl = cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
+            if cl.get("weekly_reset_epoch") != float(w.resets_at):
+                cl["weekly_reset_epoch"] = float(w.resets_at)
+                cfg.save_yok3x()
+            return
 
 
 # 토큰 자체 갱신 상태(경로별): 백오프·회로차단용. 데이터를 지어내지 않는다 — 실패 시 폴백.
@@ -728,17 +745,37 @@ def _probe_claude_oauth(backend: str, conf: dict[str, Any],
     hit = _OAUTH_LIVE_CACHE.get(backend)
     if hit and (now - hit[0]) < interval:
         return hit[1]
-    live = _fetch_claude_oauth_usage(backend, conf)
+    # 실패 백오프: 아직 백오프 창이면 실제 호출을 건너뛴다(버그성 429 엔드포인트를 두들기지 않음).
+    bo_until, bo_fails = _OAUTH_BACKOFF.get(backend, (0.0, 0))
+    called = now >= bo_until
+    if called:
+        live = _fetch_claude_oauth_usage(backend, conf)
+    else:
+        live = LimitReading(backend, "claude_oauth", ok=False, real=True,
+                            error=f"백오프 중({int(bo_until - now)}s 남음)")
     if live.ok:
         _OAUTH_LIVE_CACHE[backend] = (now, live)
+        _OAUTH_BACKOFF.pop(backend, None)               # 성공 → 백오프 해제
         # 실측 반환이 주 기능이다. 로컬 transcript 읽기나 설정 저장이 실패해도 정상 live를
         # 버리면 안 되므로 보정 부작용은 완전히 격리한다. 추가 네트워크 호출은 없다.
         if cfg is not None:
+            try:
+                _save_weekly_phase(cfg, live.windows)   # 7d 리셋 위상 갱신(폴백서 재사용)
+            except Exception:
+                logger.exception("claude 주간 위상 저장 실패(라이브 실측은 유지)")
             try:
                 autocalibrate_claude(cfg, conf, live)
             except Exception:
                 logger.exception("claude 자동 캘리브레이션 실패(라이브 실측은 유지)")
         return live
+    if called:                                          # 방금 실제 호출해 실패 → 백오프 갱신
+        err = live.error or ""
+        fails = bo_fails + 1
+        if "401" in err or "403" in err:                # 토큰 무효 → 장기 중단(재시도 무의미)
+            delay = float(conf.get("oauth_auth_fail_backoff_sec", 3600))
+        else:                                           # 429/네트워크 → 지수(최대 30분)
+            delay = min(1800.0, interval * (2 ** min(fails, 5)))
+        _OAUTH_BACKOFF[backend] = (now + delay, fails)
     # 실측 실패(429/토큰만료 등): 원장으로 떨어뜨려 배지가 실측↔원장으로 깜빡이는 대신, 최근
     # 실측값을 유지하고 detail에 '⚠N분 전 실측'을 붙여 정직하게 표시(stale-while-error).
     # 캐시엔 성공한 실측만 저장되므로 hit[1]은 항상 진짜 실측. max_stale 지나면 아래 폴백.
@@ -900,6 +937,17 @@ def _probe_claude_transcripts(backend: str, conf: dict[str, Any]) -> LimitReadin
     if cap7 > 0:
         windows.append(Window("7d", 100.0 * tok7 / cap7, window_minutes=10080,
                               used_tokens=tok7, limit_tokens=int(cap7)))
+    # 7d 리셋 위상: 실측(oauth/statusline)에서 저장해둔 주간 리셋 앵커(weekly_reset_epoch)가 있으면 주
+    # 단위로 전개해 7d 창에 붙인다 → "168시간 롤링" 대신 실제 리셋 카운트다운. 7d 리셋은 고정 주간이라
+    # 위상 하나로 안정적으로 유지된다(값이 없으면 롤링 라벨 유지 — 지어내지 않음). 5h는 세션 기반이라 생략.
+    anchor = _num(conf.get("weekly_reset_epoch"))
+    if anchor:
+        r = anchor
+        while r <= now:
+            r += 7 * 86400.0
+        for w in windows:
+            if w.name == "7d":
+                w.resets_at = r
     detail = (f"5h {tok5:,}tok" + (f"/{int(cap5):,}" if cap5 else "")
               + f", 7d {tok7:,}tok" + (f"/{int(cap7):,}" if cap7 else ""))
     if not windows:
