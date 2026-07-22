@@ -121,8 +121,9 @@ DEFAULT_YOK3X = {
             "type": "claude_statusline",   # "claude_transcripts"(추정만)·"claude_oauth"(위험)·"ledger"(끔)
             "statusline_max_stale_sec": 900,  # statusline 캐시가 이보다 오래되면 추정 폴백
             "min_interval_sec": 60,     # 실측 재조회 최소 간격(usage 엔드포인트 rate-limit 배려)
-            "max_stale_sec": 900,       # 실측 일시 실패(429/만료) 시 마지막 실측을 유지할 최대 시간
-                                        # (원장으로 깜빡이는 대신 '⚠N분 전 실측' 표시)
+            "max_stale_sec": 3600,      # 실측 일시 실패(429 간헐 버그/만료) 시 마지막 실측을 유지할 최대
+                                        # 시간(1h). OAuth가 간헐적이라 짧으면 실측↔추정이 자주 깜빡인다
+                                        # (사용자 지적 churn) — 길게 유지하고 '⚠N분 전 실측'으로 정직 표시.
             # 토큰 자체 갱신(opt-in): 만료 임박 시 refresh_token으로 access_token을 표준 OAuth 갱신 →
             # claude 실측이 토큰 만료로 끊기지 않게. 실패는 fail-safe(기존 폴백). client_id/token_url은
             # Claude Code 공개 OAuth 값(미검증 — 켜기 전 확인 권장). 회전 토큰은 credentials에 되씀.
