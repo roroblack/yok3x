@@ -4,6 +4,17 @@
 
 ---
 
+## 미출시(dev) · 2026-07-22 — codex 하루 상한 롤링% 앵커 버그 수정 (BUG-26, 사용자 지적, Claude 구현)
+
+- 사용자 지적: claude는 리셋 기준으로 오늘이 초기화되는데 **codex는 '상한만 줄고 사용량만 늘고'** 리셋 갱신 안 됨.
+  실측 `pace.json`: codex `cap_today=10`(=14−롤링4%), claude `cap_today=26.2`(since-reset 15.8 기준).
+- 근본원인: codex는 토큰 없어 `weekly_used_since_reset`=None → 호출부가 **7d 롤링 %**를 상한 앵커 `u0`로 넘김.
+  롤링 %는 직전 창 사용까지 섞여 서서히 올라 `상한=14−롤링%`가 계속 감소. 창이 자주 리셋돼 k=1 고착(catch-up 미증가).
+- 수정: `daily_pace_status`에 **주간 창 이후 누적 증분 `week_used`**(win 변경 시 0 초기화, 아니면 양의 증분 누적)
+  + `since_reset_known` 파라미터. False(codex)면 상한 앵커를 롤링%가 아니라 `week_used`로. claude(True) 경로 불변.
+  호출부 3곳(cli·guiserver·usage) 배선. 낡은 codex pace 레코드 1회 삭제 → 재초기화. 실측 codex 상한 9→14 교정.
+- 검증: 신규 테스트(새 창인데 롤링 30% 남아도 codex 상한 14 vs claude 0). 181 passed. → BUG-26, README 색인.
+
 ## 미출시(dev) · 2026-07-21 — 페이싱 상한 누적을 '이번 주(리셋 이후)'로 (사용자 지적 버그, Claude 구현)
 
 - 상한이 0.9%로 나오던 버그. 상한 계산의 누적이 **7d 롤링%**(리셋 전 사용까지 포함)라 과다 차감됐다.
