@@ -398,8 +398,11 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     # 새 날(리셋정렬 경계) 또는 새 창(주간 리셋)이면 하루 기준 초기화. base='오늘 이전 이번주 사용'(상한 앵커
     # u0 겸 오늘 사용의 기준선). claude는 since-reset 실측(current). codex는 토큰이 없어 롤링%≈since-reset로
     # 추정하되, 첫날이면 리셋서 0%였으니 base=0(현재 롤링%가 곧 오늘 사용). cap_today는 여기서 한 번 고정.
+    _tu0 = float(today_used) if today_used is not None else 0.0
     if day_changed or win_changed:
-        base = current if since_reset_known else (0.0 if is_day1 else current)
+        # 하루 시작 기준선(base) = '오늘 이전 이번주 사용'. claude(토큰)는 since-reset에서 오늘분을 빼(오늘
+        # 쓸수록 상한이 깎이지 않게), codex(토큰없음)는 첫날 0·이후 하루시작 스냅샷.
+        base = max(0.0, current - _tu0) if since_reset_known else (0.0 if is_day1 else current)
         cap_today = _daily_cap(dp["strategy"], q, base, reset_at, dp["max_cap_mult"])
         rec = {"date": today, "win": win_gen, "start_pct": base, "last_pct": current,
                "used_today": max(0.0, current - base), "blocked": False,
@@ -427,8 +430,13 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         if rec.get("last_pct") != current:
             rec["last_pct"] = current
             changed = True
-    # 하루 상한은 당일 초기화 때 고정한 cap_today(없으면 고정 q로 폴백 — 옛 레코드 호환).
-    cap = float(rec.get("cap_today", q))
+    # 하루 상한. claude(토큰): '오늘 이전 이번주 사용'(current−today_used)으로 **매 폴 재계산**한다 —
+    # 이 값은 과거 데이터라 하루 안에서 안정적이고, 오늘 쓸수록 상한이 깎이던 문제(사용자 지적)가 사라진다.
+    # codex(토큰없음)·reset 정보 없음: 하루 시작에 고정한 cap_today(스냅샷 기준, 없으면 고정 q 폴백).
+    if since_reset_known and reset_at and math.isfinite(reset_at):
+        cap = _daily_cap(dp["strategy"], q, max(0.0, current - _tu0), reset_at, dp["max_cap_mult"])
+    else:
+        cap = float(rec.get("cap_today", q))
     soft = cap * dp["soft_frac"]
     # 오늘 사용: today_used(자정 이후 실제 토큰)가 있으면 그걸 쓴다 — 7d% 델타는 롤오프로 오늘을
     # 0으로 뭉개므로(사용자 지적). 없으면 기존 델타 누적 폴백.

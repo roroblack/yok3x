@@ -39,12 +39,21 @@ claude 경로 완전 불변(`since_reset_known` 기본 True, 오늘 사용은 �
 원인: 오늘 사용의 기준선(`start_pct`)을 `current`로 잡아, 관측 시작 시점에 이미 5%면 그 5%가 '오늘 이전'으로
 치부됐다. codex 리셋은 오늘 11:01(당일)이라 그 5%는 전부 '오늘' 사용이 맞다 → 첫날 `start_pct=0`로 교정.
 
+## 증상 3 (claude, 같은 앵커 원리 — 사용자 3차 지적)
+
+claude에서 "오늘 1%p / 상한 23.5%p"가 오늘 쓸수록 상한이 계속 바뀌었다. 원인: 상한 앵커 u0가
+`weekly_used_since_reset`(=**오늘 사용분 포함**)이라, 오늘 쓸수록 u0가 올라 `상한=k·q−u0`가 깎였다.
+상한은 '오늘 이전 사용'을 기준으로 하루 안에서 안정적이어야 한다. 수정: claude(토큰)는 앵커를
+`current − today_used`(오늘 제외)로 **매 폴 재계산** — 이 값은 과거 데이터라 안정적이고 오늘 사용이 상한을
+깎지 않는다. codex는 이미 하루시작 스냅샷(start_pct)이라 동일 원리. (표시값이 사용자 기대와 다른 것은 claude
+수치가 `real=False` 전사 추정이기 때문 — `yok3x calibrate`로 정밀화 권장. 이건 별개.)
+
 ## 검증
 
-- 신규 테스트 `test_daily_pace_codex_day1_anchors_at_reset`: 첫날 5% → **오늘 5 / 상한 14**; 3일차 30% →
-  오늘 0 / 상한 12(=42−30); 대조 claude(since-reset 30%)도 상한 12(동일 규칙).
-- 실측 CLI: `codex 오늘소비 5/14%p`(이전 버그 0/9), 레코드 `start_pct=0, used_today=5, cap_today=14`.
-- 전체 스위트 181 passed.
+- `test_daily_pace_codex_day1_anchors_at_reset`: 첫날 5% → **오늘 5 / 상한 14**; 3일차 30% → 오늘 0 / 상한 12.
+- `test_daily_pace_cap_excludes_today_and_is_stable`: claude 오늘 1.1→3.0으로 늘어도 상한 **24.6 불변**(옛 방식은
+  23.5→21.6 계속 깎임).
+- 실측: codex `오늘 5/14`, claude 상한 오늘 제외 시 24.6(안정). 전체 스위트 182 passed.
 
 ## 교훈
 

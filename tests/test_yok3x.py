@@ -1175,6 +1175,23 @@ def test_daily_pace_today_used_override(tmp_path):
     assert r2["used"] == 0.0
 
 
+def test_daily_pace_cap_excludes_today_and_is_stable(tmp_path):
+    """claude(토큰) 상한 앵커는 '오늘 이전 이번주 사용'(since_reset−today_used)이라, 오늘 쓸수록 상한이
+    깎이지 않고 하루 안에서 안정적이다(사용자 지적: '오늘 쓸수록 상한 또 바뀜'). catch_up 3일차."""
+    import time
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                        "mode": "warn", "strategy": "catch_up"}
+    reset = time.time() + 4.2 * 86400            # 3일차(D=5, k=3 → k*q=42), 안전캡 2×14=28
+    # since_reset=18.5, 오늘 1.1 → 앵커=17.4 → 상한 min(28, 42−17.4)=24.6
+    r1 = usage.daily_pace_status(cfg, "claude", 18.5, today="d", reset_at=reset, today_used=1.1)
+    assert round(r1["used"], 1) == 1.1 and round(r1["cap"], 1) == 24.6
+    # 오늘이 1.1→3.0으로 늘면 since_reset도 같이 20.4로 오르지만 앵커(20.4−3.0=17.4) 불변 → 상한 24.6 유지
+    r2 = usage.daily_pace_status(cfg, "claude", 20.4, today="d", reset_at=reset, today_used=3.0)
+    assert round(r2["used"], 1) == 3.0 and round(r2["cap"], 1) == 24.6   # 상한 안 깎임(안정)
+
+
 def test_daily_pace_strategy_options_distinct(tmp_path):
     """세 전략이 뚜렷이 구분: fixed=고정 · catch_up=즉시조임 · spread=균등분산(초과 시 핵심 차이)."""
     import time as _t
