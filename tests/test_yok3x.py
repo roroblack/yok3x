@@ -2631,30 +2631,35 @@ def test_daily_pace_catch_up_cap(tmp_path):
     assert round(usage.daily_pace_status(cfg, "claude", 0.0, reset_at=None)["cap"]) == 14
 
 
-def test_daily_pace_codex_anchor_since_reset_not_rolling(tmp_path):
-    """codex(토큰 없음, since_reset_known=False)는 상한 앵커를 7d 롤링 %가 아니라 '주간 창 이후
-    누적 증분(week_used)'으로 잡는다. 새 주간 창이 시작됐는데 롤링 %가 아직 과거 사용으로 높아도
-    상한을 깎지 않고 온전히 준다 — 사용자 지적: codex '상한만 줄고 사용량만 늘고'의 원인 제거."""
+def test_daily_pace_codex_day1_anchors_at_reset(tmp_path):
+    """codex(토큰없음, since_reset_known=False)는 '주간 첫날'엔 리셋 이후=오늘이라 롤링%를 통째로 오늘
+    사용으로 잡고 상한은 기준을 온전히 준다: 리셋이 방금 있었고 5% 썼으면 오늘 5 / 상한 14 (사용자 지적).
+    이후(비첫날)엔 하루 시작 롤링%가 기준선이라 상한이 그만큼 조여진다."""
     import time
     from yok3x import usage
-    now = time.time()
     def mkcfg(sub):
         c = Config.load(tmp_path / sub)
         c.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
                                           "mode": "warn", "strategy": "catch_up"}
         return c
-    cfg = mkcfg("codex")
-    ra_a = now + 6.9 * 86400                                  # 창 A, 주 첫날(k=1)
-    usage.daily_pace_status(cfg, "codex", 20.0, today="dA", reset_at=ra_a, since_reset_known=False)
-    usage.daily_pace_status(cfg, "codex", 30.0, today="dA", reset_at=ra_a, since_reset_known=False)
-    ra_b = ra_a + 7 * 86400                                   # 창 B로 리셋(win 변경)
-    # 롤링 %는 아직 30%로 높지만 새 창이므로 week_used=0 → 상한 온전(14). 버그였다면 14-30 → 0.
-    s = usage.daily_pace_status(cfg, "codex", 30.0, today="dB", reset_at=ra_b, since_reset_known=False)
-    assert round(s["cap"]) == 14
-    # 대조: claude처럼 since-reset 실측이면 current=30을 u0로 써 상한 0(정상 — 진짜 이번주 30% 소비).
-    sc = usage.daily_pace_status(mkcfg("claude"), "claude", 30.0, today="dB",
-                                 reset_at=ra_b, since_reset_known=True)
-    assert round(sc["cap"]) == 0
+    now = time.time()
+    # 첫날: 리셋 7일 후−1h → last_reset=now−1h, 하루시작=now−1h=last_reset → is_day1.
+    reset1 = now + 7 * 86400 - 3600
+    s1 = usage.daily_pace_status(mkcfg("d1"), "codex", 5.0, today=usage._pacing_day_key(reset1),
+                                 reset_at=reset1, today_used=None, since_reset_known=False)
+    assert round(s1["used"]) == 5     # 오늘 = 롤링 5%(리셋 이후 전부 오늘)
+    assert round(s1["cap"]) == 14     # 상한 온전(오늘 이전 사용 0)
+    # 비첫날(3일차: 리셋 5일 후 → 하루시작≠last_reset): 롤링 30% = 오늘 이전 사용 기준선 → 상한 42−30=12,
+    # 첫 관측이라 오늘은 0(하루 시작 스냅샷=현재).
+    reset3 = now + 5 * 86400
+    s3 = usage.daily_pace_status(mkcfg("d3"), "codex", 30.0, today=usage._pacing_day_key(reset3),
+                                 reset_at=reset3, today_used=None, since_reset_known=False)
+    assert round(s3["used"]) == 0
+    assert round(s3["cap"]) == 12
+    # 대조: claude(토큰 since-reset)는 30%를 u0로 써 3일차 상한 42−30=12(첫날이든 아니든 동일 규칙).
+    sc = usage.daily_pace_status(mkcfg("c"), "claude", 30.0, today=usage._pacing_day_key(reset3),
+                                 reset_at=reset3, since_reset_known=True)
+    assert round(sc["cap"]) == 12
 
 
 def test_daily_pace_strategy_change_applies_same_day(tmp_path):

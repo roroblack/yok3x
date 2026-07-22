@@ -366,9 +366,10 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     blocked를 저장해 값이 낮아져도 자동 재개하지 않고 승인/자정까지 정지 유지.
     reset_at(7d 창 리셋 epoch)이 있고 strategy=catch_up이면 남은 일수로 유동 상한을 낸다.
     since_reset_known: current_pct가 '이번 주(리셋 이후) 실측'이면 True(claude — 토큰 기반). codex처럼
-      토큰이 없어 current_pct가 **7d 롤링 %**(과거 사용 오염)이면 False. False면 상한 앵커(u0)를 롤링 %가
-      아니라 **주간 창 이후 누적 증분(week_used)**으로 쓴다 — 안 그러면 상한이 롤링 % 따라 계속 줄어든다
-      (사용자 지적: codex '상한만 줄고 사용량만 늘고')."""
+      토큰이 없어 current_pct가 **7d 롤링 %**이면 False. False면 오늘 사용·상한 앵커를 '하루 시작 시점
+      스냅샷(start_pct)' 기준으로 낸다: 주간 첫날은 리셋서 0%였으니 start_pct=0 → 현재 롤링%가 곧 오늘 사용,
+      상한은 기준(q)을 온전히(사용자 지적: 리셋 직후 5% 썼으면 오늘 5/상한 14). 이후 날은 하루 시작 롤링%가
+      기준선. 안 그러면 상한이 롤링 % 따라 계속 줄어든다(codex '상한만 줄고 사용량만 늘고')."""
     dp = _pace_cfg(cfg, backend)
     if not dp.get("enabled") or current_pct is None:
         return None
@@ -388,44 +389,43 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     changed = False
     win_changed = rec.get("win") != win_gen
     day_changed = rec.get("date") != today
-    # 주간 창 이후 누적 증분(week_used): since-reset 실측이 없는 백엔드(codex)의 상한 앵커.
-    # 창이 바뀌면(진짜 주간 리셋) 0으로 초기화, 아니면 current의 양의 증분을 계속 더한다. 하루 경계를
-    # 넘어도(day_changed) 이 값은 유지된다 — '이번 주 얼마나 썼나'는 주 단위 측정이므로.
-    if win_changed:
-        week_used, week_last = 0.0, current
-    else:
-        week_last = float(rec.get("week_last", rec.get("start_pct", current)))
-        week_used = float(rec.get("week_used", 0.0)) + max(0.0, current - week_last)
-        week_last = current
-    # 상한 앵커 u0: since-reset 실측이 있으면 current(=이번주 실측, claude), 없으면 week_used(codex).
-    u0_cap = current if since_reset_known else week_used
-    # 새 날(리셋정렬 경계) 또는 새 창(주간 리셋)이면 기준 초기화. cap_today를 이 시점에 한 번 계산해
-    # 하루 동안 유지(사용할수록 상한이 줄어드는 문제 방지 — codex).
+    # 이번 페이싱 하루가 '주간 창 첫날'인가 = 하루 시작이 마지막 리셋과 같은가. codex(토큰없음)의 오늘/앵커
+    # 추정에 쓴다: 첫날은 하루 시작=리셋이라 '오늘 이전 사용'이 0이고 현재 롤링%가 곧 이번주=오늘 사용.
+    _now = time.time()
+    _last_reset = (reset_at - 7 * 86400.0) if (reset_at and math.isfinite(reset_at)) else None
+    is_day1 = (_last_reset is not None
+               and abs(_pacing_day_start(reset_at, _now) - _last_reset) < 1.0)
+    # 새 날(리셋정렬 경계) 또는 새 창(주간 리셋)이면 하루 기준 초기화. base='오늘 이전 이번주 사용'(상한 앵커
+    # u0 겸 오늘 사용의 기준선). claude는 since-reset 실측(current). codex는 토큰이 없어 롤링%≈since-reset로
+    # 추정하되, 첫날이면 리셋서 0%였으니 base=0(현재 롤링%가 곧 오늘 사용). cap_today는 여기서 한 번 고정.
     if day_changed or win_changed:
-        cap_today = _daily_cap(dp["strategy"], q, u0_cap, reset_at, dp["max_cap_mult"])
-        rec = {"date": today, "win": win_gen, "start_pct": current, "last_pct": current,
-               "used_today": 0.0, "blocked": False, "cap_today": cap_today,
-               "strat": dp["strategy"], "week_used": week_used, "week_last": week_last}
+        base = current if since_reset_known else (0.0 if is_day1 else current)
+        cap_today = _daily_cap(dp["strategy"], q, base, reset_at, dp["max_cap_mult"])
+        rec = {"date": today, "win": win_gen, "start_pct": base, "last_pct": current,
+               "used_today": max(0.0, current - base), "blocked": False,
+               "cap_today": cap_today, "strat": dp["strategy"]}
         changed = True
     elif rec.get("strat") != dp["strategy"]:
-        # 하루 중 전략을 바꾸면 즉시 반영한다(당일 재초기화 없이). u0는 오늘 첫 실측(start_pct) 또는
-        # 주간 누적(week_used)을 써 사용량 누적을 보존한다 — current로 재계산하면 몰아쓴 뒤 상한이 준다.
-        u0_strat = float(rec.get("start_pct", current)) if since_reset_known else week_used
+        # 하루 중 전략을 바꾸면 즉시 반영한다(당일 재초기화 없이). u0는 하루 시작 기준선(start_pct)을 써
+        # 사용량 누적을 보존한다 — current로 재계산하면 몰아쓴 뒤 상한이 준다.
+        base = float(rec.get("start_pct", current))
+        u0_strat = current if since_reset_known else base
         rec["cap_today"] = _daily_cap(dp["strategy"], q, u0_strat, reset_at, dp["max_cap_mult"])
         rec["strat"] = dp["strategy"]
-        rec["week_used"], rec["week_last"] = week_used, week_last
         changed = True
     else:
-        last = float(rec.get("last_pct", current))
-        delta = current - last
-        if delta > 0:                            # 양의 증분만 누적
-            rec["used_today"] = float(rec.get("used_today", 0.0)) + delta
-            changed = True
+        if since_reset_known:                    # claude: 표시는 today_used(토큰)로 덮이나 폴백 누적 유지
+            last = float(rec.get("last_pct", current))
+            if current - last > 0:
+                rec["used_today"] = float(rec.get("used_today", 0.0)) + (current - last)
+                changed = True
+        else:                                    # codex: 오늘 = 하루시작 스냅샷(start_pct) 대비 현재 롤링%
+            nu = max(0.0, current - float(rec.get("start_pct", current)))   # 롤오프 하락도 자기보정
+            if nu != float(rec.get("used_today", 0.0)):
+                rec["used_today"] = nu
+                changed = True
         if rec.get("last_pct") != current:
             rec["last_pct"] = current
-            changed = True
-        if rec.get("week_used") != week_used or rec.get("week_last") != week_last:
-            rec["week_used"], rec["week_last"] = week_used, week_last
             changed = True
     # 하루 상한은 당일 초기화 때 고정한 cap_today(없으면 고정 q로 폴백 — 옛 레코드 호환).
     cap = float(rec.get("cap_today", q))

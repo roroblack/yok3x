@@ -21,27 +21,34 @@ claude는 "오늘 0.6%p / 상한 26.2%p"처럼 리셋 시점에 맞춰 오늘 �
 
 ## 수정
 
-`daily_pace_status`에 **주간 창 이후 누적 증분 `week_used`**를 도입:
-- 창(`win`=reset epoch)이 바뀌면 `week_used=0`으로 초기화, 아니면 `current`의 양의 증분을 누적. 하루
-  경계를 넘어도 유지(주 단위 측정).
-- 새 파라미터 `since_reset_known`: `current`가 이번주 실측이면 True(claude), 롤링 %면 False(codex).
-  **False면 상한 앵커 `u0`를 롤링 %가 아니라 `week_used`로 사용.**
-- 호출부 3곳(`cli.py`·`guiserver.py`·`usage.py`)이 `weekly_used_since_reset`의 반환이 `None`인지로
+새 파라미터 `since_reset_known`(current가 이번주 실측이면 True=claude, 롤링 %면 False=codex)을 도입하고,
+codex(False)는 **하루 시작 시점 스냅샷(`start_pct`)** 기준으로 오늘 사용·상한 앵커를 낸다:
+- **주간 첫날 판정** `is_day1` = (하루 시작 == 마지막 리셋). 첫날은 하루 시작이 곧 리셋이라 '오늘 이전 사용'이
+  0이다. 롤링 %는 창 안에서 since-reset ≈ 현재값이므로, **첫날 `start_pct=0` → 오늘 = 현재 롤링%, 상한 =
+  기준 q 온전**. 이후 날은 하루 시작 롤링%가 기준선(그만큼 상한 조여짐).
+- 오늘 사용(codex) = `max(0, current − start_pct)`(스냅샷 대비, 롤오프 하락도 자기보정). 상한 `u0`도 `start_pct`.
+- 호출부 3곳(`cli.py`·`guiserver.py`·`usage.py`)이 `weekly_used_since_reset` 반환이 `None`인지로
   `since_reset_known`을 판정해 전달.
 
-claude 경로는 완전히 불변(`since_reset_known` 기본 True). 낡은 codex `pace.json` 레코드는 1회 삭제해
-새 로직으로 재초기화.
+claude 경로 완전 불변(`since_reset_known` 기본 True, 오늘 사용은 토큰 기반 `today_used`). 낡은 codex
+`pace.json` 레코드 1회 삭제 → 재초기화.
+
+## 증상 2 (같은 근본원인, 사용자 2차 지적)
+
+상한을 `week_used`로 고쳐도 codex "오늘"이 **0으로 표시**됐다(리셋 직후 5% 썼는데 0/9 아니라 5/14여야).
+원인: 오늘 사용의 기준선(`start_pct`)을 `current`로 잡아, 관측 시작 시점에 이미 5%면 그 5%가 '오늘 이전'으로
+치부됐다. codex 리셋은 오늘 11:01(당일)이라 그 5%는 전부 '오늘' 사용이 맞다 → 첫날 `start_pct=0`로 교정.
 
 ## 검증
 
-- 신규 테스트 `test_daily_pace_codex_anchor_since_reset_not_rolling`: 창 A에서 20→30% 누적 후 **새 창 B로
-  리셋(롤링 아직 30%)** → codex 상한 **14**(week_used=0), 대조로 claude(since-reset 30%)는 상한 **0**.
-- 실측 CLI·직접호출 모두 codex `cap 14`(이전 버그값 9=14−5) 일치, 레코드 `week_used=0/week_last=5`.
-- 전체 스위트 181 passed(신규 1 포함).
+- 신규 테스트 `test_daily_pace_codex_day1_anchors_at_reset`: 첫날 5% → **오늘 5 / 상한 14**; 3일차 30% →
+  오늘 0 / 상한 12(=42−30); 대조 claude(since-reset 30%)도 상한 12(동일 규칙).
+- 실측 CLI: `codex 오늘소비 5/14%p`(이전 버그 0/9), 레코드 `start_pct=0, used_today=5, cap_today=14`.
+- 전체 스위트 181 passed.
 
 ## 교훈
 
-리셋 앵커 페이싱은 **"이번 창에서 쓴 양"**을 기준으로 해야 한다. 롤링 창 %는 직전 창 사용이 섞여 있어
-since-reset 대용으로 쓰면 상한이 과거에 오염된다. 토큰이 없는 백엔드는 공식 % 를 **창 경계에서 스냅샷하고
-증분만 누적**해 since-reset을 근사할 수 있다(정수 단위로 거칠지만 방향은 정확). 관련: F2-10(codex 페이싱
-정밀도), [[BUG-12]](codex 창 오라벨), [[BUG-20]](사용량 스트립).
+리셋 앵커 페이싱은 **"이번 창에서 쓴 양"**을 기준으로 해야 한다. 롤링 창 %는 직전 창 사용이 섞일 수 있어
+그대로 since-reset 대용으로 쓰면 상한이 과거에 오염된다. 토큰이 없는 백엔드는 롤링%가 창 안에서 since-reset을
+근사한다는 점을 이용하되, **관측 시작 시점의 잔량을 '오늘'로 오인하지 않도록 하루/창 경계(특히 첫날=리셋)에서
+기준선을 명시**해야 한다. 관련: F2-10(codex 페이싱 정밀도), [[BUG-12]](codex 창 오라벨), [[BUG-20]](사용량 스트립).
