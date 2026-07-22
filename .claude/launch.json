@@ -5,7 +5,8 @@
       "name": "yok3x-gui",
       "runtimeExecutable": "python",
       "runtimeArgs": ["yok3x.py", "gui", "--no-open", "--port", "8760"],
-      "port": 8760
+      "port": 8760,
+      "autoPort": false
     },
     {
       "name": "harness-gui-snoopy",

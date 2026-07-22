@@ -1337,6 +1337,22 @@ def test_statusline_capture_bad_json_safe(tmp_path):
     assert line.startswith("yok3x")
 
 
+def test_statusline_rejects_implausible_reset(tmp_path):
+    """비현실적 resets_at(밀리초 오인·자리표시자 9999999999 등)은 None 폴백 — '95084일 후' 쓰레기 표시 방지.
+    정상값(수시간~수일 내)은 유지."""
+    import json, time
+    from yok3x import limits
+    conf = {"statusline_path": str(tmp_path / "sl.json")}
+    now = int(time.time())
+    limits.statusline_capture(conf, json.dumps({"rate_limits": {
+        "five_hour": {"used_percentage": 5, "resets_at": 9999999999},        # 자리표시자(비현실적)
+        "seven_day": {"used_percentage": 38, "resets_at": now + 4 * 86400},  # 정상
+    }}))
+    ws = {w.name: w for w in limits._probe_claude_statusline("claude", conf).windows}
+    assert ws["5h"].resets_at is None                    # 비현실적 → None(롤링 라벨 폴백)
+    assert ws["7d"].resets_at == now + 4 * 86400         # 정상은 유지
+
+
 def test_claude_oauth_parses_live_5h_7d(monkeypatch, tmp_path):
     creds = tmp_path / ".credentials.json"
     creds.write_text(json.dumps({"claudeAiOauth": {

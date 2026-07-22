@@ -946,6 +946,12 @@ def _extract_statusline_windows(data: dict[str, Any]) -> list[dict[str, Any]]:
         reset = _num(seg.get("resets_at"))
         if reset is None:                    # 공식은 epoch 정수지만 ISO도 관용 수용
             reset = _parse_iso(seg.get("resets_at"))
+        # 위생검사: 5h/7d 창 리셋은 현재로부터 수시간~수일 내. 밀리초 오인(초의 1000배)·자리표시자
+        # (9999999999) 등 비현실적 값(과거 1일 이전 / 미래 9일 이후)은 신뢰 불가 → None(롤링 라벨 폴백).
+        if reset is not None:
+            _now = time.time()
+            if reset < _now - 86400 or reset > _now + 9 * 86400:
+                reset = None
         out.append({"name": name, "used_percent": float(up),
                     "resets_at": reset, "window_minutes": mins})
     return out
