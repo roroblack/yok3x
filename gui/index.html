@@ -628,17 +628,22 @@ function render(s){
       // 이후 지속가능 일일률: 남은 예산÷남은일수. 과사용해 오늘 상한이 줄었을 때 '다음날부터 하루 몇%'를 보여준다.
       const fd=t.pace?t.pace.forward_daily:null;
       const fdTxt=(fd!=null)?` · 이후 하루 ~${fd}%`:"";
+      // 토큰량(사용/남은)은 본문 대신 title(호버)로만 노출 — 기본 표시는 %로 통일(사용자 요청).
       const pl=(isWk&&t.pace)
-        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도) · 리셋까지 · 이후 하루=남은예산÷남은일수(지속가능률)">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}${tok?` · ${tok}`:""}</span>`
-        :`<span class="rst">${rstTxt}${tok?` · ${tok}`:""}</span>`;
+        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도) · 리셋까지 · 이후 하루=남은예산÷남은일수(지속가능률)${tok?` · ${tok}`:""}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
+        :`<span class="rst"${tok?` title="${esc(tok)}"`:""}>${rstTxt}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
       <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>
       <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`;}).join("")
       : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fclsPct(t.ratio*100,s.guard)}" style="width:${Math.round(t.ratio*100)}%"></i>${marks(s.guard)}</div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
     const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
+    // 상단 요약도 %로 통일(42자 잘림으로 토큰 숫자가 흉하게 끊기던 문제) — 원본 detail(토큰량 등)은
+    // title(호버)로만. 창 없는 백엔드(ratio만 있는 경우)는 그 비율%로 대체(사용자 요청).
+    const pctSummary=t.windows.length?t.windows.map(w=>`${w.name} ${w.used_percent}%`).join(" · ")
+      :`${Math.round((t.ratio||0)*100)}%`;
     return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
-      <div class="plan mono">${(t.detail||"").slice(0,42)}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
+      <div class="plan mono" title="${esc(t.detail||"")}">${pctSummary}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
   }).join("");
   // coach
   document.getElementById("coach").innerHTML=s.coach.map(m=>{
