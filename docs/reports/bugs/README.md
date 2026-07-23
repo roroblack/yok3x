@@ -34,6 +34,8 @@
 | [27](BUG-27-claude-oauth-usage-probe-blocked-policy.md) | **claude 사용량 프로브가 정책 차단된 OAuth 엔드포인트를 60초마다 호출(계정 안전·429)** | **높음** | — | ✅ |
 | [28](BUG-28-statusline-hardening-reset-garbage-and-tmp-race.md) | F-08 statusline 후속 경화 — resets_at 쓰레기값('95084일 후') + tmp 동시쓰기 경합 | 낮음~중간 | — | ✅ |
 | [29](BUG-29-pace-band-vs-bar-source-mismatch.md) | 페이싱 밴드와 7d 바가 다른 소스(바=OAuth·밴드=트랜스크립트)라 '상한까지 남은 부분' 소실 | 중간 | — | ✅ |
+| [30](BUG-30-oauth-stale-window-too-short-churn.md) | OAuth stale 창(15분)이 짧아 실측↔추정이 자주 깜빡임 | 낮음~중간 | — | ✅ |
+| [31](BUG-31-native-title-tooltip-not-rendered.md) | 네이티브 title 툴팁이 프리뷰 렌더러에서 전혀 안 뜸 | 낮음 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.
