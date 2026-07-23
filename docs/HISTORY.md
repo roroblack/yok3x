@@ -4,7 +4,22 @@
 
 ---
 
-## 미출시(dev) · 2026-07-22 — 호버 툴팁을 네이티브 title→CSS data-tip으로 교체 (사용자 지적 "호버 어디? 안떠")
+## 미출시(dev) · 2026-07-23 — F2-1/R-1 테스트 격리 안전장치 (최우선 안전항목, Claude 구현)
+
+- 배경: mock 무력화(config 오설정·새 테스트 배선 누락) 시 테스트가 실제 claude/codex/gemini를 호출해
+  최대 수백초 행+실쿼터 소비 위험(N0'서 실제 발생). 이전에 여러 번 착수를 미루고 페이싱/GUI로 새던 항목.
+- 1차 시도(전역 subprocess.run/Popen/urlopen 차단)는 **verify_cmd**(orchestrator가 사용자 작업의 테스트를
+  실제 실행하는 기능, 항상 real·안전·비용 없음)와 프로세스종료 테스트까지 막아 5개 테스트 회귀 — 같은
+  `subprocess` 모듈 객체를 orchestrator.py도 쓰기 때문. 근본 원인 재분석 후 **명령 인식형** 차단으로 교체.
+- `tests/conftest.py`(신규): autouse fixture 이중 안전장치. ① `live` 마커 없으면 **실행파일명이
+  claude/codex/gemini일 때만** subprocess.run/Popen 차단(`usage.BACKEND_KEYS` 기준, npm `.cmd` 심 해석된
+  전체경로도 베이스이름으로 정확 매치·BUG-10/18 대응), urlopen은 예외없이 차단(real 호출이 정당한 테스트
+  없음). verify_cmd(`python task.py` 등)·비-backend 로컬 실행은 통과. ② `live` 마커 있어도
+  `YOK3X_ALLOW_LIVE=1` 없으면 스킵. 기존 테스트의 자체 monkeypatch(subprocess/urlopen)는 같은 모듈 객체를
+  나중에 setattr하므로 정상적으로 이 차단을 덮어씀(오버라이드 확인).
+- 신규 테스트 8(`test_safety_net.py`): 명령명 파싱·차단 3종(claude/codex/gemini)·통과 1종(로컬 파이썬)·
+  urlopen 차단·기존 monkeypatch 오버라이드·live 마커 스킵(env 없이 실행하면 도달 못 하는 pytest.fail 캐너리).
+  `YOK3X_ALLOW_LIVE=1`로 직접 실행해 스킵 해제도 검증. 302 items(301 passed+1 skipped). → F2-1/R-1 체크.
 
 - 앞선 %통일 커밋에서 title 속성+점선밑줄(CSS `cursor:help`)까지 추가했는데도 "아무것도 안 뜬다"는 재지적.
   원인: 네이티브 `title` 툴팁은 OS/브라우저 크롬이 그리는 오버레이라, 일부 렌더러(프리뷰 등)가 이를
