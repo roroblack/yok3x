@@ -81,6 +81,12 @@ code,.mono,.rid{font-family:var(--font-code)}
 .win{margin:9px 0}
 .win .l{display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px}
 .win .l .rst{color:var(--ink2);font-family:var(--font-code);font-size:10.5px}
+/* 네이티브 title 툴팁이 일부 렌더러(프리뷰 등)에서 안 뜨는 문제(사용자 지적) — CSS로 직접 그리는
+   호버 툴팁. data-tip 속성값을 ::after content로 표시, 페이지 페인트 레이어라 항상 보인다. */
+[data-tip]{position:relative;cursor:help;border-bottom:1px dotted var(--ink2)}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:0;bottom:calc(100% + 6px);
+  background:var(--ink);color:#fff;padding:6px 10px;border-radius:8px;font-size:11px;
+  white-space:pre-wrap;max-width:260px;z-index:80;box-shadow:2px 2px 0 var(--ink);line-height:1.4}
 .win .l b{font-family:var(--font-code)}
 .gauge{height:16px;border:2.5px solid var(--ink);border-radius:999px;background:#fff;overflow:hidden;position:relative}
 .gauge i{display:block;height:100%;border-right:2.5px solid var(--ink)}
@@ -628,10 +634,13 @@ function render(s){
       // 이후 지속가능 일일률: 남은 예산÷남은일수. 과사용해 오늘 상한이 줄었을 때 '다음날부터 하루 몇%'를 보여준다.
       const fd=t.pace?t.pace.forward_daily:null;
       const fdTxt=(fd!=null)?` · 이후 하루 ~${fd}%`:"";
-      // 토큰량(사용/남은)은 본문 대신 title(호버)로만 노출 — 기본 표시는 %로 통일(사용자 요청).
+      // 토큰량(사용/남은)은 본문 대신 호버 툴팁으로만 노출 — 기본 표시는 %로 통일(사용자 요청).
+      // data-tip(네이티브 title 아님) — 일부 렌더러(프리뷰 등)는 OS 네이티브 title 툴팁을 안 그려서
+      // (사용자 지적: "호버 어디? 안떠") CSS ::after로 직접 그리는 툴팁을 쓴다.
+      const paceTip=`오늘 소비 / 하루 상한(유동일 땐 균등 기준선도) · 리셋까지 · 이후 하루=남은예산÷남은일수(지속가능률)${tok?` · ${tok}`:""}`;
       const pl=(isWk&&t.pace)
-        ?`<span class="rst" title="오늘 소비 / 하루 상한(유동일 땐 균등 기준선도) · 리셋까지 · 이후 하루=남은예산÷남은일수(지속가능률)${tok?` · ${tok}`:""}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
-        :`<span class="rst"${tok?` title="${esc(tok)}"`:""}>${rstTxt}</span>`;
+        ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
+        :`<span class="rst"${tok?` data-tip="${esc(tok)}"`:""}>${rstTxt}</span>`;
       return `
       <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
       <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>
@@ -643,7 +652,7 @@ function render(s){
     const pctSummary=t.windows.length?t.windows.map(w=>`${w.name} ${w.used_percent}%`).join(" · ")
       :`${Math.round((t.ratio||0)*100)}%`;
     return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
-      <div class="plan mono" title="${esc(t.detail||"")}">${pctSummary}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
+      <div class="plan mono"${t.detail?` data-tip="${esc(t.detail)}"`:""}>${pctSummary}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
   }).join("");
   // coach
   document.getElementById("coach").innerHTML=s.coach.map(m=>{
