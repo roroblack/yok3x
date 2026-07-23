@@ -34,6 +34,40 @@ def test_scaffold_mock_does_not_pollute_global(tmp_path):
     assert DEFAULT_YOK3X["workers"]["claude-main"]["backend"] == before == "claude"
 
 
+def test_config_load_survives_corrupt_json_falls_back_to_defaults(tmp_path, caplog):
+    """yok3x.json이 손상(0바이트 등 — torn write)돼 있어도 크래시하지 않고 기본값으로 폴백한다.
+    사용자 실사고: save_yok3x가 비원자적일 때 GUI 프로세스 강제종료 중 0바이트로 남은 사례."""
+    import logging
+    (tmp_path / "yok3x.json").write_text("", encoding="utf-8")   # torn write 재현(빈 파일)
+    with caplog.at_level(logging.WARNING):
+        cfg = Config.load(tmp_path)
+    assert cfg.yok3x["flavor"] == DEFAULT_YOK3X["flavor"]          # 기본값 적용(크래시 안 함)
+    assert any("손상" in r.message for r in caplog.records)        # 조용히 삼키지 않고 경고
+
+
+def test_config_load_survives_malformed_but_nonempty_json(tmp_path):
+    (tmp_path / "yok3x.json").write_text("{not valid json", encoding="utf-8")
+    cfg = Config.load(tmp_path)                                   # 크래시하지 않으면 통과
+    assert isinstance(cfg.yok3x, dict) and cfg.yok3x.get("flavor")
+
+
+def test_save_yok3x_is_atomic_no_torn_write_on_interrupt(tmp_path):
+    """save_yok3x는 임시파일+replace라, '쓰는 중 죽음'을 흉내내도(tmp만 쓰고 replace 전 중단)
+    실제 yok3x.json은 이전 내용 그대로 유지된다(0바이트로 안 남는다)."""
+    cfg = Config.load(tmp_path)
+    cfg.save_yok3x()
+    before = cfg.paths.yok3x_json.read_text(encoding="utf-8")
+    assert before.strip()                                          # 정상 저장됨(비어있지 않음)
+    # 두번째 저장에서 'process killed before tmp.replace(p)'를 흉내: tmp만 쓰고 멈춘 상태를 재현.
+    cfg.yok3x["flavor"] = "changed-but-not-committed"
+    p = cfg.paths.yok3x_json
+    tmp = p.with_name(f"{p.name}.99999.tmp")
+    tmp.write_text("{\"flavor\": \"changed-but-not-committed\"}", encoding="utf-8")
+    # replace()를 호출하지 않은 상태 = 강제종료로 중단된 것과 동일 → 원본 파일은 여전히 안전.
+    assert p.read_text(encoding="utf-8") == before
+    tmp.unlink()
+
+
 def test_partial_config_load_does_not_alias_global(tmp_path):
     # workers 키 없는 부분 설정을 로드해도 중첩 dict가 전역을 가리키면 안 된다.
     (tmp_path / "yok3x.json").write_text(

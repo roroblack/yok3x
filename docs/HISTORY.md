@@ -4,6 +4,17 @@
 
 ---
 
+## 미출시(dev) · 2026-07-23 — BUG-32 save_yok3x 원자적 쓰기 + Config.load 손상파일 방어 (GUI 기동 크래시)
+
+- GUI 프리뷰 기동이 `yok3x.json`(0바이트) JSONDecodeError로 크래시. 원인: `save_yok3x`가 `write_text`
+  직접 사용(truncate-then-write) — 이 세션에서 GUI 프로세스를 코드반영차 여러 번 강제종료했는데, 그
+  순간이 저장 중이었을 가능성. `_save_pace` 등엔 이미 있던 원자적 패턴이 `save_yok3x`만 빠진 불일치.
+- 수정: `save_yok3x`를 pid 고유 임시파일+`replace`로 원자화. `Config.load`도 방어적으로 — 손상 파일이면
+  크래시 대신 기본값 폴백+`logging.warning`(조용히 안 삼킴). `_load_json_or_empty` 헬퍼(yok3x·backends 공용).
+- 손상된 live config를 `.bak`(3일 전)에서 복구 후 오늘 세션 값(calibrate 5h/7d 토큰·max_stale=3600·
+  auto_refresh=False) 재적용. 신규 테스트 4(손상폴백·경고로그·깨진JSON·원자성 시뮬레이션). 304 passed.
+- → BUG-32, README 색인.
+
 ## 미출시(dev) · 2026-07-23 — F2-1/R-1 테스트 격리 안전장치 (최우선 안전항목, Claude 구현)
 
 - 배경: mock 무력화(config 오설정·새 테스트 배선 누락) 시 테스트가 실제 claude/codex/gemini를 호출해

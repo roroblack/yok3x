@@ -36,6 +36,7 @@
 | [29](BUG-29-pace-band-vs-bar-source-mismatch.md) | 페이싱 밴드와 7d 바가 다른 소스(바=OAuth·밴드=트랜스크립트)라 '상한까지 남은 부분' 소실 | 중간 | — | ✅ |
 | [30](BUG-30-oauth-stale-window-too-short-churn.md) | OAuth stale 창(15분)이 짧아 실측↔추정이 자주 깜빡임 | 낮음~중간 | — | ✅ |
 | [31](BUG-31-native-title-tooltip-not-rendered.md) | 네이티브 title 툴팁이 프리뷰 렌더러에서 전혀 안 뜸 | 낮음 | — | ✅ |
+| [32](BUG-32-config-torn-write-empty-yok3x-json.md) | **save_yok3x 비원자적 쓰기로 yok3x.json이 0바이트로 손상(전체 기동 불가)** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

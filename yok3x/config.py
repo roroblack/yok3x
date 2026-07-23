@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ._version import __version__
+
+logger = logging.getLogger(__name__)
 
 YOK3X_DIR_NAME = ".yok3x"
 
@@ -372,15 +375,19 @@ class Config:
         backends = copy.deepcopy(DEFAULT_BACKENDS)
         # utf-8-sig: 윈도우 메모장·PowerShell(Out-File utf8)이 붙이는 BOM을 투명 제거.
         # BOM이 있든 없든 정상 파싱된다(쓰기는 BOM 없는 utf-8 유지).
-        if p.yok3x_json.exists():
-            yok3x = _deep_merge(yok3x, json.loads(p.yok3x_json.read_text(encoding="utf-8-sig")))
-        if p.backends_json.exists():
-            backends = _deep_merge(backends, json.loads(p.backends_json.read_text(encoding="utf-8-sig")))
+        yok3x = _deep_merge(yok3x, _load_json_or_empty(p.yok3x_json, logger))
+        backends = _deep_merge(backends, _load_json_or_empty(p.backends_json, logger))
         return cls(paths=p, yok3x=yok3x, backends=backends)
 
     def save_yok3x(self) -> None:
-        self.paths.yok3x_json.write_text(
-            json.dumps(self.yok3x, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        """설정 저장. **원자적**(임시파일 후 replace) — 저장 도중 프로세스가 죽어도(강제종료 등)
+        write_text의 truncate-then-write 구간에 걸리면 파일이 0바이트로 남는 torn write를 방지한다
+        (실제로 GUI 프로세스 강제종료 중 발생 확인됨). pid 고유 tmp로 동시 저장 경합도 피한다."""
+        import os as _os
+        p = self.paths.yok3x_json
+        tmp = p.with_name(f"{p.name}.{_os.getpid()}.tmp")
+        tmp.write_text(json.dumps(self.yok3x, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
 
     def worker(self, name: str) -> dict[str, Any]:
         w = self.yok3x["workers"].get(name)
@@ -395,6 +402,22 @@ class Config:
     def ensure_dirs(self) -> None:
         for d in (self.paths.yok3x_dir, self.paths.runs, self.paths.logs, self.paths.knowledge):
             d.mkdir(parents=True, exist_ok=True)
+
+
+def _load_json_or_empty(path: Path, log: logging.Logger) -> dict:
+    """설정 파일을 읽는다. 없으면 {}. **있는데 손상**(torn write로 0바이트 등)이면 크래시 대신 {}로
+    폴백해 기본값이 적용되게 한다 — 단, 조용히 삼키지 않고 경고 로그를 남긴다(§5.5: 값을 지어내진
+    않되 — 폴백은 기본값이지 조작값이 아님 — 도구 전체가 죽는 것보다 낫다). save_yok3x는 원자적
+    쓰기(임시파일+replace)라 이 경로는 정상 운영에선 안 밟히지만, 과거 비원자적 쓰기 중 강제종료로
+    실제 발생을 확인했다(BUG 참고: config.py 히스토리)."""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as e:
+        log.warning("%s 파싱 실패(손상됨, %s) — 기본값으로 폴백. 백업(.bak)이 있으면 확인하라.",
+                    path, e)
+        return {}
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
