@@ -1501,6 +1501,44 @@ def test_oauth_backoff_on_failure(tmp_path, monkeypatch):
     limits._OAUTH_BACKOFF.pop("claude", None)
 
 
+def test_oauth_live_persists_to_disk_across_process(tmp_path, monkeypatch):
+    """BUG-35(2번): 성공 실측을 디스크(.yok3x/oauth_live.json)에 남겨, 인메모리 캐시가 빈 새
+    프로세스(CLI 호출·GUI 재기동)도 stale-while-error로 이전 실측을 이어받는다 → OAuth 429 시
+    '오늘 소비'가 0(트랜스크립트)으로 플립하지 않고 마지막 실측을 유지(사용자 지적한 0↔실측 깜빡임)."""
+    import time
+    from yok3x import limits
+    cfg = Config.load(tmp_path)
+    conf = {"min_interval_sec": 60, "max_stale_sec": 3600}
+    limits._OAUTH_LIVE_CACHE.clear()
+    limits._OAUTH_BACKOFF.clear()
+    # 성공 실측 1회 → 디스크 저장 확인
+    good = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("7d", 66.0, resets_at=time.time() + 100000)],
+                               detail="ok (live)")
+    monkeypatch.setattr(limits, "_fetch_claude_oauth_usage", lambda b, c: good)
+    limits._probe_claude_oauth("claude", conf, cfg)
+    disk = cfg.paths.yok3x_dir / "oauth_live.json"
+    assert disk.exists()
+    store = json.loads(disk.read_text(encoding="utf-8"))
+    assert store["claude"]["windows"][0]["used_percent"] == 66.0
+
+    # 새 프로세스 시뮬레이션: 인메모리 캐시/백오프 비우고, 이제 OAuth는 429. 디스크 실측은
+    # interval보다 오래됐지만(라이브 재시도 유도) max_stale 이내라 stale 경로를 태운다.
+    limits._OAUTH_LIVE_CACHE.clear()
+    limits._OAUTH_BACKOFF.clear()
+    limits._save_oauth_live(cfg, "claude", time.time() - 120, good)
+    monkeypatch.setattr(limits, "_fetch_claude_oauth_usage",
+                        lambda b, c: limits.LimitReading(b, "claude_oauth", ok=False, real=True,
+                                                         error="HTTP 429 호출 과다"))
+    r = limits._probe_claude_oauth("claude", conf, cfg)
+    # 트랜스크립트로 플립하지 않고 디스크의 마지막 실측(66%)을 유지(stale-while-error 라벨).
+    assert r.ok and r.real
+    assert any(w.name == "7d" and w.used_percent == 66.0 for w in r.windows)
+    assert "실측" in r.detail
+    limits._OAUTH_LIVE_CACHE.clear()
+    limits._OAUTH_BACKOFF.clear()
+
+
 def test_statusline_rejects_implausible_reset(tmp_path):
     """비현실적 resets_at(밀리초 오인·자리표시자 9999999999 등)은 None 폴백 — '95084일 후' 쓰레기 표시 방지.
     정상값(수시간~수일 내)은 유지."""
@@ -1680,21 +1718,47 @@ def test_autocalibrate_claude_rejects_implausible_cap(tmp_path, monkeypatch):
 
 
 def test_autocalibrate_claude_allows_cache_read_inflation(tmp_path, monkeypatch):
-    """실측 근거: 7d는 cache read 누적으로 plan 대비 ~153배 캡이 정상이다(5h는 ~1배).
-    100배로 막으면 정상 보정이 거부되므로, 설정 상한(max_calib_multiple=1000) 안이면 통과해야 한다."""
+    """실측 근거: 7d는 cache read 누적으로 plan 대비 ~153배 캡이 정상이다(max_calib_multiple=1000
+    이내라 비현실로 거부되지 않음). 단, 이미 보정된 값(override>0)이 있으면 회당 변화는 ±25%로
+    클램프된다(BUG-35: 스윙 방지) — 큰 배율은 여러 스텝에 걸쳐 수렴한다."""
     cfg = Config.load(tmp_path)
     conf = cfg.yok3x["limits"]["claude"]
-    conf["limit_7d_tokens"] = 500_000_000          # plan 프리셋 수준
+    conf["limit_7d_tokens"] = 500_000_000          # 이미 보정된 값(override>0) → 클램프 대상
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    # 5%에서 38.3억 tok → cap 766억 = 기존의 약 153배(실측에서 관측된 실제 배율)
+    # 5%에서 38.3억 tok → 파생 cap 766억(=153배)이지만 비현실 거부는 안 됨. 클램프로 +25%만 반영.
     monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 3_830_000_000)
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
                                   [limits.Window("7d", 5.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
-    assert got["7d"] == 76_600_000_000, got
-    assert conf["limit_7d_tokens"] == 76_600_000_000
+    assert got["7d"] == 625_000_000, got          # 500M × 1.25 (스윙 방지 클램프)
+    assert conf["limit_7d_tokens"] == 625_000_000
+
+
+def test_autocalibrate_claude_clamps_swing_and_converges(tmp_path, monkeypatch):
+    """BUG-35 회귀: 파생 cap이 크게 튀어도 회당 ±25%로 제한돼 246M→793M 같은 3배 스윙이 안 난다.
+    또한 파생값이 꾸준히 높으면 여러 스텝에 걸쳐 그쪽으로 수렴한다(끄지 않고 안정화)."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 200_000_000          # 이미 보정된 값
+    # 파생 cap = 10억(=5배 폭등 시도). 클램프 없으면 그대로 저장돼 스윙의 씨앗이 된다.
+    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000_000)
+
+    prev = 200_000_000
+    for step in range(6):
+        limits._CLAUDE_CALIBRATION_STATE.clear()   # 스텝마다 rate-limit 우회
+        got = limits.autocalibrate_claude(
+            cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                           [limits.Window("5h", 10.0)]))
+        cur = conf["limit_5h_tokens"]
+        # 회당 변화는 절대 25%를 넘지 않는다(스윙/폭등 방지).
+        assert cur <= prev * 1.25 + 1, (step, prev, cur)
+        # 파생값(10억)이 꾸준히 높으니 단조 증가하며 수렴한다.
+        assert cur >= prev
+        prev = cur
+    # 6스텝 후에도 파생값(10억)에 아직 도달하지 않았지만(느린 수렴=안정), 확실히 올라왔다.
+    assert 200_000_000 < prev < 1_000_000_000
 
 
 def test_autocalibrate_claude_multiple_bounds_come_from_config(tmp_path, monkeypatch):

@@ -505,6 +505,75 @@ _OAUTH_LIVE_CACHE: dict[str, tuple[float, LimitReading]] = {}
 _OAUTH_BACKOFF: dict[str, tuple[float, int]] = {}
 
 
+def _oauth_live_path(cfg: "Config | None") -> "Path | None":
+    """마지막 성공 실측을 디스크에 남길 경로(.yok3x/oauth_live.json). cfg 없으면 None."""
+    if cfg is None:
+        return None
+    try:
+        return cfg.paths.yok3x_dir / "oauth_live.json"
+    except Exception:
+        return None
+
+
+def _save_oauth_live(cfg: "Config | None", backend: str, ts: float, reading: LimitReading) -> None:
+    """성공 실측을 디스크에 영속화. _OAUTH_LIVE_CACHE는 프로세스별 인메모리라 CLI 호출·GUI
+    재기동마다 사라져 매 프로세스가 OAuth 재시도→429→트랜스크립트로 떨어지며 '오늘 소비'가
+    0↔실측으로 깜빡였다(사용자 지적). 디스크에 남기면 stale-while-error가 프로세스 경계를 넘어
+    유지되고 CLI/GUI가 같은 실측을 공유한다. 원자적 쓰기(torn write 방지, BUG-32와 동일 이유)."""
+    p = _oauth_live_path(cfg)
+    if p is None:
+        return
+    payload = {
+        "backend": backend,
+        "at": ts,
+        "source": reading.source,
+        "detail": reading.detail,
+        "windows": [
+            {"name": w.name, "used_percent": w.used_percent, "resets_at": w.resets_at,
+             "window_minutes": w.window_minutes, "used_tokens": w.used_tokens,
+             "limit_tokens": w.limit_tokens}
+            for w in reading.windows
+        ],
+    }
+    try:
+        store = {}
+        if p.exists():
+            try:
+                store = json.loads(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                store = {}
+        store[backend] = payload
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        logger.exception("OAuth 실측 디스크 저장 실패(라이브 실측은 유지)")
+
+
+def _load_oauth_live(cfg: "Config | None", backend: str) -> "tuple[float, LimitReading] | None":
+    """디스크에 영속화된 마지막 성공 실측을 (ts, LimitReading)으로 복원. 없거나 손상 시 None.
+    인메모리 캐시가 빈 새 프로세스가 이전 실측을 이어받게 해 소스 플립을 막는다."""
+    p = _oauth_live_path(cfg)
+    if p is None or not p.exists():
+        return None
+    try:
+        store = json.loads(p.read_text(encoding="utf-8")) or {}
+        rec = store.get(backend)
+        if not rec:
+            return None
+        wins = [Window(name=w.get("name", ""), used_percent=float(w.get("used_percent", 0.0)),
+                       resets_at=w.get("resets_at"), window_minutes=w.get("window_minutes"),
+                       used_tokens=w.get("used_tokens"), limit_tokens=w.get("limit_tokens"))
+                for w in rec.get("windows", [])]
+        reading = LimitReading(backend, rec.get("source", "claude_oauth"), ok=True, real=True,
+                               windows=wins, detail=rec.get("detail", ""))
+        return float(rec.get("at", 0.0)), reading
+    except Exception:
+        logger.exception("OAuth 실측 디스크 복원 실패")
+        return None
+
+
 def _save_weekly_phase(cfg: "Config | None", windows: list) -> None:
     """실측(oauth/statusline) 성공 시 7d 리셋 시각을 config.limits.claude.weekly_reset_epoch에 저장한다.
     이후 트랜스크립트 폴백이 이 주간 위상을 전개해 7d 리셋 카운트다운을 보여준다(실측 유래, 지어내지 않음)."""
@@ -743,6 +812,13 @@ def _probe_claude_oauth(backend: str, conf: dict[str, Any],
     max_stale = float(conf.get("max_stale_sec", 900))   # 실측 실패 시 마지막 실측을 이만큼 유지
     now = time.time()
     hit = _OAUTH_LIVE_CACHE.get(backend)
+    if hit is None:
+        # 인메모리 캐시가 빈 새 프로세스(CLI 호출·GUI 재기동): 디스크에 영속화된 마지막 실측을
+        # 이어받아 stale-while-error가 프로세스 경계를 넘게 한다(0↔실측 플립 방지, 사용자 지적).
+        disk = _load_oauth_live(cfg, backend)
+        if disk is not None:
+            _OAUTH_LIVE_CACHE[backend] = disk
+            hit = disk
     if hit and (now - hit[0]) < interval:
         return hit[1]
     # 실패 백오프: 아직 백오프 창이면 실제 호출을 건너뛴다(버그성 429 엔드포인트를 두들기지 않음).
@@ -756,6 +832,7 @@ def _probe_claude_oauth(backend: str, conf: dict[str, Any],
     if live.ok:
         _OAUTH_LIVE_CACHE[backend] = (now, live)
         _OAUTH_BACKOFF.pop(backend, None)               # 성공 → 백오프 해제
+        _save_oauth_live(cfg, backend, now, live)       # 디스크 영속화(프로세스 경계 넘어 유지)
         # 실측 반환이 주 기능이다. 로컬 transcript 읽기나 설정 저장이 실패해도 정상 live를
         # 버리면 안 되므로 보정 부작용은 완전히 격리한다. 추가 네트워크 호출은 없다.
         if cfg is not None:
@@ -888,6 +965,15 @@ def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
                     reasons.append(reason)
                     logger.warning("claude 자동 캘리브레이션 무시: %s", reason)
                     continue
+                # 회당 변화량 제한(±max_step): 5h처럼 창이 작아 %가 빠르게 변하는 곳에서 파생 cap이
+                # 3배씩 널뛰던 문제(사용자 지적: 246M→793M)를 막는다. 여러 캘리브레이션에 걸쳐 참값으로
+                # 수렴하되 단발 노이즈(swing)는 감쇠 — 끄지 않고 안정화(사용자 요청: 고쳐서 정확하게).
+                # 이미 보정된 값(저장 override>0)에만 적용: 첫 보정은 preset에서 현실로 즉시 스냅하고,
+                # 이후 보정만 클램프해 스윙을 막는다(빠른 초기 수렴 + 지속 안정성 둘 다).
+                stored = float((cfg.yok3x.get("limits", {}).get("claude", {}) or {}).get(keys[name], 0) or 0)
+                if stored > 0:
+                    max_step = float(conf.get("calib_max_step", 0.25))
+                    cap = int(max(stored * (1.0 - max_step), min(stored * (1.0 + max_step), cap)))
                 # ±5%는 표시상 의미가 거의 없고 설정 파일 churn만 만든다.
                 if abs(cap - baseline) <= baseline * 0.05:
                     reasons.append(f"{name}:변화<=5%")
