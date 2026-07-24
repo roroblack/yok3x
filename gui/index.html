@@ -633,20 +633,20 @@ function render(s){
       // (사용자 요청: "0% / 상한 8.2%로 나와야"). 비초과면 기존 catch_up/균등 상한 그대로(claude 등 불변).
       const fd=t.pace?t.pace.forward_daily:null;
       const over=fd!=null;
-      let capTxt;
-      if(over){
-        capTxt=`상한 ${fd}%p(초과)`;
-      } else {
-        capTxt=(t.pace&&(t.pace.strategy==="catch_up"||t.pace.strategy==="spread")&&base!=null&&Math.round(cap)!==Math.round(base))
-          ?`상한 ${cap}%p(균등 ${base}%p)` : `상한 ${cap}%p`;
-      }
-      const fdTxt="";   // 초과 시 forward_daily는 상한 칸으로 흡수(중복 표기 제거) · 비초과 시 원래 없음
-      // 토큰량(사용/남은)은 본문 대신 호버 툴팁으로만 노출 — 기본 표시는 %로 통일(사용자 요청).
-      // data-tip(네이티브 title 아님) — 일부 렌더러(프리뷰 등)는 OS 네이티브 title 툴팁을 안 그려서
-      // (사용자 지적: "호버 어디? 안떠") CSS ::after로 직접 그리는 툴팁을 쓴다.
-      const paceTip=`오늘 소비 / 오늘 몰아쓸 수 있는 상한(유동일 땐 균등 기준선도) · 리셋까지`
-        + (over?` · 상한(초과)=오늘 catch_up 몫 소진 → 초과분 반영해 남은예산÷남은일수로 균등 배분한 지속가능 하루율`:"")
-        + (tok?` · ${tok}`:"");
+      // 상한값: 비초과면 catch_up/균등 상한, 초과면 0 대신 '초과분 반영 지속가능 하루율(forward_daily)'.
+      // 어느 쪽이든 균등 기준선(base)이 다르면 '(균등 14%p)'를 같이 보여 형식을 통일한다(사용자 요청:
+      // 초과도 '(초과)' 대신 '(균등 14%)'처럼). 초과 여부는 warn 색상·툴팁이 알린다.
+      const capVal=over?fd:cap;
+      const capTxt=(t.pace&&(t.pace.strategy==="catch_up"||t.pace.strategy==="spread")&&base!=null&&Math.round(capVal)!==Math.round(base))
+        ?`상한 ${capVal}%p(균등 ${base}%p)` : `상한 ${capVal}%p`;
+      const fdTxt="";   // forward_daily는 초과 시 상한 칸으로 흡수(중복 표기 제거)
+      // 툴팁(오버레이): 안내문구가 아니라 **실제 값** — 이번주 소비%·오늘 소비·(초과 시)리셋까지 하루
+      // 지속가능%·토큰 소모량(있을 때만; live % 모드는 토큰 없음). data-tip(네이티브 title 아님) — 일부
+      // 렌더러(프리뷰 등)가 OS title 툴팁을 안 그려서 CSS ::after로 직접 그린다(사용자 지적).
+      const paceTip=`이번주 ${w.used_percent}% 소비 · 오늘 ${t.pace.used}%p 소비`
+        + (over?` · ⚠균등 페이스 초과 → 리셋까지 하루 ~${fd}%씩이면 초과 없이 지속`
+               :` · 오늘 ${cap}%p까지 여유`)
+        + (tok?` · ${tok}`:` · (실제 토큰 소모량은 추정 모드에서만 표시 — 지금은 실측 % 모드)`);
       const pl=(isWk&&t.pace)
         ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
         :`<span class="rst"${tok?` data-tip="${esc(tok)}"`:""}>${rstTxt}</span>`;
