@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-24 — GUI 저장 안 됨 원인: 트랜스크립트 전량 재스캔으로 build_state 13초 (BUG-38, 사용자 지적)
+
+- 사용자: 가드 경고 84%로 바꿨는데 저장이 안 됨. 조사: `/api/config` POST는 즉시 성공(디스크 0.84 반영)이나
+    `/api/state`가 >30초 타임아웃 → 저장 후 load()가 멎어 화면 갱신 안 됨 → '저장 실패'처럼 보임.
+- 원인: `_rolling_claude_tokens`가 호출마다 트랜스크립트 전 *.jsonl을 read+json.loads. build_state 한 번이
+    5h·7d·이번주·오늘·autocalibrate로 4~6회 전량 재스캔(BUG-37의 일간 스캔 2건이 임계 넘김) → 13초.
+- 수정: 파싱 결과를 파일당 캐시(`_TRANSCRIPT_EVENT_CACHE`, mtime·size 키). append-only라 불변이면 재사용,
+    창 질의는 메모리 이벤트를 cutoff 필터만. build_state 13초 → 콜드 6초·웜 0.4초. 폴링 적체·저장 지연 해소.
+- 검증: build_state 웜 0.4s, `/api/state` 이후 0.5s, guard.soft=0.84가 API·GUI 슬라이더(84)에 반영. 312 passed. → BUG-38.
+
 ## 미출시(dev) · 2026-07-24 — 오늘 0 붕괴·상한 드리프트 근본수정: 트랜스크립트 환산 일간 페이싱 (BUG-37) + %p→% (사용자 지적)
 
 - 사용자: claude 오늘 실제로 썼는데 `오늘 0%`, 상한이 `11→10.7→10.3` 실시간 하락. "이러면 안 되는 거 아냐?

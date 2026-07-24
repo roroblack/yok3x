@@ -1143,6 +1143,49 @@ def _probe_claude_statusline(backend: str, conf: dict[str, Any]) -> LimitReading
     return est
 
 
+# 파싱 결과 캐시: path -> (mtime, size, [(ts, tokens), ...]). 트랜스크립트 JSONL은 append-only라
+# mtime·size가 그대로면 재파싱이 불필요하다. 한 번의 build_state가 여러 창(5h·7d·오늘·since-reset)을
+# 질의하며 매번 전 파일을 read+json.loads 하던 게 병목(build_state 13초)이었다 — 파싱을 파일당 1회로
+# 줄이고 창 질의는 메모리의 이벤트를 cutoff로 필터만 한다(사용자 지적: 대시보드가 느려 저장이 안 되는 듯).
+_TRANSCRIPT_EVENT_CACHE: dict[str, tuple[float, int, list[tuple[float, int]]]] = {}
+
+
+def _file_usage_events(f: Path) -> list[tuple[float, int]]:
+    """파일의 (timestamp, 토큰합) 이벤트 목록. mtime·size 불변이면 캐시 재사용(재파싱 안 함)."""
+    try:
+        stt = f.stat()
+    except OSError:
+        return []
+    key = str(f)
+    hit = _TRANSCRIPT_EVENT_CACHE.get(key)
+    if hit and hit[0] == stt.st_mtime and hit[1] == stt.st_size:
+        return hit[2]
+    events: list[tuple[float, int]] = []
+    try:
+        text = f.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        if '"usage"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts = _parse_iso(d.get("timestamp"))
+        if ts is None:
+            continue
+        msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+        u = msg.get("usage") or d.get("usage") or {}
+        if not isinstance(u, dict):
+            continue
+        events.append((ts, _int(u.get("input_tokens")) + _int(u.get("output_tokens"))
+                       + _int(u.get("cache_creation_input_tokens"))
+                       + _int(u.get("cache_read_input_tokens"))))
+    _TRANSCRIPT_EVENT_CACHE[key] = (stt.st_mtime, stt.st_size, events)
+    return events
+
+
 def _rolling_claude_tokens(root: Path, now: float, window_sec: float) -> int:
     cutoff = now - window_sec
     total = 0
@@ -1154,26 +1197,11 @@ def _rolling_claude_tokens(root: Path, now: float, window_sec: float) -> int:
         try:
             if f.stat().st_mtime < cutoff - 3600:   # 창보다 오래 전에 끝난 파일은 스킵
                 continue
-            text = f.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        for line in text.splitlines():
-            if '"usage"' not in line:
-                continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            ts = _parse_iso(d.get("timestamp"))
-            if ts is None or ts < cutoff:
-                continue
-            msg = d.get("message") if isinstance(d.get("message"), dict) else {}
-            u = msg.get("usage") or d.get("usage") or {}
-            if not isinstance(u, dict):
-                continue
-            total += (_int(u.get("input_tokens")) + _int(u.get("output_tokens"))
-                      + _int(u.get("cache_creation_input_tokens"))
-                      + _int(u.get("cache_read_input_tokens")))
+        for ts, tok in _file_usage_events(f):
+            if ts >= cutoff:
+                total += tok
     return total
 
 
