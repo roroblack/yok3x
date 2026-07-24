@@ -237,9 +237,20 @@ def _pace_inputs(cfg: Config, backend: str, reading: "limits.LimitReading | None
       상한이 하루 안 안정적이고 바 게이지와도 일치.
     - 없으면 트랜스크립트 since-reset(같은 소스 today_used와 짝) → since_reset_known=True, token today_used.
     - 그것도 없으면 롤링 %(since_reset_known=False)."""
-    r7 = reading_since_reset_pct(reading)
+    r7 = reading_since_reset_pct(reading)     # OAuth/statusline 주간%(정확한 총량, 정수)
     if r7 is not None:
-        return r7, False, None
+        # OAuth엔 일간 분해가 없다. 순수 스냅샷(오늘=현재−하루시작값)은 프로세스 재기동·소스플립 때
+        # start_pct가 현재값으로 재캡처돼 '오늘=0'으로 붕괴하고 상한(=하루시작값 기반)이 흔들렸다
+        # (사용자 지적: 오늘 실제로 썼는데 0, 상한 11→10.3 실시간 하락). 해결: 트랜스크립트(과거 토큰이라
+        # 재기동에 불변)의 오늘/이번주 비율로 OAuth 총량을 '오늘분'으로 환산 → since_reset_known=True 경로가
+        # u0=현재−오늘(=오늘이전, 과거값이라 하루 안 고정)로 상한을 안정적으로 낸다. 스케일을 OAuth에
+        # 맞추므로(BUG-33의 무보정 혼합과 달리) 요동 없음.
+        tr_week = weekly_used_since_reset(cfg, backend, reset_at)
+        tr_today = today_used_pct(cfg, backend, reset_at)
+        if tr_week and tr_week > 0 and tr_today is not None:
+            today_scaled = round(min(r7, tr_today * (r7 / tr_week)), 1)   # 오늘분(OAuth 스케일)
+            return r7, True, today_scaled
+        return r7, False, None                # 트랜스크립트 없으면 스냅샷 폴백
     sr = weekly_used_since_reset(cfg, backend, reset_at)
     if sr is not None:
         return sr, True, today_used_pct(cfg, backend, reset_at)

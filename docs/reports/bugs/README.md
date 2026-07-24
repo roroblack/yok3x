@@ -41,6 +41,7 @@
 | [34](BUG-34-pace-day-key-round-jitter-wipes-today.md) | **reset_at 초이하 지터가 하루키 round()를 튀게 해 오늘 소비가 0으로 리셋** | **높음** | — | ✅ |
 | [35](BUG-35-autocalibrate-cap-swing-unbounded.md) | 자동 캘리브레이션 cap이 회당 무제한으로 튀어 3배 널뜀(246M→793M) | 중간 | — | ✅ |
 | [36](BUG-36-oauth-live-cache-per-process-source-flip.md) | OAuth 실측 캐시가 프로세스별 인메모리라 재기동마다 소스 플립(오늘 0↔실측) | 중간 | — | ✅ |
+| [37](BUG-37-oauth-snapshot-today-collapse-cap-drift.md) | **OAuth 스냅샷 모델이 '오늘'을 0으로 붕괴시키고 상한을 실시간 드리프트(재기동 취약)** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

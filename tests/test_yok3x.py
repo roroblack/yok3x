@@ -1403,16 +1403,38 @@ def test_pacing_used_today_survives_reset_jitter(tmp_path):
     assert round(s1["used"], 1) == 2.0       # 66-64=2%, 0으로 리셋 안 됨
 
 
-def test_pace_inputs_oauth_uses_snapshot_not_transcript_today(tmp_path):
-    """실측 reading(OAuth 7d%)이 있으면 _pace_inputs는 since_reset_known=False·today_used=None을 준다
-    (스냅샷 모델). OAuth 주간%에서 트랜스크립트 today를 빼면 소스 혼합으로 상한이 요동치는 버그 방지
-    (사용자 지적: 오늘 쓸수록 상한↑). reading 없으면 트랜스크립트 since-reset+token today(같은 소스)."""
+def test_pace_inputs_oauth_snapshot_fallback_when_no_transcript(tmp_path):
+    """트랜스크립트 일간 분해가 없으면(reset_at=None 등) _pace_inputs는 스냅샷 모델
+    (since_reset_known=False·today_used=None)로 폴백한다."""
     from yok3x import usage, limits
     cfg = Config.load(tmp_path)
     real = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
                                windows=[limits.Window("7d", 65.0)])
     cur, known, tu = usage._pace_inputs(cfg, "claude", real, reset_at=None)
-    assert cur == 65.0 and known is False and tu is None      # 스냅샷 모델(OAuth today 안 씀)
+    assert cur == 65.0 and known is False and tu is None      # 트랜스크립트 없음 → 스냅샷 폴백
+
+
+def test_pace_inputs_oauth_rescales_transcript_today_for_stable_daily(tmp_path, monkeypatch):
+    """OAuth 주간%가 있고 트랜스크립트 일간 분해가 있으면, 트랜스크립트 오늘/이번주 비율로 OAuth
+    총량을 '오늘분'으로 환산해 (r7, True, today_scaled)를 준다. 순수 스냅샷은 재기동 시 오늘=0으로
+    붕괴·상한 드리프트(사용자 지적)했지만, 이 경로는 u0=현재−오늘(=오늘이전, 과거값)이 하루 안 안정.
+    OAuth 69%·트랜스크립트 이번주 53.9%/오늘 7.1% → 오늘=7.1×69/53.9≈9.1."""
+    from yok3x import usage, limits
+    cfg = Config.load(tmp_path)
+    monkeypatch.setattr(usage, "weekly_used_since_reset", lambda c, b, ra: 53.9)
+    monkeypatch.setattr(usage, "today_used_pct", lambda c, b, ra: 7.1)
+    real = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("7d", 69.0)])
+    cur, known, tu = usage._pace_inputs(cfg, "claude", real, reset_at=123456.0)
+    assert cur == 69.0 and known is True
+    assert abs(tu - 9.1) < 0.15                     # 오늘 실제 사용 잡힘(0 아님)
+    # 하루 안정 불변식: 사용이 늘어도 u0(=현재−오늘=오늘이전)는 거의 불변 → 상한 흔들리지 않음.
+    monkeypatch.setattr(usage, "weekly_used_since_reset", lambda c, b, ra: 55.5)
+    monkeypatch.setattr(usage, "today_used_pct", lambda c, b, ra: 8.7)
+    real2 = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                                windows=[limits.Window("7d", 71.0)])
+    cur2, _, tu2 = usage._pace_inputs(cfg, "claude", real2, reset_at=123456.0)
+    assert abs((cur2 - tu2) - (cur - tu)) < 0.5     # 오늘이전(=상한 앵커) 불변
 
 
 def test_oauth_cap_stable_within_day_as_usage_grows(tmp_path):
