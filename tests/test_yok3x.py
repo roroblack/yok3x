@@ -1371,6 +1371,38 @@ def test_statusline_capture_bad_json_safe(tmp_path):
     assert line.startswith("yok3x")
 
 
+def test_pacing_day_key_stable_across_subsecond_reset_jitter():
+    """reset_at이 .5 경계 근처로 초 이하 드리프트해도 하루키·win_gen이 안 튄다(분 단위 양자화).
+    안 그러면 매 폴 '새 하루'로 오인 → start_pct 재캡처로 오늘 소비가 0으로 리셋됨(사용자 지적 버그)."""
+    from yok3x import usage
+    now = 1784800200.0
+    base = 1785056400   # .5 경계에 걸치는 리셋(관측값: ...400.501429)
+    keys = {usage._pacing_day_key(base + f, now) for f in (0.0, 0.41, 0.49, 0.5, 0.51, 0.99)}
+    assert len(keys) == 1, f"하루키가 초 이하 지터에 흔들림: {keys}"
+    wins = {int((base + f) // 60) for f in (0.0, 0.41, 0.49, 0.5, 0.51, 0.99)}
+    assert len(wins) == 1, f"win_gen이 초 이하 지터에 흔들림: {wins}"
+
+
+def test_pacing_used_today_survives_reset_jitter(tmp_path):
+    """초 이하로 흔들리는 reset_at을 번갈아 넘겨도 같은 하루로 인식해 used_today 누적이 유지된다
+    (spurious 리셋으로 0 초기화되지 않음). codex형 스냅샷 모델(since_reset_known=False)."""
+    import time
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                        "mode": "warn", "strategy": "catch_up"}
+    now = time.time()
+    ra_a = now + 3 * 86400 + 0.41           # 같은 리셋, 초 이하만 다름
+    ra_b = now + 3 * 86400 + 0.50
+    k_a, k_b = usage._pacing_day_key(ra_a, now), usage._pacing_day_key(ra_b, now)
+    assert k_a == k_b                        # 지터에도 같은 하루키
+    usage.daily_pace_status(cfg, "claude", 64.0, today=k_a, reset_at=ra_a,
+                            today_used=None, since_reset_known=False)   # 하루 시작 64%
+    s1 = usage.daily_pace_status(cfg, "claude", 66.0, today=k_b, reset_at=ra_b,
+                                 today_used=None, since_reset_known=False)  # 지터된 reset로 재호출
+    assert round(s1["used"], 1) == 2.0       # 66-64=2%, 0으로 리셋 안 됨
+
+
 def test_pace_inputs_oauth_uses_snapshot_not_transcript_today(tmp_path):
     """실측 reading(OAuth 7d%)이 있으면 _pace_inputs는 since_reset_known=False·today_used=None을 준다
     (스냅샷 모델). OAuth 주간%에서 트랜스크립트 today를 빼면 소스 혼합으로 상한이 요동치는 버그 방지

@@ -38,6 +38,7 @@
 | [31](BUG-31-native-title-tooltip-not-rendered.md) | 네이티브 title 툴팁이 프리뷰 렌더러에서 전혀 안 뜸 | 낮음 | — | ✅ |
 | [32](BUG-32-config-torn-write-empty-yok3x-json.md) | **save_yok3x 비원자적 쓰기로 yok3x.json이 0바이트로 손상(전체 기동 불가)** | **높음** | — | ✅ |
 | [33](BUG-33-pace-cap-jitter-oauth-transcript-source-mix.md) | 페이싱 상한이 하루 중 요동/증가 — OAuth current + 트랜스크립트 today 소스 혼합(BUG-29 부작용) | 중간 | — | ✅ |
+| [34](BUG-34-pace-day-key-round-jitter-wipes-today.md) | **reset_at 초이하 지터가 하루키 round()를 튀게 해 오늘 소비가 0으로 리셋** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

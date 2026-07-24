@@ -184,10 +184,13 @@ def _pacing_day_start(reset_at: float | None, now: float | None = None) -> float
 
 
 def _pacing_day_key(reset_at: float | None, now: float | None = None) -> str:
-    """리셋 정렬된 페이싱 하루 식별 키(레코드 일일 초기화용). 경계가 바뀌면 값이 바뀐다."""
+    """리셋 정렬된 페이싱 하루 식별 키(레코드 일일 초기화용). 경계가 바뀌면 값이 바뀐다.
+    **분 단위로 양자화**(//60): reset_at이 초 이하로 드리프트(예: ...400.41↔.50)해도 키가 안 튀게 —
+    round()면 .5 경계에서 튀어 매 폴 '새 하루'로 오인 → start_pct 재캡처로 오늘 소비가 0으로 리셋되는
+    버그(사용자 지적)가 났다. 리셋 시각은 분 정밀도면 충분하다."""
     if not reset_at or not math.isfinite(reset_at):
         return (datetime.fromtimestamp(now) if now else datetime.now()).strftime("%Y-%m-%d")
-    return f"pd{int(round(_pacing_day_start(reset_at, now)))}"
+    return f"pd{int(_pacing_day_start(reset_at, now) // 60)}"
 
 
 def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> float | None:
@@ -416,7 +419,9 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     q = dp["pct_of_weekly"] * 100.0               # 기본 하루치(균등 14%p)
     mode = dp["mode"]
     # 창 세대 마커: resets_at이 바뀌면(새 주간 창) 롤오프가 아니라 진짜 리셋 → 당일 기준 재초기화.
-    win_gen = round(float(reset_at)) if (reset_at and math.isfinite(reset_at)) else None
+    # **분 단위 양자화**(//60): reset_at 초 이하 드리프트(.5 경계)에 round()가 튀어 매 폴 spurious 리셋 →
+    # start_pct 재캡처로 오늘 소비 0 리셋되던 버그 방지(사용자 지적). 진짜 주간 리셋은 분 단위로 충분히 구분.
+    win_gen = int(float(reset_at) // 60) if (reset_at and math.isfinite(reset_at)) else None
     st = _load_pace(cfg)
     rec = st.get(backend) if isinstance(st.get(backend), dict) else {}
     changed = False
