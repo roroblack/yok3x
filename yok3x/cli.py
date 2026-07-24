@@ -321,16 +321,9 @@ def main(argv: list[str] | None = None) -> int:
         for b in usage.BACKEND_KEYS:
             r = limits.probe(cfg, b)
             _ra = usage.effective_reset_at(cfg, b, r)
-            _r7 = usage.reading_since_reset_pct(r)   # 실측 7d%(바와 동일 소스) 우선
-            if _r7 is not None:
-                wk, _known = _r7, True
-            else:
-                _sr = usage.weekly_used_since_reset(cfg, b, _ra)   # None=토큰 없음(codex) → 롤링 폴백
-                wk = _sr if _sr is not None else usage.precise_weekly_pct(cfg, b, r)
-                _known = _sr is not None
+            wk, _known, _tu = usage._pace_inputs(cfg, b, r, _ra)
             st = usage.daily_pace_status(cfg, b, wk, today=usage._pacing_day_key(_ra),
-                                         reset_at=_ra, today_used=usage.today_used_pct(cfg, b, _ra),
-                                         since_reset_known=_known)
+                                         reset_at=_ra, today_used=_tu, since_reset_known=_known)
             if st:
                 print(f"  {b:7s} 오늘소비 {st['used']:.0f}/{st['cap']:.0f}%p  "
                       f"level={st['level']}{' (승인됨)' if st['approved'] else ''}")

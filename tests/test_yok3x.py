@@ -1371,6 +1371,37 @@ def test_statusline_capture_bad_json_safe(tmp_path):
     assert line.startswith("yok3x")
 
 
+def test_pace_inputs_oauth_uses_snapshot_not_transcript_today(tmp_path):
+    """실측 reading(OAuth 7d%)이 있으면 _pace_inputs는 since_reset_known=False·today_used=None을 준다
+    (스냅샷 모델). OAuth 주간%에서 트랜스크립트 today를 빼면 소스 혼합으로 상한이 요동치는 버그 방지
+    (사용자 지적: 오늘 쓸수록 상한↑). reading 없으면 트랜스크립트 since-reset+token today(같은 소스)."""
+    from yok3x import usage, limits
+    cfg = Config.load(tmp_path)
+    real = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                               windows=[limits.Window("7d", 65.0)])
+    cur, known, tu = usage._pace_inputs(cfg, "claude", real, reset_at=None)
+    assert cur == 65.0 and known is False and tu is None      # 스냅샷 모델(OAuth today 안 씀)
+
+
+def test_oauth_cap_stable_within_day_as_usage_grows(tmp_path):
+    """OAuth 경로 상한은 하루 안에서 고정(스냅샷) — 오늘 사용이 늘어도 상한이 변하지 않는다.
+    (사용자 지적 버그: current(OAuth)−today_used(transcript) 혼합으로 상한이 오늘 쓸수록 올라감)."""
+    import time
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                        "mode": "warn", "strategy": "catch_up"}
+    reset = time.time() + 2.1 * 86400
+    caps = [usage.daily_pace_status(cfg, "claude", pct, today="d1", reset_at=reset,
+                                    today_used=None, since_reset_known=False)["cap"]
+            for pct in (65.0, 66.0, 68.0)]
+    assert round(caps[0], 1) == round(caps[1], 1) == round(caps[2], 1)   # 하루 안 고정
+    useds = [usage.daily_pace_status(cfg, "claude", pct, today="d1", reset_at=reset,
+                                     today_used=None, since_reset_known=False)["used"]
+             for pct in (65.0, 68.0)]
+    assert useds[1] > useds[0]                                           # 오늘 사용만 증가
+
+
 def test_pacing_prefers_real_reading_7d(tmp_path):
     """페이싱 since-reset은 실측 reading의 7d%를 우선(바 게이지와 동일 소스 → 밴드가 바 채움과 일치).
     실측 아니면 None(트랜스크립트/롤링에 맡김). 사용자 지적: 바=OAuth·밴드=트랜스크립트 불일치."""

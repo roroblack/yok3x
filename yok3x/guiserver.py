@@ -86,20 +86,10 @@ def build_state(cfg: Config) -> dict:
         pace = None
         if v.reading and v.real:              # 실측 7d 있을 때만 하루 페이싱 상태 표시
             _ra = usage.effective_reset_at(cfg, b, v.reading)   # 캐시 폴백(oauth 플랩 대비)
-            # since-reset 소스: 실측 reading의 7d%를 우선(바 게이지와 동일 소스 → 페이싱 밴드가 바 채움과
-            # 일치). 없으면 트랜스크립트 since-reset, 없으면 롤링. (혼재 시 바=OAuth·밴드=트랜스크립트로
-            # 어긋나 '상한까지 남은 부분'이 사라지던 문제 — 사용자 지적.)
-            _r7 = usage.reading_since_reset_pct(v.reading)
-            if _r7 is not None:
-                _cur, _known = _r7, True
-            else:
-                _sr = usage.weekly_used_since_reset(cfg, b, _ra)
-                _cur = _sr if _sr is not None else usage.precise_weekly_pct(cfg, b, v.reading)
-                _known = _sr is not None
+            _cur, _known, _tu = usage._pace_inputs(cfg, b, v.reading, _ra)
             ps = usage.daily_pace_status(cfg, b, _cur,
                                          today=usage._pacing_day_key(_ra), reset_at=_ra,
-                                         today_used=usage.today_used_pct(cfg, b, _ra),
-                                         since_reset_known=_known)
+                                         today_used=_tu, since_reset_known=_known)
             if ps:
                 pace = {"used": round(ps["used"], 1), "cap": round(ps["cap"], 1),
                         "soft": round(ps["soft"], 1), "base_cap": round(ps["base_cap"], 1),
