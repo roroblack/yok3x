@@ -1857,9 +1857,12 @@ def _load_replay_prefix(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
 
 
 def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
-                   ask=None, *, resume_dir: Path | None = None
+                   ask=None, *, resume_dir: Path | None = None,
+                   sink: dict[str, Any] | None = None
                    ) -> str | dict[str, str]:
-    """task.json 실행. 반환: 종료 상태 문자열."""
+    """task.json 실행. 반환: 종료 상태 문자열(실행 생명주기). sink(있으면)에 run_id·gate(산출물 승인
+    판정)를 채운다 — 종료 상태(done/aborted)와 게이트 통과(gate.passed)는 별개라, 호출자가 둘을 나눠
+    소비하게(F2-2). done이어도 gate.passed=false면 자동화는 실패로 봐야 한다."""
     task_path = Path(task_file)
     spec_bytes = task_path.read_bytes()
     spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
@@ -1986,6 +1989,9 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                                        initial_context=acquire_context)
         else:
             raise ValueError(f"unknown pattern: {pattern}")
+        if sink is not None:                          # F2-2: 종료 상태와 분리해 게이트 판정 노출
+            sink["run_id"] = orch.run_id
+            sink["gate"] = orch.gate
         return "done"
     except RunAborted as e:
         orch._log(f"[stop] {e}")
@@ -1994,15 +2000,20 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         resumable = bool(supported and cause in ("guard_stop", "user_abort"))
         orch._save_status("aborted", {
             "reason": str(e), "cause": cause, "resumable": resumable})
+        if sink is not None:
+            sink["run_id"] = orch.run_id
+            sink["gate"] = orch.gate
         return f"aborted: {e}"
 
 
 def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
-                  ask=None, resume_run_id: str | None = None
+                  ask=None, resume_run_id: str | None = None,
+                  sink: dict[str, Any] | None = None
                   ) -> str | dict[str, str]:
-    """task.json 실행. G-1 재개는 이전 lineage 잠금을 잡은 순차 pipeline만 허용한다."""
+    """task.json 실행. G-1 재개는 이전 lineage 잠금을 잡은 순차 pipeline만 허용한다.
+    sink(있으면): run_id·gate를 채워 종료 상태와 산출물 승인(gate.passed)을 분리 소비하게 한다(F2-2)."""
     if resume_run_id is None:
-        return _run_task_file(cfg, task_file, auto=auto, ask=ask)
+        return _run_task_file(cfg, task_file, auto=auto, ask=ask, sink=sink)
     if not isinstance(resume_run_id, str) or not resume_run_id.strip():
         return {"error": "재개 거부: resume_run_id가 비어 있습니다"}
     runs_root = cfg.paths.runs.resolve()
@@ -2014,7 +2025,7 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         # 재개 런 전체 동안 lineage를 독점한다. 24시간은 일반 backend timeout보다 충분히 길다.
         with reserve.file_lock(lock_path, ttl=86400, run_id=f"resume-{resume_run_id}"):
             return _run_task_file(
-                cfg, task_file, auto=auto, ask=ask, resume_dir=resume_dir)
+                cfg, task_file, auto=auto, ask=ask, resume_dir=resume_dir, sink=sink)
     except FileExistsError:
         return {"error": f"재개 거부: lineage 잠금 사용 중({resume_run_id})"}
 

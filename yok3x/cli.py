@@ -177,9 +177,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.cmd == "run":
-        state = run_task_file(cfg, a.task_file, auto=a.auto or None)
+        sink: dict = {}
+        state = run_task_file(cfg, a.task_file, auto=a.auto or None, sink=sink)
         print(f"\n종료 상태: {state}")
-        return 0 if state == "done" else 1
+        gate = sink.get("gate")
+        # 종료 상태(실행 생명주기)와 게이트(산출물 승인)를 분리한다(F2-2). done이어도 gate.passed=false
+        # (strict 저점 탈락·verify 실패 등)면 자동화가 성공으로 소비하면 안 되므로 별도 종료코드(3)로 낸다.
+        # 1=실행 실패/중단, 3=실행은 done이나 산출물 미승인, 0=완료+승인.
+        if state != "done":
+            return 1
+        if isinstance(gate, dict) and not gate.get("passed", True):
+            print(f"[gate] 산출물 미승인({gate.get('mode')}): {gate.get('reason')} · "
+                  f"score={gate.get('score')}/{gate.get('threshold')} "
+                  f"verify_ok={gate.get('verify_ok')}", file=sys.stderr)
+            return 3
+        return 0
 
     if a.cmd == "loop":
         run_loop(cfg, a.task_file, iterations=a.iterations, auto=not a.gated)

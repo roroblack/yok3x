@@ -4,6 +4,16 @@
 
 ---
 
+## 미출시(dev) · 2026-07-24 — F2-2 gate.passed 소비자 전환: run 종료코드에서 실행상태·산출물승인 분리 (R-2 선행계약)
+
+- 문제: CLI `run`이 `state=="done"`이면 무조건 exit0 — strict 게이트 저점 탈락(done+gate.passed=false)도 성공으로
+    소비돼, 곧 할 R-2(verifier-gated 정지)의 의미가 종료코드에서 소실될 상황(codex 선행계약 지적).
+- 변경: `run_task_file(sink=...)`가 run_id·gate를 sink에 채우고(반환 문자열 계약은 불변 — 기존 테스트/호출자
+    영향 없음), CLI가 종료코드를 **1(실행 중단/실패) / 3(done이나 gate.passed=false=산출물 미승인) / 0(완료+승인)**
+    로 분리. state=실행 생명주기, gate.passed=산출물 승인.
+- 검증: 신규 테스트 2(run_task_file sink에 run_id·gate 채움 / CLI 종료코드 3분기). 314 passed.
+    v4.3.0 F2-2 체크·v4.4.0 R-2 선행계약 해제(R-2 착수 가능) 반영.
+
 ## 미출시(dev) · 2026-07-24 — GUI 저장 안 됨 원인: 트랜스크립트 전량 재스캔으로 build_state 13초 (BUG-38, 사용자 지적)
 
 - 사용자: 가드 경고 84%로 바꿨는데 저장이 안 됨. 조사: `/api/config` POST는 즉시 성공(디스크 0.84 반영)이나

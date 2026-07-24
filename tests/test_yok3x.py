@@ -467,6 +467,49 @@ def test_strict_low_score_stays_rejected_and_persists_gate(mock_root, monkeypatc
     assert all(record["gate_mode"] == "strict" for record in records)
 
 
+def test_run_task_file_sink_carries_run_id_and_gate(mock_root):
+    """F2-2: run_task_file(sink)이 run_id·gate를 sink에 채워, 호출자가 종료 상태와 별개로 게이트
+    판정(산출물 승인)을 소비할 수 있다(producer-reviewer는 gate 존재)."""
+    cfg = Config.load(mock_root)
+    tf = mock_root / "task.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t",
+                              "producer": "claude-main", "reviewer": "codex-critic",
+                              "max_rounds": 2, "pass_score": 8.0}, ensure_ascii=False),
+                  encoding="utf-8")
+    sink: dict = {}
+    state = run_task_file(cfg, tf, auto=True, sink=sink)
+    assert state == "done"
+    assert str(sink.get("run_id", "")).startswith("run_")
+    assert isinstance(sink.get("gate"), dict) and "passed" in sink["gate"]
+
+
+def test_cli_run_exit_separates_state_and_gate(tmp_path, monkeypatch):
+    """F2-2 계약: `yok3x run` 종료코드가 실행 상태(state)와 산출물 승인(gate.passed)을 분리한다 —
+    done+승인→0, done+미통과(strict 저점·verify 실패 등)→3, 중단→1. R-2의 verifier-gated 정지가
+    종료코드에서 소실되지 않게 하는 선행 계약."""
+    from yok3x import cli
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "t.json").write_text("{}", encoding="utf-8")
+    holder = {"state": "done", "gate": None}
+
+    def fake_run(cfg, task_file, auto=None, sink=None, **kw):
+        if sink is not None and holder["gate"] is not None:
+            sink["gate"] = holder["gate"]
+        return holder["state"]
+    monkeypatch.setattr(cli, "run_task_file", fake_run)
+
+    holder.update(state="done", gate={"passed": False, "mode": "strict",
+                  "reason": "score_below_threshold", "score": 5.0,
+                  "threshold": 8.0, "verify_ok": True})
+    assert cli.main(["run", "t.json"]) == 3        # done이나 게이트 미통과
+    holder.update(state="done", gate={"passed": True})
+    assert cli.main(["run", "t.json"]) == 0        # done + 승인
+    holder.update(state="done", gate=None)
+    assert cli.main(["run", "t.json"]) == 0        # 게이트 없음 → 성공으로 소비
+    holder.update(state="aborted: guard_stop", gate=None)
+    assert cli.main(["run", "t.json"]) == 1        # 실행 중단
+
+
 def test_producer_failure_still_persists_unevaluated_gate(mock_root, monkeypatch):
     o = Orchestrator(Config.load(mock_root), auto=True)
     monkeypatch.setattr(
