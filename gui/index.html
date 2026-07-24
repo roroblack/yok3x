@@ -633,6 +633,7 @@ function render(s){
       // (사용자 요청: "0% / 상한 8.2%로 나와야"). 비초과면 기존 catch_up/균등 상한 그대로(claude 등 불변).
       const fd=t.pace?t.pace.forward_daily:null;
       const over=fd!=null;
+      const ec=t.pace?t.pace.even_cap:null;   // 엄격 균등선 기준 오늘 여유(쓴 만큼 줄어듦) — 오버레이 전용
       // 상한값: 비초과면 catch_up/균등 상한, 초과면 0 대신 '초과분 반영 지속가능 하루율(forward_daily)'.
       // 어느 쪽이든 균등 기준선(base)이 다르면 '(균등 14%p)'를 같이 보여 형식을 통일한다(사용자 요청:
       // 초과도 '(초과)' 대신 '(균등 14%)'처럼). 초과 여부는 warn 색상·툴팁이 알린다.
@@ -645,7 +646,8 @@ function render(s){
       // 렌더러(프리뷰 등)가 OS title 툴팁을 안 그려서 CSS ::after로 직접 그린다(사용자 지적).
       const paceTip=`이번주 ${w.used_percent}% 소비 · 오늘 ${t.pace.used}%p 소비`
         + (over?` · ⚠균등 페이스 초과 → 리셋까지 하루 ~${fd}%씩이면 초과 없이 지속`
-               :` · 오늘 ${cap}%p까지 여유`)
+               :` · 오늘 ${cap}%p까지 여유`
+                 + (ec!=null&&Math.round(ec)<Math.round(cap)?` · 엄격 균등선 기준으론 오늘 ${ec}%p(쓴 만큼 줄어듦)`:""))
         + (tok?` · ${tok}`:` · (실제 토큰 소모량은 추정 모드에서만 표시 — 지금은 실측 % 모드)`);
       const pl=(isWk&&t.pace)
         ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`

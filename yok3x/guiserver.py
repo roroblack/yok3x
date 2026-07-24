@@ -96,6 +96,7 @@ def build_state(cfg: Config) -> dict:
                         "strategy": ps["strategy"],
                         "start": round(ps["current"] - ps["used"], 1),  # 오늘 아침 7d 기준선
                         "forward_daily": ps.get("forward_daily"),       # 이후 지속가능 일일률
+                        "even_cap": ps.get("even_cap"),                 # 엄격 균등선 여유(오버레이 전용)
                         "level": ps["level"], "blocked": ps["blocked"], "approved": ps["approved"]}
         tools.append({
             "backend": b, "level": v.level, "ratio": round(v.ratio, 3),

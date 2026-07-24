@@ -1434,6 +1434,27 @@ def test_oauth_cap_stable_within_day_as_usage_grows(tmp_path):
     assert useds[1] > useds[0]                                           # 오늘 사용만 증가
 
 
+def test_spread_main_cap_stable_even_cap_carries_shrinking(tmp_path):
+    """사용자 설계 ②: 메인 줄 상한은 지속가능률(남은예산÷남은일수, 하루 고정)이고, 쓴 만큼 줄어드는
+    엄격 균등선(catch_up) 값은 even_cap으로 분리해 오버레이 전용. reset 2.1일·주간 67%면 spread=11,
+    catch_up=3. even_cap이 메인 cap보다 작아야(오버레이에서 '줄어드는 값'으로 노출) 한다."""
+    import time
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
+                                        "mode": "warn", "strategy": "spread"}
+    reset = time.time() + 2.1 * 86400            # D=3, k=5 → 균등선 70%
+    st = usage.daily_pace_status(cfg, "claude", 67.0, today="d1", reset_at=reset,
+                                 today_used=None, since_reset_known=False)
+    assert round(st["cap"], 0) == 11             # 메인: spread=(100-67)/3=11
+    assert round(st["even_cap"], 0) == 3         # 오버레이: catch_up=70-67=3(쓴 만큼 줄어드는 값)
+    assert st["even_cap"] < st["cap"]            # 메인은 안정, 엄격값은 더 작음 → 오버레이에 분리 표시
+    # 하루 안에서 사용이 늘어도 메인 cap은 고정(스냅샷)
+    st2 = usage.daily_pace_status(cfg, "claude", 69.0, today="d1", reset_at=reset,
+                                  today_used=None, since_reset_known=False)
+    assert round(st2["cap"], 1) == round(st["cap"], 1)
+
+
 def test_pacing_prefers_real_reading_7d(tmp_path):
     """페이싱 since-reset은 실측 reading의 7d%를 우선(바 게이지와 동일 소스 → 밴드가 바 채움과 일치).
     실측 아니면 None(트랜스크립트/롤링에 맡김). 사용자 지적: 바=OAuth·밴드=트랜스크립트 불일치."""

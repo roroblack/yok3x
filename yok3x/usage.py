@@ -472,9 +472,16 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     # 이 값은 과거 데이터라 하루 안에서 안정적이고, 오늘 쓸수록 상한이 깎이던 문제(사용자 지적)가 사라진다.
     # codex(토큰없음)·reset 정보 없음: 하루 시작에 고정한 cap_today(스냅샷 기준, 없으면 고정 q 폴백).
     if since_reset_known and reset_at and math.isfinite(reset_at):
-        cap = _daily_cap(dp["strategy"], q, max(0.0, current - _tu0), reset_at, dp["max_cap_mult"])
+        _u0 = max(0.0, current - _tu0)
+        cap = _daily_cap(dp["strategy"], q, _u0, reset_at, dp["max_cap_mult"])
     else:
         cap = float(rec.get("cap_today", q))
+        _u0 = float(rec.get("start_pct", current))
+    # 엄격 균등선(catch_up) 기준 '오늘 더 써도 되는 양'을 전략과 무관하게 함께 계산해 오버레이에 노출.
+    # 메인 줄엔 지속가능률(전략 상한, 하루 고정)을 안정적으로 보이고, 쓴 만큼 줄어드는 이 값은
+    # 오버레이에만 — 사용자 설계("줄어드는 건 오버레이에만"). reset 정보 없으면 상한과 동일.
+    even_cap = (round(_catch_up_cap(q, _u0, reset_at, dp["max_cap_mult"]), 1)
+                if (reset_at and math.isfinite(reset_at)) else round(cap, 1))
     soft = cap * dp["soft_frac"]
     # 오늘 사용: today_used(자정 이후 실제 토큰)가 있으면 그걸 쓴다 — 7d% 델타는 롤오프로 오늘을
     # 0으로 뭉개므로(사용자 지적). 없으면 기존 델타 누적 폴백.
@@ -509,6 +516,8 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
             "current": current, "level": level, "mode": mode, "approved": approved,
             # 균등 기준선(고정 q)도 함께 노출 — 유동 상한이 원래 하루치 대비 얼마인지 보이게.
             "base_cap": q, "strategy": dp["strategy"],
+            # even_cap: 엄격 균등선(catch_up) 기준 '오늘 여유' — 오버레이 전용(쓴 만큼 줄어드는 값).
+            "even_cap": even_cap,
             "forward_daily": forward_daily}
 
 
