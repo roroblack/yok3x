@@ -627,21 +627,25 @@ function render(s){
       const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
       // 페이싱이 있어도 리셋 시간을 덮어쓰지 않는다 — 오늘 소비/상한 + 리셋까지 + 토큰을 모두 보여준다.
       const rstTxt=w.reset?`리셋 ${w.reset}`:"";
-      // 유동(catch_up)·분산(spread)이고 상한이 균등 기준선과 다르면 '상한 18%p(균등 14%p)'로 둘 다 보여준다.
       const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
-      // 이후 지속가능 일일률: 남은 예산÷남은일수. 이게 뜨는 조건(오늘 사용≥상한)이 곧 '오늘 상한 소진(초과)'과
-      // 같은 조건이라, capTxt에 '(초과)'를 같이 달아 두 숫자가 다른 걸 재는 게 아니라 같은 상황의 두 얼굴임을
-      // 보여준다(사용자 지적: "상한 0%인데 왜 이후 하루 7.2%가 같이 뜨냐" 혼동 방지).
+      // 초과 상태(오늘 사용≥catch_up 상한)면 catch_up 상한은 0이라 '오늘 얼마 더 쓸 수 있나'로는 무의미.
+      // → 상한 칸에 0 대신 '초과분 반영해 남은 기간 균등 배분한 지속가능 하루율(forward_daily)'을 보여준다
+      // (사용자 요청: "0% / 상한 8.2%로 나와야"). 비초과면 기존 catch_up/균등 상한 그대로(claude 등 불변).
       const fd=t.pace?t.pace.forward_daily:null;
       const over=fd!=null;
-      const capTxt=(t.pace&&(t.pace.strategy==="catch_up"||t.pace.strategy==="spread")&&base!=null&&Math.round(cap)!==Math.round(base))
-        ?`상한 ${cap}%p(균등 ${base}%p${over?"·초과":""})` : `상한 ${cap}%p${over?"(초과)":""}`;
-      const fdTxt=over?` · 초과분 반영 시 이후 하루 ~${fd}%`:"";
+      let capTxt;
+      if(over){
+        capTxt=`상한 ${fd}%p(초과)`;
+      } else {
+        capTxt=(t.pace&&(t.pace.strategy==="catch_up"||t.pace.strategy==="spread")&&base!=null&&Math.round(cap)!==Math.round(base))
+          ?`상한 ${cap}%p(균등 ${base}%p)` : `상한 ${cap}%p`;
+      }
+      const fdTxt="";   // 초과 시 forward_daily는 상한 칸으로 흡수(중복 표기 제거) · 비초과 시 원래 없음
       // 토큰량(사용/남은)은 본문 대신 호버 툴팁으로만 노출 — 기본 표시는 %로 통일(사용자 요청).
       // data-tip(네이티브 title 아님) — 일부 렌더러(프리뷰 등)는 OS 네이티브 title 툴팁을 안 그려서
       // (사용자 지적: "호버 어디? 안떠") CSS ::after로 직접 그리는 툴팁을 쓴다.
       const paceTip=`오늘 소비 / 오늘 몰아쓸 수 있는 상한(유동일 땐 균등 기준선도) · 리셋까지`
-        + (over?` · (초과)=오늘분 상한 소진 · 초과분 반영 시 이후 하루=남은예산÷남은일수로 균등 배분한 지속가능률`:"")
+        + (over?` · 상한(초과)=오늘 catch_up 몫 소진 → 초과분 반영해 남은예산÷남은일수로 균등 배분한 지속가능 하루율`:"")
         + (tok?` · ${tok}`:"");
       const pl=(isWk&&t.pace)
         ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}%p / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
