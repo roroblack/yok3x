@@ -40,6 +40,17 @@ STAGE_MAX_FILES_DEFAULT = 5_000
 STAGE_IGNORED_NAMES = {
     ".git", "node_modules", ".yok3x", "yok3x-out", "__pycache__", ".tmp",
 }
+# R-6(verifier separation): 프로듀서가 **검증기 자체**를 고쳐 게이트를 통과하는 우회를 막는다.
+# 이 glob에 걸리는 후보 파일은 스테이징에 적용하지 않는다(fail-closed: 하나라도 있으면 라운드
+# 후보 전체를 거부 → 기존 원본 verify 폴백). R-2가 재시도를 통제해도 R-6 없이는 verifier를
+# 바꿔 우회할 수 있다. changes.protected_globs로 재정의·확장 가능.
+PROTECTED_VERIFIER_GLOBS = (
+    "tests/**", "test/**", "**/test_*.py", "**/*_test.py", "**/*_test.go",
+    "**/*.test.js", "**/*.test.ts", "**/*.spec.js", "**/*.spec.ts",
+    "conftest.py", "**/conftest.py",
+    "pytest.ini", "tox.ini", "noxfile.py", "Makefile", "justfile",
+    ".github/workflows/**",
+)
 
 # 할루시네이션 방지 지침 — 모든 워커 프롬프트에 주입.
 ANTI_HALLUCINATION = (
@@ -270,6 +281,9 @@ class Orchestrator:
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
         self.score_gate_mode: str = "strict" # task 전용 SCORE 권한(strict/advisory)
         self.gate: dict[str, Any] | None = None
+        # R-2: 명시적 정지 사유(success/no_new_evidence/max_rounds/producer_failed/…).
+        # "왜 멈췄나"를 라벨로 남겨 status·자동화가 종료 원인을 문자열 파싱 없이 소비한다.
+        self.stop_reason: str | None = None
         self.verify_timeout: int = 300       # verify_cmd 제한시간(초) — task로 재정의 가능
         self.context_globs: list[str] = []   # 레포 컨텍스트 주입 glob
         self.rubric: str = ""                # 채점표 파일 경로
@@ -473,10 +487,47 @@ class Orchestrator:
 
         shutil.rmtree(path, onerror=make_writable_and_retry)
 
+    def _protected_globs(self) -> tuple[str, ...]:
+        """R-6 보호 대상 glob. changes.protected_globs로 재정의(리스트) 가능, 기본은 내장 목록."""
+        custom = (self.changes or {}).get("protected_globs")
+        if isinstance(custom, list) and custom:
+            return tuple(str(g) for g in custom)
+        return PROTECTED_VERIFIER_GLOBS
+
+    def _protected_verifier_hits(self, paths: list[str]) -> list[str]:
+        """후보 경로 중 검증기(테스트·검증 설정)에 해당하는 것들. R-6: 프로듀서가 이걸 바꾸면
+        게이트 자체를 조작하는 셈이라 검증 대상으로 삼지 않는다."""
+        from fnmatch import fnmatch
+        globs = self._protected_globs()
+        hits = []
+        for raw in paths:
+            # "./" 접두만 제거한다. lstrip("./")는 문자집합을 벗겨 ".github/..."의 앞 점까지
+            # 지워 보호 패턴을 빗나가게 했다(테스트로 발견).
+            norm = str(raw).replace("\\", "/")
+            while norm.startswith("./"):
+                norm = norm[2:]
+            for g in globs:
+                # fnmatch는 '**'를 특별 취급하지 않으므로 접두 디렉터리 형태를 따로 본다.
+                if fnmatch(norm, g) or (g.endswith("/**") and
+                                        (norm == g[:-3] or norm.startswith(g[:-2]))):
+                    hits.append(norm)
+                    break
+        return hits
+
     def _run_round_verify(self, artifact: str, rnd: int) -> tuple[bool, str, str]:
         """후보가 있으면 격리 사본에서 검증하고, 준비 실패 시 원본 검증으로 명시적으로 열화한다."""
         blocks = artifacts.parse_file_blocks(artifact or "")
         if not self.workdir or not blocks:
+            ok, out = self._run_verify()
+            return ok, out, "original_tree"
+
+        # R-6: 검증기 파일을 건드리는 후보는 스테이징에 반영하지 않는다(fail-closed).
+        # 하나라도 있으면 라운드 후보 전체를 거부하고 원본 트리 검증으로 열화한다 —
+        # 부분 적용하면 리뷰어가 본 산출물과 verify 대상이 어긋나기 때문(기존 정책과 동일).
+        protected = self._protected_verifier_hits([b.path for b in blocks])
+        if protected:
+            self._log(f"[verify-stage] round {rnd}: 검증기 파일 수정 후보 거부(R-6) "
+                      f"— {', '.join(protected[:5])} · 원본 verify 폴백")
             ok, out = self._run_verify()
             return ok, out, "original_tree"
 
@@ -616,6 +667,29 @@ class Orchestrator:
             if len(line) >= 4:  # 짧은 잡음 조각 제외
                 issues.append(line)
         return tuple(sorted(set(issues)))
+
+    @staticmethod
+    def _artifact_sig(text: str) -> str:
+        """산출물의 내용 서명(정규화 후 해시). 재시도 승인의 '새 증거' 축 중 하나 — 프로듀서가
+        산출물을 실제로 바꿨는지를 리뷰어 텍스트가 아니라 **산출물 자체**로 판정한다."""
+        norm = re.sub(r"\s+", " ", (text or "")).strip()
+        return hashlib.sha256(norm.encode("utf-8", "replace")).hexdigest()[:16]
+
+    def _new_evidence(self, prev: dict | None, cur: dict) -> tuple[bool, str]:
+        """R-2 재시도 승인 게이트: 직전 라운드 대비 **새 증거**가 있으면 재시도를 허용한다.
+        증거 축(하나라도 바뀌면 진전): ① 산출물 내용(artifact_sig) ② 검증기 상태(verify_ok)
+        ③ 리뷰어 지적 결함 집합(issues_sig). 기존 스톨감지는 (score, issues_sig) 문자 비교뿐이라
+        '산출물을 고쳤는데 리뷰어가 같은 말을 반복'하는 경우도 스톨로 오판했고, 반대로 '점수만
+        1점 흔들리면' 진전 없이도 계속 재시도했다. 반환: (새 증거 있음, 사유 라벨)."""
+        if prev is None:
+            return True, "first_round"
+        if prev.get("artifact_sig") != cur.get("artifact_sig"):
+            return True, "artifact_changed"
+        if prev.get("verify_ok") != cur.get("verify_ok"):
+            return True, "verify_state_changed"
+        if prev.get("issues_sig") != cur.get("issues_sig"):
+            return True, "issues_changed"
+        return False, "no_new_evidence"
 
     # ------------------------------------------------------------ worker call
 
@@ -1278,6 +1352,7 @@ class Orchestrator:
             prod = self.call_worker(producer, t, "build" if rnd == 1 else "revise",
                                     "\n\n".join(blocks))
             if not prod.ok:
+                self.stop_reason = "producer_failed"
                 break
             artifact = prod.text
 
@@ -1317,6 +1392,7 @@ class Orchestrator:
             if passed:
                 suffix = " · 검토 필요" if self.gate["review_required"] else ""
                 self._log(f"[review] 게이트 통과({self.score_gate_mode}){suffix} — 종료")
+                self.stop_reason = "success"
                 break
 
             feedback_parts = []
@@ -1344,18 +1420,27 @@ class Orchestrator:
                 self._log(f"[escalate] round {rnd} score={score} → producer={producer}, reviewer={reviewer}")
                 continue                   # 새 워커로 다음 라운드(이번 라운드 스톨 판정 건너뜀)
 
-            # 스톨 감지: 점수 + 리뷰어가 지적한 결함이 직전 라운드와 동일하면
-            # 수렴 실패로 조기 종료(리뷰어가 같은 결함을 되풀이 = 생산자가 못 고침).
-            sig = (score, issues_sig)
-            if prev_sig is not None and sig == prev_sig:
-                self._log("[stall] 같은 점수·결함 반복 — 수렴 실패로 조기 종료")
+            # R-2 재시도 승인 게이트: '같은 점수·결함 반복'(문자 비교)이 아니라 **새 증거**가
+            # 있는지로 판정한다 — 산출물 내용·검증기 상태·지적 결함 중 하나라도 바뀌면 진전으로
+            # 보고 재시도, 셋 다 그대로면 수렴 실패로 조기 종료(no_new_evidence).
+            sig = {"artifact_sig": self._artifact_sig(artifact),
+                   "verify_ok": (bool(verify_ok) if has_verify_cmd else None),
+                   "issues_sig": issues_sig}
+            has_new, why = self._new_evidence(prev_sig, sig)
+            if not has_new:
+                self._log(f"[stop] 새 증거 없음(산출물·검증·지적 모두 불변) — 수렴 실패로 조기 종료")
+                self.stop_reason = "no_new_evidence"
                 knot.save(self.cfg, f"stall-{self.run_id}",
-                          f"작업: {task}\n스톨 조기종료(round {rnd}, score {score}).\n"
+                          f"작업: {task}\n새 증거 없음 조기종료(round {rnd}, score {score}).\n"
                           f"반복 결함: {list(issues_sig)}",
                           tags=["stall", "run"], source="orchestrator")
                 break
+            self._log(f"[retry] round {rnd} 재시도 승인 — 새 증거: {why}")
             prev_sig = sig
             artifact += f"\n\n{round_feedback}" if round_feedback else ""
+        else:
+            # for-else: break 없이 라운드를 소진 = 최대 라운드 도달(게이트 미통과).
+            self.stop_reason = self.stop_reason or "max_rounds"
         self._finish(task, artifact)
 
     # ------------------------------------------------------------ finish
@@ -1645,6 +1730,8 @@ class Orchestrator:
             }
         if self.gate is not None:
             status_extra["gate"] = self.gate
+        if self.stop_reason is not None:      # R-2: 왜 멈췄나(문자열 파싱 없이 소비)
+            status_extra["stop_reason"] = self.stop_reason
         self._save_status("done", status_extra or None)
         self._log_calibration()
         self._log(f"[done] 최종 산출물: {out}")
@@ -1992,6 +2079,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         if sink is not None:                          # F2-2: 종료 상태와 분리해 게이트 판정 노출
             sink["run_id"] = orch.run_id
             sink["gate"] = orch.gate
+            sink["stop_reason"] = orch.stop_reason
         return "done"
     except RunAborted as e:
         orch._log(f"[stop] {e}")
@@ -2003,6 +2091,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         if sink is not None:
             sink["run_id"] = orch.run_id
             sink["gate"] = orch.gate
+            sink["stop_reason"] = orch.stop_reason
         return f"aborted: {e}"
 
 

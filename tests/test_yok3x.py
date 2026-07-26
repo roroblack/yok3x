@@ -102,7 +102,120 @@ def test_defect_sig_distinguishes_and_handles_empty():
     assert sig("SCORE: 7") == ()              # 점수만 있는 리뷰
 
 
-# --------------------------------------------------------- 3패턴 mock end-to-end
+# --------------------------------------------------------- R-2 새 증거 기반 재시도 게이트
+def test_new_evidence_gate_axes(mock_root):
+    """R-2: 재시도 승인은 '새 증거'(산출물·검증기 상태·지적 결함) 축 중 하나라도 바뀌면 허용.
+    셋 다 동일하면 no_new_evidence로 조기 종료한다. 기존 (score, issues_sig) 문자 비교는
+    '산출물을 고쳤는데 리뷰어가 같은 말 반복'을 스톨로 오판하고, '점수만 흔들림'엔 계속 재시도했다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    base = {"artifact_sig": "a1", "verify_ok": False, "issues_sig": ("널 체크 누락",)}
+
+    assert o._new_evidence(None, base) == (True, "first_round")
+    assert o._new_evidence(base, base) == (False, "no_new_evidence")   # 셋 다 불변 → 정지
+    assert o._new_evidence(base, {**base, "artifact_sig": "a2"}) == (True, "artifact_changed")
+    assert o._new_evidence(base, {**base, "verify_ok": True}) == (True, "verify_state_changed")
+    assert o._new_evidence(base, {**base, "issues_sig": ("다른 결함",)}) == (True, "issues_changed")
+
+
+def test_artifact_sig_normalizes_whitespace_only_changes(mock_root):
+    """산출물 서명은 공백 정규화 후 해시 — 들여쓰기/줄바꿈만 바뀐 건 '새 증거' 아님."""
+    sig = Orchestrator._artifact_sig
+    assert sig("def f():\n    return 1") == sig("def f():   return 1")
+    assert sig("def f(): return 1") != sig("def f(): return 2")
+
+
+def test_stop_reason_no_new_evidence_and_status(mock_root, monkeypatch):
+    """R-2: 같은 산출물·같은 지적이 반복되면 stop_reason='no_new_evidence'로 조기 종료하고
+    status.json에 기록한다(자동화가 문자열 파싱 없이 정지 원인 소비)."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.score_gate_mode = "strict"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        # 프로듀서는 매 라운드 같은 산출물, 리뷰어는 같은 점수·같은 지적 → 새 증거 없음
+        text = "SCORE: 5\n- 널 체크 누락" if task_kind == "critic" else "artifact-same"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text,
+            score=5.0 if task_kind == "critic" else None))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=5, pass_score=8.0)
+
+    assert o.stop_reason == "no_new_evidence"
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["stop_reason"] == "no_new_evidence"
+    assert status["state"] == "done"           # 실행은 완료, 승인은 gate가 따로 말한다
+    assert status["gate"]["passed"] is False
+
+
+def test_stop_reason_success_and_max_rounds(mock_root, monkeypatch):
+    """R-2 라벨: 게이트 통과=success. 통과 못 하고 라운드 소진=max_rounds(새 증거는 계속 있었음)."""
+    def run(score, rounds, evolving):
+        o = Orchestrator(Config.load(mock_root), auto=True)
+        o.score_gate_mode = "strict"
+        state = {"n": 0}
+
+        def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+            o._step_i += 1
+            if task_kind == "critic":
+                text = f"SCORE: {score}\n- 결함 {state['n'] if evolving else 0}"
+                val = float(score)
+            else:
+                state["n"] += 1
+                text = f"artifact-{state['n'] if evolving else 0}"
+                val = None
+            o.steps.append(orchestrator.StepLog(
+                o._step_i, worker, task_kind, "done", summary=text, score=val))
+            return BackendResult(backend="mock", ok=True, text=text)
+
+        monkeypatch.setattr(o, "call_worker", fake_call)
+        o.run_producer_reviewer("t", "claude-main", "codex-critic",
+                                max_rounds=rounds, pass_score=8.0)
+        return o
+
+    assert run(9.0, 3, True).stop_reason == "success"        # 게이트 통과
+    assert run(5.0, 3, True).stop_reason == "max_rounds"     # 새 증거는 있으나 통과 못 함
+
+
+# --------------------------------------------------------- R-6 verifier separation
+def test_protected_verifier_hits_matches_test_and_config_paths(mock_root):
+    """R-6: 테스트·검증 설정 경로를 보호 대상으로 식별한다(디렉터리 glob·확장자 패턴 모두)."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    hit = o._protected_verifier_hits
+    assert hit(["tests/test_a.py"]) == ["tests/test_a.py"]
+    assert hit(["src/app_test.go"]) == ["src/app_test.go"]
+    assert hit(["conftest.py"]) == ["conftest.py"]
+    assert hit(["pytest.ini"]) == ["pytest.ini"]
+    assert hit([".github/workflows/ci.yml"]) == [".github/workflows/ci.yml"]
+    assert hit(["src/main.py", "README.md"]) == []          # 일반 소스는 보호 대상 아님
+    assert hit(["src\\util_test.go"]) == ["src/util_test.go"]   # 윈도우 구분자 정규화
+
+
+def test_protected_globs_overridable(mock_root):
+    """changes.protected_globs로 보호 목록을 재정의할 수 있다(프로젝트별 검증기 배치 대응)."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.changes = {"protected_globs": ["verify/**"]}
+    assert o._protected_verifier_hits(["verify/run.sh"]) == ["verify/run.sh"]
+    assert o._protected_verifier_hits(["tests/test_a.py"]) == []   # 재정의 시 기본 목록 대체
+
+
+def test_round_verify_rejects_candidate_touching_verifier(mock_root, monkeypatch, tmp_path):
+    """R-6 핵심: 프로듀서가 테스트 파일을 재작성한 후보는 스테이징하지 않고 **원본 트리**에서
+    검증한다(candidate 라벨 안 붙음). 이게 없으면 verifier를 고쳐 게이트를 우회할 수 있다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(tmp_path)
+    o.verify_cmd = "echo x"
+    seen = {}
+    monkeypatch.setattr(o, "_run_verify", lambda cwd=None: (seen.update(cwd=cwd) or (True, "ok")))
+
+    artifact = ("```file:tests/test_gate.py\ndef test_x(): assert True\n```\n"
+                "```file:src/main.py\nprint(1)\n```\n")
+    ok, _out, scope = o._run_round_verify(artifact, rnd=1)
+
+    assert ok is True
+    assert scope == "original_tree"          # 후보 스테이징 거부 → 원본에서 검증
+    assert seen.get("cwd") is None           # 스테이징 경로가 아니라 기본(workdir)에서 실행
 @pytest.mark.parametrize("spec", [
     {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",
      "reviewer": "codex-critic", "max_rounds": 2, "pass_score": 8.0},

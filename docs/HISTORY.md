@@ -4,6 +4,21 @@
 
 ---
 
+## 미출시(dev) · 2026-07-24 — R-2 정지규칙 재설계(새 증거 기반) + R-6 verifier 불변성 (계획서 v4.4.0)
+
+- **R-2**: 기존 스톨감지는 `sig=(score, issues_sig)` 문자 비교뿐이라 ① 산출물을 고쳤는데 리뷰어가 같은 말을
+    반복하면 스톨로 오판, ② 점수만 1점 흔들리면 진전 없이도 계속 재시도했다. → **새 증거 기반 재시도 게이트**
+    (`_new_evidence`): 산출물 내용(`_artifact_sig`, 공백정규화 SHA256)·verifier 상태·지적 결함 집합 중 하나라도
+    바뀌면 재시도, 셋 다 불변이면 조기 종료. 더불어 **명시적 `stop_reason` 라벨**(success/no_new_evidence/
+    max_rounds/producer_failed)을 status.json과 F2-2 sink에 노출 — 자동화가 정지 원인을 문자열 파싱 없이 소비.
+- **R-6**: 프로듀서가 검증기 자체(테스트·CI 설정)를 고쳐 게이트를 우회하는 실패모드 차단.
+    `PROTECTED_VERIFIER_GLOBS`(tests/**·**/test_*.py·*_test.go·conftest.py·pytest.ini·Makefile·.github/workflows/**)에
+    걸리는 후보는 스테이징에 적용하지 않고 **fail-closed**(라운드 후보 전체 거부 → 원본 트리 verify로 열화,
+    candidate 라벨 안 붙어 T-1 지상진실 오염 없음). `changes.protected_globs`로 재정의 가능.
+    R-2만 있고 R-6가 없으면 재시도를 통제해도 verifier를 바꿔 우회 가능 — 그래서 함께 착지(codex 지적).
+- 검증: 신규 테스트 7(증거 축 5분기·산출물서명 정규화·stop_reason 3라벨·보호경로 매칭·재정의·후보거부 e2e).
+    321 passed. 테스트가 실제 버그 1건 발견(`lstrip("./")`가 `.github`의 앞 점을 벗겨 보호 패턴 회피) → 수정.
+
 ## 미출시(dev) · 2026-07-24 — F2-2 gate.passed 소비자 전환: run 종료코드에서 실행상태·산출물승인 분리 (R-2 선행계약)
 
 - 문제: CLI `run`이 `state=="done"`이면 무조건 exit0 — strict 게이트 저점 탈락(done+gate.passed=false)도 성공으로
