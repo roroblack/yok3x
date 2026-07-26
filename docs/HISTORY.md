@@ -4,6 +4,16 @@
 
 ---
 
+## v4.5.0 · 2026-07-26 — 릴리스: 병렬 안전성(worktree 격리 + auto-commit 래칫) · BUG-39
+
+- v4.4.0 zip 이후 들어온 **R-7 1·2단계**와 **BUG-39**를 묶어 릴리스. 기능 추가가 있어 minor 상향(4.4.0 → 4.5.0).
+- 내용: 워커별 git worktree 격리(opt-in) · auto-commit 래칫(전용 브랜치 전용, 기본은 review=사람수락) ·
+    로그 인코딩 크래시로 작업이 유실되던 BUG-39 수정.
+- 패키징(RULE §8): 스모크(`init`/`setup`/`run`(mock, exit0)/`limits`/`--json` 2종) 통과 →
+    `release/yok3x-v4.5.0.zip`(124 files·503KB), zip 내부 `__version__=4.5.0` 검증,
+    `backup/versions/` 보존(해시 일치), 이전 v4.4.0 zip은 보존본 확인 후 `release/`에서 정리.
+    RULE §9 트리거①(minor 상향) → 정본 폴더 스냅샷 `backup/yok3x-v4.5.0-20260726-1749/`. **344 passed**.
+
 ## 미출시(dev) · 2026-07-26 — R-7(2단계) auto-commit 래칫(격리 브랜치 전용) + BUG-39 로그 인코딩 크래시
 
 - **T-3 결정 구현**: `changes.apply_mode = "review"(기본) | "auto_commit"`. 기본은 **파일게시+사람수락**
