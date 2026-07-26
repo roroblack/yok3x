@@ -207,8 +207,10 @@ def test_parallel_disabled_uses_sequential_fallback(tmp_path, monkeypatch):
 
     results = orch.call_workers_parallel(specs)
 
+    # 기본값 고정 가드: 병렬·격리 모두 opt-in이어야 한다(R-7 worktree_isolation 추가분 포함).
     assert DEFAULT_YOK3X["guard"]["parallel"] == {
         "enabled": False, "max_workers": 4, "max_per_backend": 2,
+        "worktree_isolation": False,
     }
     assert order == ["0", "1", "2"]
     assert [result.text for result in results if result is not None] == order

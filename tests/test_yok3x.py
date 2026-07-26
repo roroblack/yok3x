@@ -178,6 +178,87 @@ def test_stop_reason_success_and_max_rounds(mock_root, monkeypatch):
     assert run(5.0, 3, True).stop_reason == "max_rounds"     # 새 증거는 있으나 통과 못 함
 
 
+# --------------------------------------------------------- R-7 git worktree 격리
+def _git_repo(path, monkeypatch=None):
+    """커밋 1개짜리 임시 git 저장소를 만든다(없으면 skip)."""
+    import shutil as _sh, subprocess as _sp
+    if not _sh.which("git"):
+        pytest.skip("git 없음")
+    path.mkdir(parents=True, exist_ok=True)
+    run = lambda *a: _sp.run(["git", *a], cwd=path, capture_output=True, text=True)  # noqa: E731
+    run("init", "-q", ".")
+    (path / "shared.txt").write_text("base\n", encoding="utf-8")
+    run("add", "-A")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    return path
+
+
+def test_worktree_usable_reasons(tmp_path):
+    """격리 가능 여부를 사유와 함께 알린다 — 조용한 열화 금지(RULE §5.5)."""
+    from yok3x import worktree
+    root, reason = worktree.usable(None)
+    assert root is None and "workdir 없음" in reason
+    plain = tmp_path / "plain"; plain.mkdir()
+    root, reason = worktree.usable(plain)
+    assert root is None and ("git 저장소 아님" in reason or "git 실행파일 없음" in reason)
+    repo = _git_repo(tmp_path / "repo")
+    root, reason = worktree.usable(repo)
+    assert root is not None and reason == "ok"
+
+
+def test_worktree_isolates_writes_between_workers(tmp_path):
+    """R-7 핵심: 한 워커의 쓰기가 다른 워커·사용자 작업 트리에 보이지 않는다."""
+    from yok3x import worktree
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "shared.txt").write_text("base\nUNCOMMITTED\n", encoding="utf-8")   # 미커밋 변경
+    root, _ = worktree.usable(repo)
+
+    ok1, w1 = worktree.add(root, tmp_path / "w1")
+    ok2, w2 = worktree.add(root, tmp_path / "w2")
+    assert ok1 and ok2
+    # worktree는 HEAD 체크아웃 — 미커밋 변경은 안 보인다(그래서 opt-in, 문서화된 트레이드오프)
+    assert (Path(w1) / "shared.txt").read_text(encoding="utf-8").strip() == "base"
+
+    (Path(w1) / "shared.txt").write_text("W1 STOMP", encoding="utf-8")
+    assert (Path(w2) / "shared.txt").read_text(encoding="utf-8").strip() == "base"   # 격리됨
+    assert "UNCOMMITTED" in (repo / "shared.txt").read_text(encoding="utf-8")        # 원본 보호
+
+    assert worktree.remove(root, w1)[0] and worktree.remove(root, w2)[0]
+    assert not Path(w1).exists() and not Path(w2).exists()
+
+
+def test_setup_worktrees_falls_back_with_reason(mock_root, capsys):
+    """비-git workdir면 격리를 건너뛰고 사유를 로그에 남긴 뒤 기존 공유 경로를 유지한다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(mock_root)          # git 저장소 아님(mock 스캐폴드)
+    specs = [o.prepare_call("claude-main", "t") for _ in range(2)]
+    before = [s.run_cwd for s in specs]
+
+    made = o._setup_worktrees(specs)
+
+    assert made == {}
+    assert [s.run_cwd for s in specs] == before          # 폴백 — 실행 경로 불변
+    out = capsys.readouterr().out
+    assert "[worktree] 격리 건너뜀" in out and "git 저장소 아님" in out   # 사유 명시
+
+
+def test_setup_worktrees_assigns_and_cleans_up(mock_root, tmp_path):
+    """git 저장소면 워커별 worktree를 만들어 run_cwd를 돌리고, 정리에서 모두 회수한다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(_git_repo(tmp_path / "repo"))
+    specs = [o.prepare_call("claude-main", "t") for _ in range(2)]
+
+    made = o._setup_worktrees(specs)
+
+    assert len(made) == 2
+    assert len({s.run_cwd for s in specs}) == 2          # 서로 다른 경로
+    for s in specs:
+        assert Path(s.run_cwd).is_dir() and (Path(s.run_cwd) / "shared.txt").exists()
+
+    o._cleanup_worktrees(made)
+    assert all(not Path(p).exists() for p in made.values())
+
+
 # --------------------------------------------------------- R-4 기계판독 스냅샷 + provenance enum
 @pytest.mark.parametrize("source,ok,real,expected", [
     ("claude_oauth", True, True, "measured"),

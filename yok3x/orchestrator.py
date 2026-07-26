@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, calibration, knot, reserve, triage, usage
+from . import acquire, artifacts, calibration, knot, reserve, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -1040,6 +1040,48 @@ class Orchestrator:
             self._log(f"[check] step {idx} 이슈: {'; '.join(checklist)}")
         return res
 
+    def _setup_worktrees(self, specs: list[CallSpec]) -> dict[int, str]:
+        """R-7: 병렬 워커마다 HEAD의 독립 git worktree를 만들고 `spec.run_cwd`를 거기로 돌린다.
+
+        반환: {spec 위치: worktree 경로}(정리용). 쓸 수 없으면 **빈 dict + 사유 로그**로 기존 동작
+        (공유 workdir)에 폴백한다 — 조용히 열화하지 않는다(RULE §5.5).
+        주의: worktree는 **HEAD 커밋**을 체크아웃하므로 커밋되지 않은 변경은 워커에게 보이지 않는다.
+        그래서 이 기능은 opt-in이고, 켤 때 그 사실을 로그로 알린다.
+        """
+        root, reason = worktree.usable(self.workdir)
+        if root is None:
+            self._log(f"[worktree] 격리 건너뜀({reason}) — 기존처럼 공유 실행 경로 사용")
+            return {}
+        made: dict[int, str] = {}
+        base = Path(tempfile.gettempdir()) / f"yok3x_wt_{self.run_id}"
+        self._log("[worktree] 격리 ON — 워커별 HEAD 체크아웃(커밋 안 된 변경은 보이지 않음)")
+        for position, spec in enumerate(specs):
+            dest = base / f"w{position}"
+            ok, info = worktree.add(root, dest)
+            if not ok:
+                self._log(f"[worktree] step {spec.index} 생성 실패({info}) — 이 워커는 공유 경로 사용")
+                continue
+            spec.run_cwd = info
+            made[position] = info
+        if made:
+            self._log(f"[worktree] {len(made)}/{len(specs)} 워커 격리 · base={base}")
+        self._worktree_root = root
+        return made
+
+    def _cleanup_worktrees(self, worktrees: dict[int, str]) -> None:
+        """생성한 worktree를 모두 회수한다. 정리 실패가 런 결과를 바꾸지 않게 예외를 삼킨다."""
+        if not worktrees:
+            return
+        root = getattr(self, "_worktree_root", None)
+        for position, path in worktrees.items():
+            try:
+                ok, info = worktree.remove(root or path, path)
+                if not ok:
+                    self._log(f"[worktree] 정리 경고(step slot {position}): {info}")
+            except Exception as exc:
+                self._log(f"[worktree] 정리 실패(무시): {type(exc).__name__}: {exc}")
+        self._log(f"[worktree] {len(worktrees)}개 정리 완료")
+
     def call_workers_parallel(self, specs: list[CallSpec]) -> list[BackendResult | None]:
         """준비된 호출을 예약·배치승인 뒤 backend 상한을 지켜 병렬 실행한다.
 
@@ -1058,6 +1100,7 @@ class Orchestrator:
         abort_event = threading.Event()
         executor: ThreadPoolExecutor | None = None
         futures: dict[Future[BackendResult | None], int] = {}
+        worktrees: dict[int, str] = {}      # R-7: finally에서 항상 정리하려면 try 밖에서 초기화
         try:
             parallel_cfg = ((self.cfg.yok3x.get("guard") or {}).get("parallel") or {})
             if not parallel_cfg.get("enabled", False):
@@ -1068,6 +1111,10 @@ class Orchestrator:
 
             max_workers = max(1, int(parallel_cfg.get("max_workers", 4)))
             max_per_backend = max(1, int(parallel_cfg.get("max_per_backend", 2)))
+            # R-7: 워커별 git worktree 격리(opt-in). 켜지지 않았거나 쓸 수 없으면 기존처럼
+            # 공유 workdir에서 실행하되 사유를 남긴다(조용한 열화 금지).
+            if parallel_cfg.get("worktree_isolation", False):
+                worktrees = self._setup_worktrees(specs)
 
             # worker가 _step_i를 경쟁하지 않도록 제어 스레드에서 연속 index를 확정한다.
             with self._state_lock:
@@ -1134,6 +1181,7 @@ class Orchestrator:
                 self._terminate_active_processes()
             if executor is not None:
                 executor.shutdown(wait=True, cancel_futures=True)
+            self._cleanup_worktrees(worktrees)   # R-7: 실패·중단 경로에서도 반드시 회수
             with self._state_lock:
                 self.steps.sort(key=lambda step: step.index)
             reserve.release(self.cfg, self.run_id)

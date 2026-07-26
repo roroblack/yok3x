@@ -65,6 +65,11 @@ DEFAULT_YOK3X = {
             "enabled": False,
             "max_workers": 4,
             "max_per_backend": 2,
+            # R-7: 워커마다 HEAD의 독립 git worktree에서 실행(같은 트리를 동시에 밟는 간섭 차단).
+            # **기본 off** — worktree는 HEAD 커밋을 체크아웃하므로 **커밋되지 않은 변경이 워커에게
+            # 보이지 않는다**. 이 동작 차이를 조용히 강요하지 않으려고 opt-in으로 둔다.
+            # 켜도 비-git·커밋없음·git부재면 사유를 로그에 남기고 공유 workdir로 폴백한다.
+            "worktree_isolation": False,
         },
         # C-2 배치 예약/추정. 값은 환경·모델에 맞게 yok3x.json에서 조절한다.
         # calls는 정확 예약, token/USD는 프롬프트 길이 기반 보수적 추정 상한이다.
