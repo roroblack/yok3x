@@ -61,6 +61,44 @@ def add(repo: str | Path, dest: str | Path, ref: str = "HEAD") -> tuple[bool, st
     return True, str(dest)
 
 
+def add_branch(repo: str | Path, dest: str | Path, branch: str,
+               ref: str = "HEAD") -> tuple[bool, str]:
+    """`git worktree add -b <branch> <dest> <ref>`.
+
+    auto-commit(래칫)용. **반드시 브랜치를 만든다** — detached HEAD에 커밋하면 worktree를 지운 뒤
+    그 커밋이 어떤 ref에도 안 걸려 GC 대상이 된다(작업 유실). 브랜치가 있어야 정리 후에도 남는다.
+    """
+    dest = Path(dest)
+    if dest.exists():
+        return False, f"대상 경로가 이미 있음: {dest}"
+    ok, out = _git(["worktree", "add", "-b", branch, str(dest), ref], cwd=repo)
+    return (True, str(dest)) if ok else (False, out)
+
+
+def commit_all(path: str | Path, message: str) -> tuple[bool, str]:
+    """worktree 안의 모든 변경을 스테이징해 커밋한다. 성공 시 (True, 커밋 sha).
+
+    사용자 git identity가 없어도 실패하지 않게 `-c`로 런 전용 identity를 주입한다(전역 설정 불변).
+    변경이 없으면 (False, "변경 없음") — 빈 커밋을 만들지 않는다.
+    """
+    ok, out = _git(["add", "-A"], cwd=path)
+    if not ok:
+        return False, out
+    ok, _ = _git(["diff", "--cached", "--quiet"], cwd=path)
+    if ok:                                    # exit 0 = 스테이징된 차이 없음
+        return False, "변경 없음"
+    ok, out = _git(["-c", "user.email=yok3x@local", "-c", "user.name=yok3x",
+                    "commit", "-m", message], cwd=path)
+    if not ok:
+        return False, out
+    return True, head_sha(path) or ""
+
+
+def head_sha(path: str | Path) -> str | None:
+    ok, out = _git(["rev-parse", "HEAD"], cwd=path)
+    return out.strip() if ok else None
+
+
 def remove(repo: str | Path, dest: str | Path) -> tuple[bool, str]:
     """worktree 제거 후 prune. 실패해도 호출자가 런을 깨지 않게 (False, 사유)만 돌린다."""
     ok, out = _git(["worktree", "remove", "--force", str(dest)], cwd=repo)

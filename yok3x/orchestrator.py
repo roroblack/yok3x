@@ -19,6 +19,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -281,6 +282,10 @@ class Orchestrator:
         self.verify_cmd: str = ""            # 테스트/린트 게이트 명령
         self.score_gate_mode: str = "strict" # task 전용 SCORE 권한(strict/advisory)
         self.gate: dict[str, Any] | None = None
+        # R-7 2단계 래칫(auto_commit 모드에서만): 격리 worktree/브랜치와 체크포인트 커밋 목록.
+        self._ratchet_dir: str | None = None
+        self._ratchet_branch: str | None = None
+        self._ratchet_commits: list[dict] = []
         # R-2: 명시적 정지 사유(success/no_new_evidence/max_rounds/producer_failed/…).
         # "왜 멈췄나"를 라벨로 남겨 status·자동화가 종료 원인을 문자열 파싱 없이 소비한다.
         self.stop_reason: str | None = None
@@ -315,7 +320,14 @@ class Orchestrator:
 
     def _log(self, msg: str) -> None:
         with self._state_lock:
-            print(msg, flush=True)
+            try:
+                print(msg, flush=True)
+            except UnicodeEncodeError:
+                # Windows 한국어 콘솔(cp949)은 '—'(U+2014) 같은 문자를 못 그린다. 로그 출력 실패가
+                # 런을 죽이면 안 된다(실측: 래칫 체크포인트 1개가 이 예외로 유실됨). 콘솔 인코딩으로
+                # 표현 가능한 형태로 낮춰 찍고, 파일 로그(utf-8)에는 원문 그대로 남긴다.
+                enc = getattr(sys.stdout, "encoding", None) or "ascii"
+                print(msg.encode(enc, "replace").decode(enc, "replace"), flush=True)
             self.run_dir.mkdir(parents=True, exist_ok=True)
             with (self.run_dir / "run.log").open("a", encoding="utf-8") as f:
                 f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}\n")
@@ -1040,6 +1052,68 @@ class Orchestrator:
             self._log(f"[check] step {idx} 이슈: {'; '.join(checklist)}")
         return res
 
+    def _ratchet_enabled(self) -> bool:
+        """T-3 결정: 적용 방식은 스위치, **기본은 파일게시+사람수락**. auto_commit은 opt-in."""
+        return isinstance(self.changes, dict) and self.changes.get("apply_mode") == "auto_commit"
+
+    def _ratchet_commit(self, artifact: str, rnd: int) -> None:
+        """검증 통과 라운드를 **격리 브랜치**에 커밋해 되돌릴 지점을 남긴다(quality ratcheting).
+
+        안전 설계(되돌리기 어려운 작업이라 보수적으로):
+        - 사용자 **작업 트리·기존 브랜치는 절대 건드리지 않는다.** 전용 worktree + 전용 브랜치
+          `yok3x/run_<run_id>`에만 커밋한다. 병합은 사람이 한다(자동 병합·push 없음).
+        - 파일은 워커가 아니라 오케스트레이터가 쓰고, 기존 `artifacts.plan_files` 검증을 그대로
+          통과한 블록만 쓴다(경로 이탈·과대 파일 차단).
+        - git이 없거나 저장소가 아니면 **조용히 넘어가지 않고** 사유를 남기고 건너뛴다.
+        실패는 런을 깨지 않는다(체크포인트는 부가 기능 — 텍스트 산출물이 본체).
+        """
+        if not self._ratchet_enabled():
+            return
+        blocks = artifacts.parse_file_blocks(artifact or "")
+        if not blocks:
+            return
+        try:
+            if self._ratchet_dir is None:
+                root, reason = worktree.usable(self.workdir)
+                if root is None:
+                    self._log(f"[ratchet] auto_commit 불가({reason}) — 체크포인트 건너뜀")
+                    self.changes = {**(self.changes or {}), "apply_mode": "review"}  # 재시도 안 함
+                    return
+                branch = f"yok3x/run_{self.run_id}"
+                dest = Path(tempfile.gettempdir()) / f"yok3x_ratchet_{self.run_id}"
+                ok, info = worktree.add_branch(root, dest, branch)
+                if not ok:
+                    self._log(f"[ratchet] 격리 브랜치 생성 실패({info}) — 체크포인트 건너뜀")
+                    self.changes = {**(self.changes or {}), "apply_mode": "review"}
+                    return
+                self._ratchet_dir, self._ratchet_branch = info, branch
+                self._log(f"[ratchet] 체크포인트 브랜치 {branch}(격리 worktree) — 사용자 트리 불변")
+            # 체크포인트는 누적 갱신이라 덮어쓰기를 허용한다(격리 트리 한정).
+            plan = artifacts.plan_files(blocks, overwrite=True)
+            for rej in plan.rejected:
+                self._log(f"[ratchet] 후보 제외 {rej['path']} — {rej['reason']}")
+            if not plan.accepted:
+                return
+            base = Path(self._ratchet_dir)
+            for fb in plan.accepted:
+                dest_path = base / fb.path
+                try:                       # 격리 트리 밖으로 나가는 경로는 쓰지 않는다
+                    dest_path.resolve().relative_to(base.resolve())
+                except (OSError, ValueError):
+                    self._log(f"[ratchet] 경로 이탈 차단: {fb.path}")
+                    continue
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                dest_path.write_text(fb.content, encoding="utf-8")
+            ok, info = worktree.commit_all(
+                self._ratchet_dir, f"yok3x r{rnd}: verify 통과 체크포인트 (run {self.run_id})")
+            if ok:
+                self._ratchet_commits.append({"round": rnd, "sha": info})
+                self._log(f"[ratchet] r{rnd} 체크포인트 커밋 {info[:8]} ({len(plan.accepted)}파일)")
+            elif info != "변경 없음":
+                self._log(f"[ratchet] r{rnd} 커밋 실패(무시): {info}")
+        except Exception as exc:
+            self._log(f"[ratchet] 실패(런은 계속): {type(exc).__name__}: {exc}")
+
     def _setup_worktrees(self, specs: list[CallSpec]) -> dict[int, str]:
         """R-7: 병렬 워커마다 HEAD의 독립 git worktree를 만들고 `spec.run_cwd`를 거기로 돌린다.
 
@@ -1477,6 +1551,10 @@ class Orchestrator:
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,
                 verify_ok=verify_ok, score=score, threshold=pass_score)
             passed = self.gate["passed"]
+            # T-3/R-7(2단계): auto_commit 모드에서만, **검증이 실제로 통과한 라운드**를 격리 브랜치에
+            # 체크포인트로 커밋한다(래칫). 사용자 작업 트리·기존 브랜치는 건드리지 않는다.
+            if has_verify_cmd and verify_ok:
+                self._ratchet_commit(artifact, rnd)
             # 라운드별 원자료를 보존해 downstream이 last-only/all/클러스터링을 고를 수 있게 한다.
             self._calib_rounds.append({
                 "score": score, "round": rnd,     # round=이 관측의 라운드 인덱스. rounds(총량)는 _finish에서
@@ -1829,6 +1907,11 @@ class Orchestrator:
             }
         if self.gate is not None:
             status_extra["gate"] = self.gate
+        if self._ratchet_commits:      # 체크포인트 브랜치는 사람이 검토·병합한다(자동 병합 없음)
+            status_extra["ratchet"] = {"branch": self._ratchet_branch,
+                                       "commits": self._ratchet_commits}
+            self._log(f"[ratchet] 체크포인트 {len(self._ratchet_commits)}개 → 브랜치 "
+                      f"{self._ratchet_branch} (검토 후 직접 병합하세요)")
         if self.stop_reason is not None:      # R-2: 왜 멈췄나(문자열 파싱 없이 소비)
             status_extra["stop_reason"] = self.stop_reason
         self._save_status("done", status_extra or None)

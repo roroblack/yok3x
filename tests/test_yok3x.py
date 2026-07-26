@@ -259,6 +259,73 @@ def test_setup_worktrees_assigns_and_cleans_up(mock_root, tmp_path):
     assert all(not Path(p).exists() for p in made.values())
 
 
+def test_log_survives_console_encoding_limits(mock_root):
+    """BUG-39: cp949 콘솔이 '—'(U+2014)를 못 그려 _log가 UnicodeEncodeError로 런을 죽였다
+    (실측: 래칫 체크포인트 1개 유실). 출력은 낮춰 찍되 파일 로그엔 원문을 남기고 예외는 안 낸다."""
+    import io, sys as _sys
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    real = _sys.stdout
+    _sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp949", errors="strict")
+    try:
+        o._log("체크포인트 — em dash 포함")     # 예외 없이 통과해야 한다
+        printed = _sys.stdout.buffer.getvalue()
+    finally:
+        _sys.stdout = real
+    assert printed                                    # 뭔가 찍혔다(조용히 삼키지 않음)
+    assert "—" in (o.run_dir / "run.log").read_text(encoding="utf-8")   # 파일엔 원문 보존
+
+
+def test_ratchet_off_by_default_and_needs_auto_commit(mock_root, tmp_path):
+    """T-3 결정: 기본은 파일게시+사람수락. apply_mode를 명시하지 않으면 커밋하지 않는다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(_git_repo(tmp_path / "repo"))
+    assert o._ratchet_enabled() is False
+    o._ratchet_commit("```file:a.py\nx=1\n```", 1)
+    assert o._ratchet_commits == [] and o._ratchet_dir is None    # 아무 것도 안 함
+    o.changes = {"apply_mode": "auto_commit"}
+    assert o._ratchet_enabled() is True
+
+
+def test_ratchet_commits_to_isolated_branch_only(mock_root, tmp_path):
+    """R-7 2단계 핵심 안전성: 체크포인트는 **전용 브랜치**에만 쌓이고 사용자 작업 트리·현재
+    브랜치는 불변. worktree를 지워도 커밋이 살아 있어야 한다(브랜치 ref로 생성 — GC 방지)."""
+    import subprocess as _sp
+    from yok3x import worktree
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "a.txt").write_text("base\nUNCOMMITTED\n", encoding="utf-8")
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(repo)
+    o.changes = {"apply_mode": "auto_commit"}
+    art = lambda s: f"결과\n\n```file:src/app.py\nprint('{s}')\n```\n"    # noqa: E731
+
+    o._ratchet_commit(art("r1"), 1)
+    o._ratchet_commit(art("r2"), 2)
+
+    assert [c["round"] for c in o._ratchet_commits] == [1, 2]
+    assert not (repo / "src" / "app.py").exists()                      # 사용자 트리 불변
+    assert "UNCOMMITTED" in (repo / "a.txt").read_text(encoding="utf-8")
+    g = lambda *a: _sp.run(["git", *a], cwd=repo, capture_output=True,
+                           text=True, encoding="utf-8").stdout.strip()  # noqa: E731
+    assert g("branch", "--show-current") in ("master", "main")          # 현재 브랜치 그대로
+
+    worktree.remove(str(repo), o._ratchet_dir)                          # 정리 후에도
+    assert len(g("log", "--oneline", o._ratchet_branch).splitlines()) == 3   # init+r1+r2 생존
+    assert "r2" in g("show", f"{o._ratchet_branch}:src/app.py")
+
+
+def test_ratchet_disables_itself_when_not_a_git_repo(mock_root, capsys):
+    """git 저장소가 아니면 사유를 남기고 review 모드로 되돌려 매 라운드 재시도하지 않는다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(mock_root)                 # 비-git
+    o.changes = {"apply_mode": "auto_commit"}
+
+    o._ratchet_commit("```file:a.py\nx=1\n```", 1)
+
+    assert o._ratchet_commits == []
+    assert o.changes["apply_mode"] == "review"        # 자기 비활성화(반복 실패 방지)
+    assert "[ratchet] auto_commit 불가" in capsys.readouterr().out
+
+
 # --------------------------------------------------------- R-4 기계판독 스냅샷 + provenance enum
 @pytest.mark.parametrize("source,ok,real,expected", [
     ("claude_oauth", True, True, "measured"),
