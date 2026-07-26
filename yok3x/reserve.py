@@ -272,6 +272,40 @@ def reserve(cfg: Config, run_id: str, calls: int, est_tokens: int,
         return False
 
 
+def headroom(cfg: Config, exclude_run_id: str = "") -> dict[str, dict[str, float]] | None:
+    """지표별 잔여 예산(remaining = limit − 실사용 − 다른 런의 pending)을 **원장 lock 아래에서**
+    일관된 스냅샷으로 읽는다(R-3 preflight용).
+
+    `reserve()`와 **같은 회계**(_hard_limits + pending 합산)를 재사용하는 게 핵심이다 — preflight가
+    별도 계산을 두면 예약 경로와 어긋나 서로 다른 판정을 내린다(codex 지적: '단순 검사'가 아니라
+    예약 원장 재사용). 예약을 쓰지는 않으므로 이중 계상이 없고, 실제 강제는 기존 배치 `reserve()`가
+    원자적으로 수행한다. limit이 0인 지표는 상한 없음(enforcement off)이라 remaining=inf.
+
+    lock 획득 실패 시 None(알 수 없음) — preflight는 이때 판단을 보류한다(런을 막지 않음).
+    """
+    lock_path, ledger_path = _paths(cfg)
+    try:
+        with file_lock(lock_path, run_id=f"headroom-{os.getpid()}", **_lock_options(cfg)):
+            ledger = _read_json(ledger_path)
+            limits, used = _hard_limits(cfg)
+            out: dict[str, dict[str, float]] = {}
+            for field in ("calls", "est_tokens", "est_usd"):
+                pending = 0.0
+                for other_id, row in ledger.items():
+                    if other_id == exclude_run_id or not isinstance(row, dict):
+                        continue
+                    pending += float(row.get(field, 0) or 0)
+                limit = float(limits.get(field, 0) or 0)
+                used_v = float(used.get(field, 0) or 0)
+                out[field] = {
+                    "limit": limit, "used": used_v, "pending": pending,
+                    "remaining": (limit - used_v - pending) if limit > 0 else float("inf"),
+                }
+            return out
+    except FileExistsError:
+        return None
+
+
 def release(cfg: Config, run_id: str) -> None:
     """배치 실행 종료 후 pending 예약만 해제한다. 실사용 기록은 지우지 않는다."""
     lock_path, ledger_path = _paths(cfg)

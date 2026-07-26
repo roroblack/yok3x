@@ -4,6 +4,20 @@
 
 ---
 
+## 미출시(dev) · 2026-07-24 — R-3 preflight 예산 검사: 못 끝낼 런은 시작 전 거부 (계획서 v4.4.0)
+
+- 문제: cost guard가 **반응형**이라 한도에 닿아야 정지 — 예산을 절반 태우고 중단되는 낭비가 났다.
+- 수정: ① `reserve.headroom()` — 예약 원장 lock 아래에서 `_hard_limits`+pending을 **재사용**해 지표별 잔여
+    (limit−실사용−타런 pending)를 일관 스냅샷으로 반환(codex 조건: preflight가 별도 계산을 두면 예약 경로와
+    판정이 어긋남). 상한 0=무제한(inf), 자기 예약은 제외(이중계상 방지), lock 실패 시 None=판단 보류.
+    ② `project_run_cost(spec)` — 패턴별 **최악 호출 수**를 spec에서 결정론적으로 산출(producer-reviewer=라운드×2,
+    pipeline=스테이지, fanout=워커+join, acquire=질문자1+답변자×qa_count) + 토큰·USD 보수 추정.
+    ③ `preflight_budget()` — 초과 예측 시 `RunAborted(cause="budget_preflight")`로 **백엔드 호출 0회에서** 중단,
+    `stop_reason=budget_preflight`를 status.json·sink에 기록. `guard.reservation.preflight_enabled=false`로 해제 가능.
+- 실제 강제(enforcement)는 기존 배치 `reserve()`의 원자적 예약이 그대로 담당 — preflight는 예측·조기거부 계층.
+- 검증: 신규 테스트 4(원장 재사용·패턴별 최악값·거부·통과/해제) + e2e(잔여 2콜에 10콜 런 → 호출 0회로 거부,
+    status/sink 모두 budget_preflight). 325 passed.
+
 ## 미출시(dev) · 2026-07-24 — R-2 정지규칙 재설계(새 증거 기반) + R-6 verifier 불변성 (계획서 v4.4.0)
 
 - **R-2**: 기존 스톨감지는 `sig=(score, issues_sig)` 문자 비교뿐이라 ① 산출물을 고쳤는데 리뷰어가 같은 말을

@@ -178,6 +178,72 @@ def test_stop_reason_success_and_max_rounds(mock_root, monkeypatch):
     assert run(5.0, 3, True).stop_reason == "max_rounds"     # 새 증거는 있으나 통과 못 함
 
 
+# --------------------------------------------------------- R-3 preflight 예산 검사
+def test_headroom_reuses_ledger_accounting(tmp_path):
+    """R-3: headroom은 예약 원장(pending)과 hard_limits를 재사용해 잔여를 낸다 — preflight가
+    별도 계산을 두지 않게(예약 경로와 판정 불일치 방지). 상한 0인 지표는 무제한(inf)."""
+    from yok3x import reserve
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["budgets"] = {"claude": {"daily_calls": 100}}
+    cfg.paths.yok3x_dir.mkdir(parents=True, exist_ok=True)
+
+    room = reserve.headroom(cfg)
+    assert room["calls"]["limit"] == 100 and room["calls"]["remaining"] == 100
+    assert room["est_usd"]["remaining"] == float("inf")     # 상한 없음 → 무제한
+
+    assert reserve.reserve(cfg, "other-run", calls=30, est_tokens=0, est_usd=0.0)
+    room2 = reserve.headroom(cfg)
+    assert room2["calls"]["pending"] == 30                  # 다른 런 예약이 잔여를 깎는다
+    assert room2["calls"]["remaining"] == 70
+    # 자기 자신의 예약은 제외(이중 계상 방지)
+    assert reserve.headroom(cfg, exclude_run_id="other-run")["calls"]["remaining"] == 100
+
+
+def test_project_run_cost_worst_case_by_pattern(mock_root):
+    """R-3: 패턴별 최악값 호출 수를 spec에서 결정론적으로 계산한다(라운드·스테이지·워커·acquire)."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    calls = lambda s: o.project_run_cost(s)[0]                       # noqa: E731
+    assert calls({"pattern": "producer-reviewer", "task": "t", "max_rounds": 3}) == 6
+    assert calls({"pattern": "pipeline", "task": "t", "stages": [{}, {}, {}]}) == 3
+    assert calls({"pattern": "fanout-fanin", "task": "t",
+                  "workers": ["a", "b", "c"], "join_worker": "a"}) == 4
+    # acquire 사전질의: 질문자 1 + 답변자수 × qa_count
+    assert calls({"pattern": "pipeline", "task": "t", "stages": [{}],
+                  "acquire": {"qa_count": 2, "answerers": ["x", "y"]}}) == 1 + 1 + 4
+    _, tokens, usd = o.project_run_cost({"pattern": "pipeline", "task": "x" * 100,
+                                         "stages": [{}, {}]})
+    assert tokens > 0 and usd > 0                                     # 추정 상한 산출
+
+
+def test_preflight_refuses_run_that_cannot_fit_budget(mock_root):
+    """R-3 핵심: 잔여 예산으로 끝낼 수 없다고 예측되면 **시작 전에** 거부한다(반응형 가드처럼
+    예산을 절반 태우고 중단되지 않게). stop_reason=budget_preflight로 라벨링."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["budgets"] = {"claude": {"daily_calls": 2}}    # 잔여 2콜
+    o = Orchestrator(cfg, auto=True)
+    spec = {"pattern": "producer-reviewer", "task": "t", "max_rounds": 5}   # 최악 10콜
+
+    with pytest.raises(orchestrator.RunAborted) as exc:
+        o.preflight_budget(spec)
+
+    assert exc.value.cause == "budget_preflight"
+    assert "preflight" in str(exc.value)
+    assert o.stop_reason == "budget_preflight"
+
+
+def test_preflight_allows_fitting_run_and_respects_disable(mock_root):
+    """잔여가 충분하면 통과하고, preflight_enabled=false면 검사 자체를 건너뛴다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["budgets"] = {"claude": {"daily_calls": 500}}
+    o = Orchestrator(cfg, auto=True)
+    o.preflight_budget({"pattern": "producer-reviewer", "task": "t", "max_rounds": 2})  # 통과
+
+    cfg.yok3x["budgets"] = {"claude": {"daily_calls": 1}}
+    cfg.yok3x["guard"]["reservation"]["preflight_enabled"] = False
+    Orchestrator(cfg, auto=True).preflight_budget(
+        {"pattern": "producer-reviewer", "task": "t", "max_rounds": 9})   # 꺼져 있으면 통과
+
+
 # --------------------------------------------------------- R-6 verifier separation
 def test_protected_verifier_hits_matches_test_and_config_paths(mock_root):
     """R-6: 테스트·검증 설정 경로를 보호 대상으로 식별한다(디렉터리 glob·확장자 패턴 모두)."""

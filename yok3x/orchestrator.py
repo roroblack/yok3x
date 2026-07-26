@@ -709,6 +709,57 @@ class Orchestrator:
         est_tokens = max(1, math.ceil(input_est * (1.0 + output_ratio)))
         return est_tokens, est_tokens * usd_per_1k / 1000.0
 
+    def project_run_cost(self, spec: dict) -> tuple[int, int, float]:
+        """R-3: task spec만 보고 **런 전체의 최악값**(worst-case) 호출 수와 추정 토큰·USD를 낸다.
+        패턴별 최대 호출 수는 spec에서 결정론적으로 계산되고(라운드·스테이지·워커 수), 토큰은
+        task 텍스트 길이 기반 per-call 추정을 곱한 보수적 상한이다(정확치 아님 — 실측은 usage.record).
+        """
+        pattern = spec.get("pattern")
+        if pattern == "pipeline":
+            calls = len(spec.get("stages") or [])
+        elif pattern in ("fanout", "fanout-fanin"):
+            calls = len(spec.get("workers") or []) + (1 if spec.get("join_worker") else 0)
+        elif pattern == "producer-reviewer":
+            calls = max(1, int(spec.get("max_rounds", 2))) * 2      # 라운드마다 생산+검수
+        else:
+            calls = 1
+        acq = spec.get("acquire")
+        if isinstance(acq, dict):     # 사전질의(있으면) 질문자 1 + 답변자수 × qa_count
+            calls += max(0, int(acq.get("qa_count", 2))) * max(1, len(acq.get("answerers") or [])) + 1
+        task_text = str(spec.get("task", "") or "")
+        per_call = CallSpec(worker="", task=task_text, prompt=task_text)
+        tokens_each, usd_each = self.estimate_call(per_call)
+        return calls, tokens_each * calls, usd_each * calls
+
+    def preflight_budget(self, spec: dict) -> None:
+        """R-3: 런 시작 **전에** 잔여 예산으로 이 런을 끝낼 수 없다고 예측되면 거부한다.
+        기존 cost guard는 반응형(한도에 닿아야 정지)이라 예산을 절반 태우고 중단되는 낭비가 났다.
+        회계는 `reserve.headroom`(예약 원장 + 같은 hard_limits 계산)을 재사용해 배치 예약 경로와
+        판정이 어긋나지 않게 한다. 잔여를 알 수 없으면(lock 실패) 보류 — 런을 막지 않는다."""
+        rcfg = ((self.cfg.yok3x.get("guard") or {}).get("reservation") or {})
+        if not rcfg.get("preflight_enabled", True):
+            return
+        try:
+            calls, est_tokens, est_usd = self.project_run_cost(spec)
+        except Exception as exc:      # 추정 실패가 런을 막지 않게(보수적으로 통과)
+            self._log(f"[preflight] 예측 실패(무시): {type(exc).__name__}: {exc}")
+            return
+        room = reserve.headroom(self.cfg, exclude_run_id=self.run_id)
+        if room is None:
+            self._log("[preflight] 원장 lock 획득 실패 — 예산 예측 보류(런 진행)")
+            return
+        want = {"calls": float(calls), "est_tokens": float(est_tokens), "est_usd": float(est_usd)}
+        for field, need in want.items():
+            remaining = room[field]["remaining"]
+            if need > remaining:
+                msg = (f"예산 preflight 거부: {field} 예상 {need:,.0f} > 잔여 {remaining:,.0f} "
+                       f"(상한 {room[field]['limit']:,.0f} · 사용 {room[field]['used']:,.0f} · "
+                       f"타런 예약 {room[field]['pending']:,.0f})")
+                self._log(f"[preflight] {msg}")
+                self.stop_reason = "budget_preflight"
+                raise RunAborted(msg, cause="budget_preflight")
+        self._log(f"[preflight] 예산 OK: calls={calls} · tokens≈{est_tokens:,} · USD≈${est_usd:.4f}")
+
     def _batch_description(self, specs: list[CallSpec]) -> str:
         rows = [
             f"  - worker={spec.worker} · backend={spec.backend} · task_kind={spec.task_kind}"
@@ -2053,6 +2104,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                 has_verify_cmd=bool(str(orch.verify_cmd).strip()),
                 verify_ok=None, score=None,
                 threshold=float(spec.get("pass_score", 8.0)))
+        orch.preflight_budget(spec)      # R-3: 잔여예산으로 못 끝낼 런은 시작 전에 거부
         acquire_context = ""
         acquire_spec = spec.get("acquire")
         if "acquire" in spec:
@@ -2087,7 +2139,8 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         cause = getattr(e, "cause", "unknown")
         resumable = bool(supported and cause in ("guard_stop", "user_abort"))
         orch._save_status("aborted", {
-            "reason": str(e), "cause": cause, "resumable": resumable})
+            "reason": str(e), "cause": cause, "resumable": resumable,
+            "stop_reason": orch.stop_reason or cause})   # R-2 라벨(중단 경로도 동일 계약)
         if sink is not None:
             sink["run_id"] = orch.run_id
             sink["gate"] = orch.gate
