@@ -4,6 +4,18 @@
 
 ---
 
+## 미출시(dev) · 2026-07-24 — R-4 기계판독 스냅샷(`--json`) + 자동화 종료코드 + provenance enum (계획서 v4.4.0)
+
+- 문제: 자동화(훅/CI)가 사용량을 쓰려면 사람용 출력과 detail 문자열의 '(추정)' 라벨을 파싱해야 했다(취약).
+- 수정: ① `limits --json` / `pace --json` — 스키마 태그(`yok3x.limits/1`·`yok3x.pace/1`) + 창 수치
+    (used_percent·resets_at·토큰)·level·ratio, pace는 전략·cap·even_cap·forward_daily까지 기계판독으로 노출.
+    ② `--exit-code`(**opt-in**) — 0=ok · 3=warn(soft) · 4=stop(hard). 플래그가 없으면 기존대로 항상 0이라
+    기존 스크립트 동작은 불변. F2-2의 run 종료코드(0/1/3)와 규약을 공유.
+    ③ provenance를 **enum**으로 승격: `LimitReading.provenance()` → measured/estimated/ledger/unavailable.
+    source(원천 채널)는 유지하고 '얼마나 믿을 수 있나'를 별도 축으로 분리(리포트 10 — 제거가 아니라 계약 승격).
+- 검증: 신규 테스트 11(enum 매핑 7분기·JSON 계약·종료코드 opt-in 3레벨) + 실측(claude provenance=measured,
+    gemini=unavailable). 336 passed.
+
 ## 미출시(dev) · 2026-07-24 — R-3 preflight 예산 검사: 못 끝낼 런은 시작 전 거부 (계획서 v4.4.0)
 
 - 문제: cost guard가 **반응형**이라 한도에 닿아야 정지 — 예산을 절반 태우고 중단되는 낭비가 났다.

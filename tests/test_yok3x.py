@@ -178,6 +178,61 @@ def test_stop_reason_success_and_max_rounds(mock_root, monkeypatch):
     assert run(5.0, 3, True).stop_reason == "max_rounds"     # 새 증거는 있으나 통과 못 함
 
 
+# --------------------------------------------------------- R-4 기계판독 스냅샷 + provenance enum
+@pytest.mark.parametrize("source,ok,real,expected", [
+    ("claude_oauth", True, True, "measured"),
+    ("codex_appserver", True, True, "measured"),
+    ("claude_transcripts", True, False, "estimated"),
+    ("ledger", True, False, "ledger"),
+    ("ledger", True, True, "ledger"),          # 원장은 real 여부와 무관하게 ledger
+    ("claude_oauth", False, True, "unavailable"),   # 실패면 신뢰 불가
+    ("disabled", False, False, "unavailable"),
+])
+def test_provenance_enum_mapping(source, ok, real, expected):
+    """R-4: '(추정)' 같은 사람용 detail 문구 대신 provenance enum으로 신뢰 등급을 노출한다."""
+    from yok3x import limits
+    r = limits.LimitReading("claude", source, ok=ok, real=real)
+    assert r.provenance() == expected
+    assert r.provenance() in limits.PROVENANCE_VALUES
+
+
+def test_limits_json_snapshot_contract(tmp_path, monkeypatch, capsys):
+    """R-4: `limits --json`이 스키마·provenance·창 수치를 기계판독 형태로 낸다(훅/CI 계약)."""
+    from yok3x import cli, limits, usage as usage_mod
+    monkeypatch.chdir(tmp_path)
+    reading = limits.LimitReading(
+        "claude", "claude_oauth", ok=True, real=True,
+        windows=[limits.Window("7d", 66.0, resets_at=123.0, used_tokens=5)], detail="d")
+    monkeypatch.setattr(limits, "probe", lambda cfg, b, use_cache=True: reading)
+    monkeypatch.setattr(usage_mod, "check_backend",
+                        lambda cfg, b: usage_mod.GuardVerdict(b, 0.66, "7d", "ok", ""))
+
+    assert cli.main(["limits", "--json"]) == 0
+    snap = json.loads(capsys.readouterr().out)
+
+    assert snap["schema"] == "yok3x.limits/1"
+    c = snap["backends"]["claude"]
+    assert c["provenance"] == "measured" and c["level"] == "ok"
+    assert c["windows"][0] == {"name": "7d", "used_percent": 66.0, "resets_at": 123.0,
+                               "window_minutes": None, "used_tokens": 5, "limit_tokens": None}
+
+
+@pytest.mark.parametrize("level,expected", [("ok", 0), ("warn", 3), ("stop", 4)])
+def test_limits_exit_code_is_opt_in(tmp_path, monkeypatch, level, expected):
+    """R-4 자동화 종료코드: --exit-code일 때만 0/3(warn)/4(stop). 플래그 없으면 기존대로 항상 0
+    (기존 스크립트 동작 불변)."""
+    from yok3x import cli, limits, usage as usage_mod
+    monkeypatch.chdir(tmp_path)
+    reading = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
+                                  windows=[limits.Window("7d", 99.0)])
+    monkeypatch.setattr(limits, "probe", lambda cfg, b, use_cache=True: reading)
+    monkeypatch.setattr(usage_mod, "check_backend",
+                        lambda cfg, b: usage_mod.GuardVerdict(b, 0.99, "7d", level, ""))
+
+    assert cli.main(["limits", "--exit-code"]) == expected
+    assert cli.main(["limits"]) == 0            # opt-in — 기본 동작은 안 바뀐다
+
+
 # --------------------------------------------------------- R-3 preflight 예산 검사
 def test_headroom_reuses_ledger_accounting(tmp_path):
     """R-3: headroom은 예약 원장(pending)과 hard_limits를 재사용해 잔여를 낸다 — preflight가

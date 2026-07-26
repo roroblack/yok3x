@@ -66,6 +66,17 @@ class Window:
         return "-"
 
 
+# R-4: provenance를 **enum**으로 승격한다. detail 문자열에 '(추정)' 같은 라벨을 섞어두면
+# 자동화가 사람용 문구를 파싱해야 해서 취약하다(리포트 10). source(원천 채널)는 그대로 두고,
+# '이 숫자를 얼마나 믿을 수 있나'를 별도 축으로 노출한다.
+PROVENANCE_MEASURED = "measured"        # 공급자가 보고한 실측(oauth·app-server·statusline 등)
+PROVENANCE_ESTIMATED = "estimated"      # 로컬 추정(트랜스크립트 롤링 등) — 오차 있음
+PROVENANCE_LEDGER = "ledger"            # 실측 없음, 자체 예산 원장(로컬 자정 리셋)
+PROVENANCE_UNAVAILABLE = "unavailable"  # 사용률을 못 구함(비활성·실패)
+PROVENANCE_VALUES = (PROVENANCE_MEASURED, PROVENANCE_ESTIMATED,
+                     PROVENANCE_LEDGER, PROVENANCE_UNAVAILABLE)
+
+
 @dataclass
 class LimitReading:
     backend: str
@@ -75,6 +86,14 @@ class LimitReading:
     windows: list[Window] = field(default_factory=list)
     detail: str = ""
     error: str = ""
+
+    def provenance(self) -> str:
+        """R-4: 신뢰 등급 enum. 문자열 detail 파싱 없이 자동화가 소비한다."""
+        if not self.ok:
+            return PROVENANCE_UNAVAILABLE
+        if self.source == "ledger":
+            return PROVENANCE_LEDGER
+        return PROVENANCE_MEASURED if self.real else PROVENANCE_ESTIMATED
 
     def ratio(self) -> float:
         """가장 높은 윈도우 사용률(0~1). 한도는 '가장 빡빡한 창'을 기준으로 지킨다."""

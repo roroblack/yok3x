@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import __version__, knot, matview, usage
@@ -98,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("flavor", help="flavor 확인/변경")
     sp.add_argument("name", nargs="?")
 
-    sub.add_parser("limits", help="실제 구독 한도 probe 원본 확인(진단)")
+    sp = sub.add_parser("limits", help="실제 구독 한도 probe 원본 확인(진단)")
+    sp.add_argument("--json", action="store_true",
+                    help="기계판독 스냅샷(JSON) 출력 — provenance enum 포함")
+    sp.add_argument("--exit-code", action="store_true",
+                    help="자동화용 종료코드: 0=ok · 3=warn(soft 도달) · 4=stop(hard 도달)")
     sub.add_parser("statusline", help="Claude Code statusLine 핸들러(stdin JSON의 rate_limits 캡처+상태줄 출력)")
 
     sp = sub.add_parser("gui", help="브라우저 GUI 프로토타입(실데이터) 실행")
@@ -120,6 +125,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("pace", help="하루 페이싱(주간쿼터 하루 소비 캡) 상태/승인재개")
     sp.add_argument("action", nargs="?", choices=["status", "approve"], default="status")
     sp.add_argument("backend", nargs="?", help="approve 대상 backend(claude/codex)")
+    sp.add_argument("--json", action="store_true", help="기계판독 스냅샷(JSON) 출력")
+    sp.add_argument("--exit-code", action="store_true",
+                    help="자동화용 종료코드: 0=ok · 3=warn · 4=stop(페이싱 정지)")
 
     sp = sub.add_parser("review", help="review bundle 표시·수락·거절")
     sp.add_argument("run_id")
@@ -245,16 +253,43 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "limits":
         from . import limits
-        for b in usage.BACKEND_KEYS:
-            r = limits.probe(cfg, b, use_cache=False)
-            src = "실측" if r.real else ("추정" if r.ok else "-")
-            print(f"[{b}] type={r.source}  ok={r.ok}  {src}")
-            for w in r.windows:
-                print(f"    {w.name:>3}  {w.used_percent:5.1f}%  리셋 {w.reset_in()}")
-            if r.detail:
-                print(f"    detail: {r.detail}")
-            if r.error:
-                print(f"    ! {r.error}")
+        readings = {b: limits.probe(cfg, b, use_cache=False) for b in usage.BACKEND_KEYS}
+        levels = []
+        if a.json:
+            # R-4 기계판독 스냅샷: 사람용 문구(detail) 파싱 없이 소비할 수 있게 provenance enum과
+            # 수치 필드를 그대로 노출한다. 훅/CI가 이 계약에 붙는다.
+            snap = {"schema": "yok3x.limits/1", "at": time.time(), "backends": {}}
+            for b, r in readings.items():
+                lv = usage.check_backend(cfg, b).level if r.ok else "unknown"
+                levels.append(lv)
+                snap["backends"][b] = {
+                    "source": r.source, "provenance": r.provenance(),
+                    "ok": r.ok, "real": r.real, "level": lv,
+                    "ratio": round(r.ratio(), 4),
+                    "windows": [{"name": w.name, "used_percent": w.used_percent,
+                                 "resets_at": w.resets_at, "window_minutes": w.window_minutes,
+                                 "used_tokens": w.used_tokens, "limit_tokens": w.limit_tokens}
+                                for w in r.windows],
+                    "detail": r.detail, "error": r.error,
+                }
+            print(json.dumps(snap, ensure_ascii=False, indent=2))
+        else:
+            for b, r in readings.items():
+                src = "실측" if r.real else ("추정" if r.ok else "-")
+                print(f"[{b}] type={r.source}  ok={r.ok}  {src}  provenance={r.provenance()}")
+                for w in r.windows:
+                    print(f"    {w.name:>3}  {w.used_percent:5.1f}%  리셋 {w.reset_in()}")
+                if r.detail:
+                    print(f"    detail: {r.detail}")
+                if r.error:
+                    print(f"    ! {r.error}")
+                if r.ok:
+                    levels.append(usage.check_backend(cfg, b).level)
+        if a.exit_code:      # 자동화: `yok3x limits --exit-code && 큰작업`
+            if "stop" in levels:
+                return 4
+            if "warn" in levels:
+                return 3
         return 0
 
     if a.cmd == "gui":
@@ -328,19 +363,46 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{a.backend}: 하루 페이싱 정지를 오늘 하루 해제(승인). 자정에 자동 리셋.")
             return 0
         dp = cfg.yok3x.get("guard", {}).get("daily_pace", {})
-        print(f"하루 페이싱: {'ON' if dp.get('enabled') else 'OFF'}  "
-              f"캡={float(dp.get('pct_of_weekly', 0.2)) * 100:.0f}%p  mode={dp.get('mode', 'warn')}")
+        states: dict[str, dict | None] = {}
+        provenances: dict[str, str] = {}
         for b in usage.BACKEND_KEYS:
             r = limits.probe(cfg, b)
             _ra = usage.effective_reset_at(cfg, b, r)
             wk, _known, _tu = usage._pace_inputs(cfg, b, r, _ra)
-            st = usage.daily_pace_status(cfg, b, wk, today=usage._pacing_day_key(_ra),
-                                         reset_at=_ra, today_used=_tu, since_reset_known=_known)
-            if st:
-                print(f"  {b:7s} 오늘소비 {st['used']:.0f}/{st['cap']:.0f}%p  "
-                      f"level={st['level']}{' (승인됨)' if st['approved'] else ''}")
-            else:
-                print(f"  {b:7s} (페이싱 off 또는 7d 실측 없음)")
+            states[b] = usage.daily_pace_status(
+                cfg, b, wk, today=usage._pacing_day_key(_ra),
+                reset_at=_ra, today_used=_tu, since_reset_known=_known)
+            provenances[b] = r.provenance()
+        if a.json:
+            snap = {"schema": "yok3x.pace/1", "at": time.time(),
+                    "enabled": bool(dp.get("enabled")),
+                    "pct_of_weekly": float(dp.get("pct_of_weekly", 0.14)),
+                    "mode": dp.get("mode", "warn"), "backends": {}}
+            for b, st in states.items():
+                snap["backends"][b] = None if not st else {
+                    "provenance": provenances[b], "used": round(st["used"], 2),
+                    "cap": round(st["cap"], 2),
+                    "soft": round(st["soft"], 2), "base_cap": round(st["base_cap"], 2),
+                    "even_cap": st.get("even_cap"), "forward_daily": st.get("forward_daily"),
+                    "strategy": st["strategy"], "level": st["level"],
+                    "blocked": st["blocked"], "approved": st["approved"],
+                }
+            print(json.dumps(snap, ensure_ascii=False, indent=2))
+        else:
+            print(f"하루 페이싱: {'ON' if dp.get('enabled') else 'OFF'}  "
+                  f"캡={float(dp.get('pct_of_weekly', 0.2)) * 100:.0f}%  mode={dp.get('mode', 'warn')}")
+            for b, st in states.items():
+                if st:
+                    print(f"  {b:7s} 오늘소비 {st['used']:.0f}/{st['cap']:.0f}%  "
+                          f"level={st['level']}{' (승인됨)' if st['approved'] else ''}")
+                else:
+                    print(f"  {b:7s} (페이싱 off 또는 7d 실측 없음)")
+        if a.exit_code:
+            levels = [st["level"] for st in states.values() if st]
+            if "stop" in levels:
+                return 4
+            if "warn" in levels:
+                return 3
         return 0
 
     if a.cmd == "knot":
