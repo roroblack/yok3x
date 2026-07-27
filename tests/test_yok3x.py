@@ -259,6 +259,43 @@ def test_setup_worktrees_assigns_and_cleans_up(mock_root, tmp_path):
     assert all(not Path(p).exists() for p in made.values())
 
 
+def test_round_verify_explains_why_it_skipped_staging(mock_root, monkeypatch, capsys):
+    """BUG-40: workdir 없이 verify_cmd만 설정하면 후보가 적용되지 않은 트리에서 검증해 **매 라운드
+    거짓 실패**한다(실측: 통과하는 산출물이 2라운드 내내 fail). 조용히 열화하지 말고 사유를 알린다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.verify_cmd, o.workdir = "python -c \"pass\"", None
+    monkeypatch.setattr(o, "_run_verify", lambda cwd=None: (False, "boom"))
+
+    ok, _out, scope = o._run_round_verify("```file:a.py\nx=1\n```", 1)
+
+    assert ok is False and scope == "original_tree"
+    out = capsys.readouterr().out
+    assert "workdir 미설정" in out and "거짓" in out          # 왜 실패가 못 미더운지 설명
+
+
+def test_statusline_rejects_uncalibrated_implausible_estimate(tmp_path):
+    """BUG-40: 새 프로젝트는 캡이 미보정이라 트랜스크립트 추정이 수백~수천%가 나온다. 그대로 ok로
+    돌려주면 가드가 stop을 걸어 **모든 런이 차단**된다(실측 995%). oauth 경로처럼 비현실적이면
+    신뢰하지 않고 원장 폴백에 맡긴다."""
+    from yok3x import limits
+    conf = {"statusline_path": str(tmp_path / "none.json"),   # statusline 캐시 없음 → 추정 폴백
+            "projects_dir": str(tmp_path)}
+    huge = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                               windows=[limits.Window("7d", 995.0)])
+    import unittest.mock as _m
+    with _m.patch.object(limits, "_probe_claude_transcripts", return_value=huge):
+        r = limits._probe_claude_statusline("claude", conf)
+
+    assert r.ok is False                       # 신뢰 불가 → check_backend가 원장으로 폴백
+    assert "비현실적" in r.error and "calibrate" in r.error   # 해결 방법까지 안내
+
+    sane = limits.LimitReading("claude", "claude_transcripts", ok=True, real=False,
+                               windows=[limits.Window("7d", 42.0)])
+    with _m.patch.object(limits, "_probe_claude_transcripts", return_value=sane):
+        r2 = limits._probe_claude_statusline("claude", conf)
+    assert r2.ok is True                       # 정상 범위 추정은 그대로 사용
+
+
 def test_log_survives_console_encoding_limits(mock_root):
     """BUG-39: cp949 콘솔이 '—'(U+2014)를 못 그려 _log가 UnicodeEncodeError로 런을 죽였다
     (실측: 래칫 체크포인트 1개 유실). 출력은 낮춰 찍되 파일 로그엔 원문을 남기고 예외는 안 낸다."""

@@ -44,6 +44,7 @@
 | [37](BUG-37-oauth-snapshot-today-collapse-cap-drift.md) | **OAuth 스냅샷 모델이 '오늘'을 0으로 붕괴시키고 상한을 실시간 드리프트(재기동 취약)** | **높음** | — | ✅ |
 | [38](BUG-38-transcript-rescan-build-state-hang.md) | 트랜스크립트 전량 재스캔으로 build_state 13초 → GUI 저장이 안 되는 듯(파일 캐시) | 중간 | — | ✅ |
 | [39](BUG-39-log-unicode-crash-kills-run-step.md) | **cp949 콘솔에서 로그의 '—'가 UnicodeEncodeError → 작업 단계 유실(래칫 체크포인트 소실)** | 중간~높음 | — | ✅ |
+| [40](BUG-40-silent-verify-false-negative-and-uncalibrated-stop.md) | **조용한 열화 2건 — workdir 미설정 시 verify 거짓 실패 · 미보정 추정(995%)으로 새 프로젝트 전체 런 차단** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

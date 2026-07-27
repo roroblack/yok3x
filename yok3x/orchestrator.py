@@ -530,6 +530,15 @@ class Orchestrator:
         """후보가 있으면 격리 사본에서 검증하고, 준비 실패 시 원본 검증으로 명시적으로 열화한다."""
         blocks = artifacts.parse_file_blocks(artifact or "")
         if not self.workdir or not blocks:
+            # 왜 후보 검증이 아닌지 명시한다(RULE §5.5 조용한 폴백 금지). 특히 workdir 없이
+            # verify_cmd만 설정하면 후보가 적용되지 않은 트리에서 검증해 **매 라운드 거짓 실패**가
+            # 난다(실측: 통과하는 산출물이 2라운드 내내 fail로 기록됨). 사용자가 원인을 볼 수 있어야 한다.
+            if not self.workdir:
+                self._log(f"[verify-stage] round {rnd}: workdir 미설정 → 후보 스테이징 불가. "
+                          "산출물이 반영되지 않은 트리에서 검증하므로 실패가 거짓일 수 있다 "
+                          "(task.json에 workdir 설정 권장).")
+            elif not blocks:
+                self._log(f"[verify-stage] round {rnd}: 산출물에 file 블록 없음 → 원본 트리 검증")
             ok, out = self._run_verify()
             return ok, out, "original_tree"
 
@@ -1025,7 +1034,7 @@ class Orchestrator:
         if m:
             score = float(m.group(1))
         with self._state_lock:
-            usage.record(cfg, worker, task_kind, res)
+            usage.record(cfg, worker, task_kind, res, run_id=self.run_id)
             self.steps.append(StepLog(idx, worker, task_kind,
                                       "done" if res.ok else "failed",
                                       summary=res.text[:200], score=score,
@@ -2173,6 +2182,11 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         return f"aborted: {msg}"
     # task가 지정하면 우선, 없으면 yok3x.json 전역 기본값을 상속(프로젝트 전체 게이트).
     orch.verify_cmd = spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
+    # verify_cmd만 있고 workdir가 없으면 후보 스테이징이 불가해 검증이 매 라운드 거짓 실패한다.
+    # 시작 시점에 한 번 알린다(라운드별 로그보다 발견하기 쉬움). 실측으로 확인된 함정.
+    if orch.verify_cmd.strip() and not orch.workdir:
+        print("[warn] verify_cmd가 설정됐지만 workdir가 없습니다 → 산출물 후보를 적용해 검증할 수 "
+              "없어 검증이 계속 실패할 수 있습니다. task.json에 \"workdir\"(또는 전역 workspace)를 지정하세요.")
     orch.score_gate_mode = spec.get("score_gate_mode", "strict")
     orch.verify_timeout = int(spec.get("verify_timeout_sec")
                               or cfg.yok3x.get("verify_timeout_sec", 300))

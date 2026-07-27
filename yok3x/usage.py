@@ -26,7 +26,14 @@ from .config import Config
 BACKEND_KEYS = ("claude", "codex", "gemini")
 
 
-def record(cfg: Config, worker: str, task_kind: str, res: BackendResult) -> None:
+def record(cfg: Config, worker: str, task_kind: str, res: BackendResult,
+           run_id: str = "") -> None:
+    """호출 1건을 원장에 append한다.
+
+    `run_id`(선택): **런 단위 비용 집계**를 위해 남긴다. 없으면 원장이 호출 단위로만 남아
+    "이 작업 한 번에 얼마 썼나"를 사후에 알 수 없었다(T-2 비용 추정 시 실측 걸림돌).
+    기존 행에는 이 키가 없으므로 소비자는 `.get("run_id")`로 읽어야 한다(하위호환).
+    """
     cfg.ensure_dirs()
     row = {
         "ts": time.time(),
@@ -41,6 +48,8 @@ def record(cfg: Config, worker: str, task_kind: str, res: BackendResult) -> None
         "total_tokens": res.total_tokens,
         "duration_ms": res.duration_ms,
     }
+    if run_id:
+        row["run_id"] = run_id
     with cfg.paths.usage_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 

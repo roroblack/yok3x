@@ -1157,6 +1157,14 @@ def _probe_claude_statusline(backend: str, conf: dict[str, Any]) -> LimitReading
             return LimitReading(backend, "claude_statusline", ok=True, real=True,
                                 windows=windows, detail=f"{det} (statusline {int(age)}s전)")
     est = _probe_claude_transcripts(backend, conf)   # 폴백: 로컬 트랜스크립트 추정
+    # 미보정 추정은 캐시read까지 세어 과대(수백~수천%)해질 수 있다. 새 프로젝트는 캡이 plan 프리셋뿐이라
+    # 실측 7d 3%인데도 995%로 표시되고, 가드가 그 값으로 **모든 런을 stop**시킨다(실측 확인).
+    # oauth 경로와 동일하게 비현실적으로 높으면 신뢰하지 않고 원장(sane) 폴백에 맡긴다(BUG-15 교훈).
+    if est.ok and est.ratio() > 2.0:
+        return LimitReading(
+            backend, "claude_statusline", ok=False, real=False,
+            error=(f"추정 사용률 비현실적({est.ratio() * 100:.0f}%) — 캡 미보정으로 판단해 무시. "
+                   "`yok3x calibrate claude 7d <실제%>` 또는 limits.claude.plan 설정 권장"))
     if est.ok:
         est.detail += "  (statusline 없음/만료 → 추정)"
     return est
