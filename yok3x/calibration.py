@@ -85,7 +85,11 @@ def summarize(records: list[dict], threshold: float = 8.0) -> dict:
         "n_total": len(records), "n_labeled": n_lab, "pass_rate": pass_rate,
         "score_verify_corr": corr, "confusion": confusion_at(records, threshold),
         # 해석 힌트: |corr|이 작고(≈0) precision이 통과율과 비슷하면 게이트가 신호를 못 준다는 뜻.
+        # corr=None은 "상관이 낮다"가 아니라 **계산 불가**다(라벨이 한쪽뿐이라 분산 0 등).
+        # 둘을 같은 문구로 뭉개면 "게이트가 무의미하다"는 결론을 데이터 없이 주장하게 된다
+        # (실측: T-2 1차 표본이 verify_ok 전부 True라 corr=None인데 '상관 낮음'으로 표시됨).
         "verdict": ("표본 부족" if n_lab < 10 else
-                    "게이트 무의미 의심(상관 낮음)" if (corr is None or abs(corr) < 0.2) else
+                    "판정 불가(라벨이 한쪽뿐 — 상관 정의 안 됨)" if corr is None else
+                    "게이트 무의미 의심(상관 낮음)" if abs(corr) < 0.2 else
                     "게이트 신호 있음"),
     }

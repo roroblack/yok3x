@@ -296,6 +296,19 @@ def test_statusline_rejects_uncalibrated_implausible_estimate(tmp_path):
     assert r2.ok is True                       # 정상 범위 추정은 그대로 사용
 
 
+def test_calib_verdict_distinguishes_undefined_from_low_correlation():
+    """T-2 1차 표본이 드러낸 결함: verify_ok가 한쪽뿐이면 상관은 **계산 불가**(None)인데
+    '상관 낮음 → 게이트 무의미 의심'으로 표시돼, 데이터 없이 결론을 주장하게 된다."""
+    from yok3x import calibration
+    same = [{"score": 5.0 + i * 0.1, "verify_ok": True, "verify_scope": "candidate"}
+            for i in range(12)]                      # 라벨 한쪽뿐 → 분산 0
+    s = calibration.summarize(same, threshold=8.0)
+    assert s["score_verify_corr"] is None
+    assert "판정 불가" in s["verdict"] and "한쪽" in s["verdict"]
+
+    few = [{"score": 5.0, "verify_ok": True, "verify_scope": "candidate"}]
+    assert calibration.summarize(few, threshold=8.0)["verdict"] == "표본 부족"
+
 def test_log_survives_console_encoding_limits(mock_root):
     """BUG-39: cp949 콘솔이 '—'(U+2014)를 못 그려 _log가 UnicodeEncodeError로 런을 죽였다
     (실측: 래칫 체크포인트 1개 유실). 출력은 낮춰 찍되 파일 로그엔 원문을 남기고 예외는 안 낸다."""
