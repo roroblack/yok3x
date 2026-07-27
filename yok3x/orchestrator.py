@@ -289,6 +289,7 @@ class Orchestrator:
         # R-2: 명시적 정지 사유(success/no_new_evidence/max_rounds/producer_failed/…).
         # "왜 멈췄나"를 라벨로 남겨 status·자동화가 종료 원인을 문자열 파싱 없이 소비한다.
         self.stop_reason: str | None = None
+        self._run_usd: float = 0.0           # 이 런의 실제 누적 비용(추정 아님 — usage.record 값)
         self.verify_timeout: int = 300       # verify_cmd 제한시간(초) — task로 재정의 가능
         self.context_globs: list[str] = []   # 레포 컨텍스트 주입 glob
         self.rubric: str = ""                # 채점표 파일 경로
@@ -964,6 +965,18 @@ class Orchestrator:
                 f"(source step {cached['_source_index']}, call_key={call_key})")
             return res
 
+        # 런당 실지출 상한(opt-in). preflight(R-3)는 **프롬프트 길이 기반 추정**이라 라운드가 길어지며
+        # 컨텍스트가 불어나는 런을 크게 과소평가한다(T-2 실측: 추정 $0.03 vs 실제 $3.37). 그래서
+        # **실제 누적 비용**으로 다음 호출 전에 끊는다 — 이미 쓴 돈은 못 되돌리지만 남은 지출은 막는다.
+        # T-2 1차에서 12런 중 2런이 전체 비용의 79%를 차지한 꼬리 문제에 대한 직접 대응.
+        _max_run_usd = float(((cfg.yok3x.get("guard") or {}).get("reservation") or {})
+                             .get("max_usd_per_run", 0) or 0)
+        if _max_run_usd > 0 and self._run_usd >= _max_run_usd:
+            self.stop_reason = "run_budget_exceeded"
+            raise RunAborted(
+                f"런당 비용 상한 초과: ${self._run_usd:.3f} >= ${_max_run_usd:.3f} "
+                f"(guard.reservation.max_usd_per_run)", cause="run_budget_exceeded")
+
         if spec.route_reason:
             self._log(
                 f"[route] {task_kind} → {spec.route_reason} "
@@ -1035,6 +1048,7 @@ class Orchestrator:
             score = float(m.group(1))
         with self._state_lock:
             usage.record(cfg, worker, task_kind, res, run_id=self.run_id)
+            self._run_usd += float(res.cost_usd or 0.0)   # 런당 실지출 누적(상한 판정용)
             self.steps.append(StepLog(idx, worker, task_kind,
                                       "done" if res.ok else "failed",
                                       summary=res.text[:200], score=score,

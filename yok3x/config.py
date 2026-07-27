@@ -81,6 +81,10 @@ DEFAULT_YOK3X = {
             "chars_per_token": 2.0,
             "output_token_ratio": 2.0,
             "usd_per_1k_tokens": 0.03,
+            # 런당 실지출 상한(USD). 0=off(기본). preflight는 프롬프트 길이 기반 추정이라 라운드가
+            # 길어지는 런을 과소평가한다(T-2 실측: 추정 $0.03 vs 실제 $3.37) → **실측 누적**으로 끊는다.
+            # 켜두면 꼬리 런이 예산을 독식하는 것을 막는다(T-2 1차: 12런 중 2런이 비용의 79%).
+            "max_usd_per_run": 0,
             # 필요하면 배치 전체 hard 상한을 직접 지정한다: calls | est_tokens | est_usd.
             # 비어 있으면 backend별 budgets 중 해당 지표의 가장 작은 양수 상한을 쓴다.
             "hard_limits": {},

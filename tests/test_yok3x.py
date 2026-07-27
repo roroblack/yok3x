@@ -296,6 +296,29 @@ def test_statusline_rejects_uncalibrated_implausible_estimate(tmp_path):
     assert r2.ok is True                       # 정상 범위 추정은 그대로 사용
 
 
+def test_run_budget_cap_stops_before_next_call(mock_root, monkeypatch):
+    """T-2 실측 대응: preflight 추정($0.03)이 실제($3.37)를 100배 과소평가했다. 실제 누적 비용으로
+    다음 호출 **전에** 끊어 꼬리 런이 예산을 독식하지 못하게 한다. 0(기본)이면 기존 동작 그대로."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["guard"]["reservation"]["max_usd_per_run"] = 1.0
+    o = Orchestrator(cfg, auto=True)
+    o._run_usd = 1.5                                  # 이미 상한 초과 상태
+    spec = o.prepare_call("claude-main", "t")
+
+    with pytest.raises(orchestrator.RunAborted) as exc:
+        o.execute_call(spec)
+
+    assert exc.value.cause == "run_budget_exceeded"
+    assert o.stop_reason == "run_budget_exceeded"
+
+    # 기본값(0)이면 상한 없음 — 기존 동작 불변
+    cfg2 = Config.load(mock_root)
+    assert cfg2.yok3x["guard"]["reservation"]["max_usd_per_run"] == 0
+    o2 = Orchestrator(cfg2, auto=True)
+    o2._run_usd = 999.0
+    assert o2.execute_call(o2.prepare_call("claude-main", "t")).ok    # 막지 않는다
+
+
 def test_calib_verdict_distinguishes_undefined_from_low_correlation():
     """T-2 1차 표본이 드러낸 결함: verify_ok가 한쪽뿐이면 상관은 **계산 불가**(None)인데
     '상관 낮음 → 게이트 무의미 의심'으로 표시돼, 데이터 없이 결론을 주장하게 된다."""
