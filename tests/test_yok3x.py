@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 
 import subprocess
 from pathlib import Path
@@ -324,6 +325,63 @@ def test_absolute_verify_cmd_does_not_get_candidate_label(mock_root, monkeypatch
     assert ok is True
     assert scope == "untrusted_verify_cmd"      # candidate 아님 → calibration이 라벨로 안 씀
     assert "절대경로" in capsys.readouterr().out
+
+
+def _codex_log(dirpath, rows):
+    """rollout-*.jsonl 흉내: (iso시각, used_percent) 목록을 token_count 이벤트로 쓴다."""
+    import json as _j
+    dirpath.mkdir(parents=True, exist_ok=True)
+    f = dirpath / "rollout-test.jsonl"
+    f.write_text("\n".join(_j.dumps({
+        "timestamp": ts, "type": "event_msg",
+        "payload": {"type": "token_count", "rate_limits": {
+            "primary": {"used_percent": pct, "window_minutes": 10080}}},
+    }) for ts, pct in rows) + "\n", encoding="utf-8")
+    return f
+
+
+def test_codex_percent_at_reads_series_and_respects_window(tmp_path):
+    """F2-10: codex는 토큰 트랜스크립트가 없지만 세션 로그에 (시각, 주간%) 시계열이 남는다.
+    이걸로 '하루 시작 시점의 %'를 되찾아 오늘 소비를 낸다. **주간 리셋을 가로지르면 안 된다** —
+    리셋 직전 값(이전 창 누적)을 새 창 기준선으로 쓰면 오늘 소비가 0으로 뭉개진다(실측 재현)."""
+    from yok3x import limits
+    import datetime as _dt
+    iso = lambda h: _dt.datetime(2026, 7, 27, h, 0, tzinfo=_dt.timezone.utc).isoformat()  # noqa: E731
+    ts = lambda h: _dt.datetime(2026, 7, 27, h, 0, tzinfo=_dt.timezone.utc).timestamp()   # noqa: E731
+    _codex_log(tmp_path / "sessions", [
+        (iso(6), 80.0),    # 이전 주간 창의 누적(리셋 전)
+        (iso(11), 5.0),    # 리셋 후 새 창
+        (iso(13), 12.0),
+    ])
+    conf = {"sessions_dir": str(tmp_path / "sessions")}
+    win_start = ts(9)      # 09:00에 주간 리셋
+
+    # 창 경계를 주면 리셋 전 80%는 무시된다
+    assert limits.codex_percent_at(conf, ts(12), window_start=win_start) == 5.0
+    assert limits.codex_percent_at(conf, ts(14), window_start=win_start) == 12.0
+    # 창 안에 관측이 없으면 0%(창이 막 시작 = 사용 없음)
+    assert limits.codex_percent_at(conf, ts(10), window_start=win_start) == 0.0
+    # 경계를 안 주면 이전 창 값을 주워온다(그래서 호출자가 반드시 넘겨야 함)
+    assert limits.codex_percent_at(conf, ts(10)) == 80.0
+
+
+def test_pace_inputs_codex_uses_percent_series_for_today(tmp_path, monkeypatch):
+    """codex 페이싱이 스냅샷이 아니라 시계열 기반 '오늘 소비'를 쓴다(재기동 불변)."""
+    from yok3x import usage, limits
+    cfg = Config.load(tmp_path)
+    reading = limits.LimitReading("codex", "codex_appserver", ok=True, real=True,
+                                  windows=[limits.Window("7d", 27.0)])
+    monkeypatch.setattr(limits, "codex_percent_at",
+                        lambda conf, at, window_start=None, **k: 4.0)
+
+    cur, known, today = usage._pace_inputs(cfg, "codex", reading, reset_at=time.time() + 86400)
+
+    assert cur == 27.0 and known is True
+    assert today == 23.0            # 27 − 4 = 오늘 소비(하루시작 이후)
+
+    monkeypatch.setattr(limits, "codex_percent_at",
+                        lambda conf, at, window_start=None, **k: None)
+    assert usage._pace_inputs(cfg, "codex", reading, reset_at=time.time() + 86400)[1] is False
 
 
 def test_atomic_write_text_preserves_original_on_failure(tmp_path, monkeypatch):

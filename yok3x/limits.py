@@ -513,6 +513,67 @@ def _latest_rate_limits(f: Path) -> dict | None:
     return None
 
 
+def codex_percent_at(conf: dict[str, Any], at_ts: float,
+                     window_start: float | None = None,
+                     max_files: int = 40) -> float | None:
+    """F2-10: **`at_ts` 시점의 codex 주간 사용률(%)** 을 세션 로그의 rate_limits 시계열에서 찾는다.
+
+    codex는 claude와 달리 토큰 트랜스크립트가 없어 '오늘 얼마 썼나'를 못 냈다(현재값 스냅샷만).
+    그런데 rollout 로그의 `token_count` 이벤트에 **timestamp + used_percent**가 함께 남는다 —
+    즉 **주간 %의 시계열**이 이미 디스크에 있다. `at_ts` 이하의 마지막 관측을 그 시점의 사용률로
+    본다(계단 함수). 관측이 하나도 없으면(로그 없음·그 이전 데이터 없음) None → 호출자가 폴백.
+
+    반환값은 '그 시점까지 누적된 주간 %'다. 따라서 `현재% − codex_percent_at(하루시작)`이
+    **오늘 소비**가 된다. 프로세스 재기동에 불변(디스크 로그 기반)이라 스냅샷 모델의 약점(BUG-37)이 없다.
+
+    `window_start`(현재 주간 창 시작)를 주면 **그 이전 관측은 무시**한다 — 시계열은 주간 리셋을
+    가로질러 이어지므로, 리셋 직전의 높은 %(이전 창의 누적)를 새 창의 기준선으로 쓰면 안 된다
+    (실측: 리셋 당일 하루시작 기준선이 80%로 잡혀 오늘 소비가 0으로 뭉개졌다).
+    창 안에 관측이 없으면 **0.0**을 돌려준다 — 창이 막 시작해 아직 사용이 없다는 뜻이다.
+    """
+    root = Path(conf.get("sessions_dir") or (Path.home() / ".codex" / "sessions")).expanduser()
+    if not root.exists():
+        return None
+    try:                      # 최근 파일만 본다(오래된 세션은 이번 주 창과 무관)
+        files = sorted(root.rglob("rollout-*.jsonl"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+    except OSError:
+        return None
+    best_ts, best_pct = None, None
+    for f in files:
+        try:
+            if f.stat().st_mtime < at_ts - 8 * 86400:      # 창보다 오래된 파일은 스킵
+                continue
+            text = f.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if '"rate_limits"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = _parse_iso(d.get("timestamp"))
+            if ts is None or ts > at_ts:
+                continue
+            if window_start is not None and ts < window_start:
+                continue                      # 이전 주간 창의 누적 — 새 창의 기준선이 될 수 없다
+            payload = d.get("payload") if isinstance(d.get("payload"), dict) else d
+            rl = payload.get("rate_limits") or d.get("rate_limits")
+            if not isinstance(rl, dict):
+                continue
+            seg = rl.get("primary") or {}
+            pct = _num(seg.get("used_percent"))
+            if pct is None:
+                continue
+            if best_ts is None or ts > best_ts:
+                best_ts, best_pct = ts, float(pct)
+    if best_pct is None and window_start is not None and at_ts >= window_start:
+        return 0.0                            # 창은 시작됐고 그 안에 사용 기록이 없다 = 0%
+    return best_pct
+
+
 # ------------------------------------------ claude (라이브 실측: OAuth usage 엔드포인트)
 # codex의 app-server RPC에 대응하는 claude 실측 경로. Max/Pro 구독 OAuth 토큰으로
 # GET /api/oauth/usage 를 호출하면 5h/7d used_percent + 리셋 시각을 준다(메시지 소비 0).

@@ -254,6 +254,19 @@ def _pace_inputs(cfg: Config, backend: str, reading: "limits.LimitReading | None
         # 재기동에 불변)의 오늘/이번주 비율로 OAuth 총량을 '오늘분'으로 환산 → since_reset_known=True 경로가
         # u0=현재−오늘(=오늘이전, 과거값이라 하루 안 고정)로 상한을 안정적으로 낸다. 스케일을 OAuth에
         # 맞추므로(BUG-33의 무보정 혼합과 달리) 요동 없음.
+        if backend == "codex":
+            # F2-10: codex는 토큰 트랜스크립트가 없어 '오늘'을 스냅샷으로만 쟀다(재기동에 취약).
+            # 세션 로그의 rate_limits 시계열에 **시각+주간%**가 남으므로, 하루 시작 시점의 %를
+            # 디스크에서 되찾아 `현재 − 하루시작`으로 오늘 소비를 낸다(재기동 불변).
+            day_start = _pacing_day_start(reset_at)
+            # 주간 창 시작 이전 관측은 이전 창의 누적이라 기준선이 될 수 없다(리셋 당일 필수).
+            win_start = (reset_at - 7 * 86400.0) if (reset_at and math.isfinite(reset_at)) else None
+            base_pct = limits.codex_percent_at(
+                (cfg.yok3x.get("limits") or {}).get("codex") or {}, day_start,
+                window_start=win_start)
+            if base_pct is not None:
+                return r7, True, round(max(0.0, r7 - base_pct), 1)
+            return r7, False, None            # 로그 없음 → 기존 스냅샷 모델로 폴백
         tr_week = weekly_used_since_reset(cfg, backend, reset_at)
         tr_today = today_used_pct(cfg, backend, reset_at)
         if tr_week and tr_week > 0 and tr_today is not None:
