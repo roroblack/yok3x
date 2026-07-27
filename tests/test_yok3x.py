@@ -296,6 +296,36 @@ def test_statusline_rejects_uncalibrated_implausible_estimate(tmp_path):
     assert r2.ok is True                       # 정상 범위 추정은 그대로 사용
 
 
+@pytest.mark.parametrize("cmd,escapes", [
+    ("python -m pytest -q", False), ("pytest tests/", False), ("make test", False),
+    ("./scripts/check.sh", False), ("pytest -k 'not slow'", False),
+    (r"python C:\repo\t.py", True), ("pytest C:/repo/tests", True),
+    ("bash /usr/bin/check.sh", True), (r"pytest --rootdir=C:\repo", True),
+    # 실행 파일 자체가 절대경로인 건 정상(venv 인터프리터) — 인자만 본다(오탐 방지).
+    (r'"C:\venv\Scripts\python.exe" check.py', False),
+    (r'"C:\venv\python.exe" C:\repo\t.py', True),
+])
+def test_verify_cmd_absolute_path_detection(cmd, escapes):
+    """F2-11: verify_cmd의 절대경로는 cwd 격리를 우회할 수 있다(보수적 탐지, 상대경로는 오탐 없음)."""
+    assert Orchestrator._verify_cmd_escapes_stage(cmd) is escapes
+
+
+def test_absolute_verify_cmd_does_not_get_candidate_label(mock_root, monkeypatch, capsys):
+    """F2-11 핵심: 명령이 절대경로로 원본을 검증했을 수 있으면 **candidate 라벨을 주지 않는다**.
+    실증된 우회(스테이징엔 CANDIDATE인데 명령은 원본 ORIGINAL을 읽고도 라벨은 candidate)를 차단 —
+    막을 수는 없어도 거짓 지상진실이 T-1에 섞이는 것은 막는다."""
+    o = Orchestrator(Config.load(mock_root), auto=True)
+    o.workdir = str(mock_root)
+    o.verify_cmd = "python C:/somewhere/tests/run.py"      # 절대경로
+    monkeypatch.setattr(o, "_run_verify", lambda cwd=None: (True, "ok"))
+
+    ok, _out, scope = o._run_round_verify("```file:a.py\nx=1\n```", 1)
+
+    assert ok is True
+    assert scope == "untrusted_verify_cmd"      # candidate 아님 → calibration이 라벨로 안 씀
+    assert "절대경로" in capsys.readouterr().out
+
+
 def test_run_budget_cap_stops_before_next_call(mock_root, monkeypatch):
     """T-2 실측 대응: preflight 추정($0.03)이 실제($3.37)를 100배 과소평가했다. 실제 누적 비용으로
     다음 호출 **전에** 끊어 꼬리 런이 예산을 독식하지 못하게 한다. 0(기본)이면 기존 동작 그대로."""

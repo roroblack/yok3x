@@ -46,6 +46,7 @@
 | [39](BUG-39-log-unicode-crash-kills-run-step.md) | **cp949 콘솔에서 로그의 '—'가 UnicodeEncodeError → 작업 단계 유실(래칫 체크포인트 소실)** | 중간~높음 | — | ✅ |
 | [40](BUG-40-silent-verify-false-negative-and-uncalibrated-stop.md) | **조용한 열화 2건 — workdir 미설정 시 verify 거짓 실패 · 미보정 추정(995%)으로 새 프로젝트 전체 런 차단** | **높음** | — | ✅ |
 | [41](BUG-41-calib-verdict-conflates-undefined-with-low-correlation.md) | 캘리브레이션 판정이 '계산 불가(corr=None)'를 '상관 낮음'으로 뭉개 근거 없이 '게이트 무의미' 표시 | 중간 | — | ✅ |
+| [42](BUG-42-absolute-verify-cmd-escapes-stage-false-candidate-label.md) | **절대경로 verify_cmd가 스테이징을 우회해 원본을 검증하고도 'candidate' 라벨(T-1 지상진실 오염)** | **높음** | — | ✅(완화) |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

@@ -527,6 +527,30 @@ class Orchestrator:
                     break
         return hits
 
+    # F2-11: verify_cmd에 절대경로가 있으면 cwd 격리를 우회해 **원본 트리를 검증**할 수 있다
+    # (실증: 스테이징에 CANDIDATE를 넣었는데 명령이 원본의 ORIGINAL을 읽고도 라벨은 candidate였다).
+    # 임의 셸 명령을 stdlib만으로 샌드박싱할 수는 없다 → **막지는 못해도 거짓 라벨은 막는다.**
+    _ABS_PATH_RE = re.compile(r"(?:^|[\s\"'=(])(?:[A-Za-z]:[\\/]|/(?![\s/]))")
+
+    @classmethod
+    def _verify_cmd_escapes_stage(cls, cmd: str) -> bool:
+        """verify_cmd의 **인자**가 절대경로를 참조하면 스테이징 밖을 볼 수 있다고 본다.
+
+        첫 토큰(실행 파일)은 제외한다 — venv 파이썬처럼 인터프리터가 절대경로인 건 정상이고
+        (`"C:/venv/python.exe" check.py`는 스테이징의 check.py를 돌린다), 라벨을 위협하는 건
+        '무엇을 검증하는가'를 가리키는 **인자**의 절대경로다(`pytest C:/repo/tests`).
+        """
+        s = str(cmd or "").strip()
+        if not s:
+            return False
+        if s[0] in "\"'":                       # 따옴표로 감싼 실행 파일 경로
+            end = s.find(s[0], 1)
+            rest = s[end + 1:] if end != -1 else ""
+        else:
+            parts = s.split(None, 1)
+            rest = parts[1] if len(parts) > 1 else ""
+        return bool(cls._ABS_PATH_RE.search(rest))
+
     def _run_round_verify(self, artifact: str, rnd: int) -> tuple[bool, str, str]:
         """후보가 있으면 격리 사본에서 검증하고, 준비 실패 시 원본 검증으로 명시적으로 열화한다."""
         blocks = artifacts.parse_file_blocks(artifact or "")
@@ -632,6 +656,14 @@ class Orchestrator:
             self._log(
                 f"[verify-stage] round {rnd}: 후보 {len(writes)}파일 검증 → {stage_root}")
             ok, out = self._run_verify(cwd=stage_root)
+            # F2-11: 명령이 절대경로를 쓰면 스테이징이 아니라 원본을 검증했을 수 있다. 그러면
+            # 이 관측은 후보의 지상진실이 아니므로 **candidate 라벨을 붙이지 않는다**(T-1 오염 차단).
+            if self._verify_cmd_escapes_stage(self.verify_cmd):
+                self._log(
+                    f"[verify-stage] round {rnd}: verify_cmd에 절대경로가 있어 격리를 벗어났을 수 "
+                    "있음 → 라벨을 candidate로 인정하지 않음(untrusted_verify_cmd). "
+                    "검증 명령은 상대경로로 작성하세요.")
+                return ok, out, "untrusted_verify_cmd"
             return ok, out, "candidate"
         except Exception as exc:
             self._log(
