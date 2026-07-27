@@ -272,11 +272,17 @@ def accept_bundle(root: Path, bundle: Mapping[str, Any], paths: list[str]) -> in
             try:
                 if not candidate.is_file():
                     observation_error = "후보 파일이 없거나 일반 파일이 아님"
-                elif candidate.stat().st_size > CANDIDATE_MAX_BYTES:
-                    observation_error = f"후보 크기 상한({CANDIDATE_MAX_BYTES}B) 초과"
                 else:
-                    candidate_raw = candidate.read_bytes()
-                    candidate_hash = _sha256(candidate_raw)
+                    # F2-11: stat 후 무제한 read_bytes()면 그 사이 파일이 커져도 그대로 읽는다
+                    # (stat-then-read TOCTOU). 열린 스트림에서 상한+1만 읽어 판정한다 —
+                    # orchestrator의 base 읽기(REVIEW_BASE_MAX_BYTES)와 같은 패턴으로 통일.
+                    with candidate.open("rb") as fh:
+                        raw = fh.read(CANDIDATE_MAX_BYTES + 1)
+                    if len(raw) > CANDIDATE_MAX_BYTES:
+                        observation_error = f"후보 크기 상한({CANDIDATE_MAX_BYTES}B) 초과"
+                    else:
+                        candidate_raw = raw
+                        candidate_hash = _sha256(candidate_raw)
             except OSError as exc:
                 observation_error = f"후보 읽기 실패: {type(exc).__name__}: {exc}"
 
