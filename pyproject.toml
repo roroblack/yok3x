@@ -24,3 +24,10 @@ version = { attr = "yok3x._version.__version__" }
 [tool.pytest.ini_options]
 pythonpath = ["."]                # `pytest`를 프로젝트 루트에서 바로 실행 가능하게
 testpaths = ["tests"]
+# F2-3 결론(2026-07-27, 실측): **basetemp를 여기서 고정하지 않는다.** 두 가지를 확인했다 —
+# ① `addopts`의 `--basetemp`는 **CLI 인자에 진다**(실측: `--basetemp=...`를 주면 그대로 생성됨).
+#    즉 루트 오염의 원인이던 "도구가 `--basetemp=.pytest-tmp...`를 직접 넘기는 것"을 막지 못한다.
+# ② 오히려 tmp_path가 **저장소 안**으로 들어가 git 관련 테스트의 의미가 바뀐다(worktree 테스트가
+#    '비-git 디렉터리'를 기대했는데 상위 yok3x 저장소를 찾아 실패).
+# pytest 기본값(시스템 temp)은 이미 저장소 밖이라 기본 경로로는 루트를 더럽히지 않는다.
+# 실효 방어는 `.gitignore`의 `.pytest-tmp*/`·`.codex-pytest-tmp*/` 패턴(아래 유지)이다.
