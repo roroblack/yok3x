@@ -20,7 +20,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from .config import Config
+from .config import Config, atomic_write_text
 
 FM_RE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -45,7 +45,8 @@ def save(cfg: Config, title: str, body: str, tags: list[str] | None = None,
           f"created: {now.isoformat(timespec='seconds')}\n"
           f"---\n\n")
     path = cfg.paths.knowledge / f"{_slug(title)}-{nid[-6:]}.md"
-    path.write_text(fm + body.rstrip() + "\n", encoding="utf-8")
+    # F2-5: 중간에 죽으면 잘린 노트가 남고, 그 노트는 이후 런의 프롬프트로 주입된다(오염 입력).
+    atomic_write_text(path, fm + body.rstrip() + "\n")
     return path
 
 
@@ -230,13 +231,14 @@ def clip(text: str, max_chars: int) -> str:
 
 def write_context(cfg: Config, content: str) -> Path:
     p = cfg.paths.root / "context.md"
-    p.write_text(clip(content, int(cfg.yok3x["context_max_chars"])), encoding="utf-8")
+    # 고정 경로 + 매 런 주입 → 찢긴 쓰기가 곧 오염된 프롬프트가 된다(F2-5).
+    atomic_write_text(p, clip(content, int(cfg.yok3x["context_max_chars"])))
     return p
 
 
 def write_brief(cfg: Config, content: str) -> Path:
     p = cfg.paths.root / "brief.md"
-    p.write_text(clip(content, int(cfg.yok3x["brief_max_chars"])), encoding="utf-8")
+    atomic_write_text(p, clip(content, int(cfg.yok3x["brief_max_chars"])))
     return p
 
 

@@ -342,6 +342,27 @@ DEFAULT_BACKENDS = {
 }
 
 
+def atomic_write_text(path: "Path | str", text: str, encoding: str = "utf-8") -> None:
+    """텍스트 파일을 **원자적**으로 쓴다(임시파일 → replace).
+
+    F2-5: 같은 패턴이 여러 곳에 흩어져 있었고 일부 경로는 아예 비원자였다. `write_text`는
+    truncate-then-write라 그 사이에 프로세스가 죽으면 **0바이트 파일**이 남는다 — 실제로
+    yok3x.json이 그렇게 손상돼 전체 기동이 막힌 적이 있다(BUG-32). pid 접미사 tmp를 써서
+    동시 저장 경합도 피한다. replace()는 같은 볼륨에서 원자적이다.
+    """
+    p = Path(path)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding=encoding)
+        tmp.replace(p)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)      # 중간 산출물을 남기지 않는다
+        except OSError:
+            pass
+        raise
+
+
 @dataclass
 class Paths:
     root: Path
@@ -390,13 +411,11 @@ class Config:
 
     def save_yok3x(self) -> None:
         """설정 저장. **원자적**(임시파일 후 replace) — 저장 도중 프로세스가 죽어도(강제종료 등)
+        (구현은 모듈 함수 `atomic_write_text` 재사용 — F2-5에서 같은 패턴 3곳을 하나로 모았다.)
         write_text의 truncate-then-write 구간에 걸리면 파일이 0바이트로 남는 torn write를 방지한다
         (실제로 GUI 프로세스 강제종료 중 발생 확인됨). pid 고유 tmp로 동시 저장 경합도 피한다."""
-        import os as _os
-        p = self.paths.yok3x_json
-        tmp = p.with_name(f"{p.name}.{_os.getpid()}.tmp")
-        tmp.write_text(json.dumps(self.yok3x, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(p)
+        atomic_write_text(self.paths.yok3x_json,
+                          json.dumps(self.yok3x, ensure_ascii=False, indent=2) + "\n")
 
     def worker(self, name: str) -> dict[str, Any]:
         w = self.yok3x["workers"].get(name)
@@ -446,12 +465,14 @@ def scaffold(root: str | Path = ".", use_mock: bool = False) -> Config:
     if use_mock:
         for w in cfg.yok3x["workers"].values():
             w["backend"] = "mock"
+    # F2-5: scaffold도 save_yok3x와 같은 파일을 쓴다 — 여기만 비원자면 init 도중 종료 시
+    # BUG-32와 동일한 0바이트 손상이 난다. 같은 원자적 헬퍼로 통일.
     if not cfg.paths.yok3x_json.exists():
-        cfg.paths.yok3x_json.write_text(
-            json.dumps(cfg.yok3x, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(cfg.paths.yok3x_json,
+                          json.dumps(cfg.yok3x, ensure_ascii=False, indent=2) + "\n")
     if not cfg.paths.backends_json.exists():
-        cfg.paths.backends_json.write_text(
-            json.dumps(cfg.backends, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(cfg.paths.backends_json,
+                          json.dumps(cfg.backends, ensure_ascii=False, indent=2) + "\n")
     ctx = cfg.paths.root / "context.md"
     brief = cfg.paths.root / "brief.md"
     if not ctx.exists():

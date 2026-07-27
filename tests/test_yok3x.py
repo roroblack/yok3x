@@ -326,6 +326,39 @@ def test_absolute_verify_cmd_does_not_get_candidate_label(mock_root, monkeypatch
     assert "절대경로" in capsys.readouterr().out
 
 
+def test_atomic_write_text_preserves_original_on_failure(tmp_path, monkeypatch):
+    """F2-5: 원자적 쓰기 — 교체 중 죽어도 원본이 살아있고 tmp 잔재가 남지 않는다.
+    (BUG-32: write_text의 truncate-then-write 구간에 죽어 yok3x.json이 0바이트가 됐던 계열)"""
+    from yok3x.config import atomic_write_text
+    target = tmp_path / "state.json"
+    target.write_text("OLD", encoding="utf-8")
+
+    real_replace = Path.replace
+    monkeypatch.setattr(Path, "replace",
+                        lambda self, dst: (_ for _ in ()).throw(OSError("죽음")))
+    with pytest.raises(OSError):
+        atomic_write_text(target, "NEW")
+    monkeypatch.setattr(Path, "replace", real_replace)
+
+    assert target.read_text(encoding="utf-8") == "OLD"          # 원본 보존
+    assert [f.name for f in tmp_path.iterdir()] == ["state.json"]  # tmp 잔재 없음
+
+    atomic_write_text(target, "NEW")
+    assert target.read_text(encoding="utf-8") == "NEW"
+
+
+def test_scaffold_and_knot_use_atomic_writes(tmp_path):
+    """BUG-32와 같은 파일(yok3x.json)을 쓰는 scaffold, 그리고 매 런 프롬프트로 주입되는
+    brief/context·knot 노트가 모두 원자적 경로를 쓴다(찢긴 쓰기가 곧 오염된 입력이 되는 곳)."""
+    import inspect
+    from yok3x import config as cfgmod, knot
+    src = inspect.getsource(cfgmod.scaffold)
+    assert "atomic_write_text(cfg.paths.yok3x_json" in src
+    assert "atomic_write_text(cfg.paths.backends_json" in src
+    for fn in (knot.save, knot.write_context, knot.write_brief):
+        assert "atomic_write_text(" in inspect.getsource(fn), fn.__name__
+
+
 def test_run_budget_cap_stops_before_next_call(mock_root, monkeypatch):
     """T-2 실측 대응: preflight 추정($0.03)이 실제($3.37)를 100배 과소평가했다. 실제 누적 비용으로
     다음 호출 **전에** 끊어 꼬리 런이 예산을 독식하지 못하게 한다. 0(기본)이면 기존 동작 그대로."""
