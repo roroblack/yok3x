@@ -2057,18 +2057,24 @@ def resolve_model(cfg: Config, task_kind: str, available=None,
 
 
 def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
-    """순차 pipeline·producer-reviewer 재개 지원(G-1 pipeline, G-2 producer-reviewer).
-    두 패턴 모두 call_key 기반 성공 prefix 재생이라 결정적으로 재현된다. producer-reviewer의
-    escalate/stall 상태는 재생된 라운드 결과로 루프를 재실행하며 자연히 재계산된다.
-    parallel(비결정 순서)·acquire(preflight LLM)·materialize/changes(루프 밖 부작용)는 제외."""
-    if spec.get("pattern", "producer-reviewer") not in ("pipeline", "producer-reviewer"):
-        return False, "재개는 pattern=pipeline 또는 producer-reviewer에서만 지원합니다"
-    parallel = ((cfg.yok3x.get("guard") or {}).get("parallel") or {})
-    if parallel.get("enabled", False):
-        return False, "재개는 guard.parallel.enabled=false(순차)에서만 지원합니다"
-    for key in ("acquire", "materialize", "changes"):
-        if key in spec:
-            return False, f"재개는 {key}가 없을 때만 지원합니다"
+    """재개 지원 판정 — F2-7 계약(2026-07-27) 반영.
+
+    재생은 `call_key`(worker|task_kind|backend|model|prompt|read_only 해시, **단계 번호 제외**)로
+    판정하므로 **순서에 의존하지 않는다**. 상류 산출물이 바뀌면 하류 프롬프트가 바뀌어 키가
+    달라지고 자동으로 재실행되므로, 잘못된 재생이 구조적으로 불가능하다(실증 확인).
+
+    허용: pipeline · producer-reviewer · **fanout/fanout-fanin**(C-1) · **parallel 켜짐**(C-1) ·
+          **materialize/changes**(C-4 — 출력 루트가 `yok3x-out/<run_id>`로 런마다 격리돼 이전
+          산출물을 덮어쓰지 않는다).
+    제외: **acquire**(C-5) — 사전질의는 preflight LLM 호출이라 step 파일 계약 밖이고 재개 시
+          재소모된다. 허용하려면 acquire 결과도 step으로 기록하는 선행 작업이 필요하다.
+    한계(C-6): 재현되는 것은 **호출 결과**뿐이며 **실행 순서·동시성은 재현되지 않는다**.
+    """
+    if spec.get("pattern", "producer-reviewer") not in (
+            "pipeline", "producer-reviewer", "fanout", "fanout-fanin"):
+        return False, "재개는 pattern=pipeline·producer-reviewer·fanout에서만 지원합니다"
+    if "acquire" in spec:
+        return False, "재개는 acquire가 없을 때만 지원합니다(preflight 호출은 재생 대상 아님)"
     return True, ""
 
 
@@ -2139,45 +2145,65 @@ _REPLAY_REQUIRED = {
 _REPLAY_USAGE_REQUIRED = {"cost_usd", "total_tokens", "duration_ms"}
 
 
-def _load_replay_prefix(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
-    """번호가 연속된 ok step만 읽는다. 손상/실패를 만나는 즉시 안전하게 중단한다."""
+def _load_replay_steps(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
+    """성공한 step을 **집합으로** 읽는다(F2-7 계약 C-1/C-2).
+
+    이전 구현(`_load_replay_prefix`)은 **번호가 연속된** ok step만 인정하고 결번·실패·손상을
+    만나면 즉시 중단했다. 병렬 fanout은 완료가 집합이라 그 규칙이 맞지 않는다 — 1번이 실패하면
+    무관한 워커의 성공 결과(2·3번)까지 버려진다.
+
+    **집합 재생이 안전한 근거**(실증): `call_key`는 `worker|task_kind|backend|model|prompt|read_only`
+    해시이고 **단계 번호를 포함하지 않는다**. 프롬프트 전체가 키에 들어가므로, 상류 산출물이 바뀌면
+    하류 키가 자동으로 달라져 **재생되지 않고 재실행**된다. 즉 순서·연속성에 기대지 않아도
+    잘못된 재생이 구조적으로 불가능하다.
+
+    C-2: 손상·스키마 미달·실패·번호 중복은 **그 항목만** 제외하고 나머지는 살린다. 단
+    '읽을 수 없는 것을 성공으로 간주'하지는 않는다(fail-closed 유지). 제외 사유는 요약해 돌려준다.
+    """
     indexed: dict[int, list[Path]] = {}
     for path in run_dir.glob("step_*.json"):
         match = _STEP_FILE_RE.match(path.name)
         if not match:
             continue
-        index = int(match.group(1))
-        indexed.setdefault(index, []).append(path)
+        indexed.setdefault(int(match.group(1)), []).append(path)
 
     cache: dict[str, dict[str, Any]] = {}
-    expected = 1
+    skipped: list[str] = []
     for index in sorted(indexed):
-        if index != expected:
-            return cache, f"step {expected} 파일 없음"
         paths = indexed[index]
         if len(paths) != 1:
-            return cache, f"step {index} 파일 중복"
-        path = paths[0]
+            # 같은 번호가 둘이면 어느 쪽이 진실인지 알 수 없다 → 그 번호만 제외.
+            skipped.append(f"step {index} 파일 중복")
+            continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            data = json.loads(paths[0].read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            return cache, f"step {index} JSON 손상({type(exc).__name__})"
+            skipped.append(f"step {index} JSON 손상({type(exc).__name__})")
+            continue
         if not isinstance(data, dict) or not _REPLAY_REQUIRED.issubset(data):
-            return cache, f"step {index} 필수 필드 없음"
+            skipped.append(f"step {index} 필수 필드 없음")
+            continue
         usage_data = data.get("usage")
         if (not isinstance(usage_data, dict)
                 or not _REPLAY_USAGE_REQUIRED.issubset(usage_data)):
-            return cache, f"step {index} usage 필수 필드 없음"
+            skipped.append(f"step {index} usage 필수 필드 없음")
+            continue
         if data.get("ok") is not True:
-            return cache, f"step {index} 성공 아님"
+            skipped.append(f"step {index} 성공 아님")
+            continue
         call_key = data.get("call_key")
         if not isinstance(call_key, str) or not call_key:
-            return cache, f"step {index} call_key 오류"
+            skipped.append(f"step {index} call_key 오류")
+            continue
         cached = dict(data)
         cached["_source_index"] = index
         cache[call_key] = cached
-        expected += 1
-    return cache, "성공 prefix 끝"
+
+    reason = f"성공 step {len(cache)}개"
+    if skipped:
+        reason += f" · 제외 {len(skipped)}건({'; '.join(skipped[:3])}" + \
+                  (" 외" if len(skipped) > 3 else "") + ")"
+    return cache, reason
 
 
 def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
@@ -2279,7 +2305,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
             orch._save_status("aborted", {
                 "reason": reason, "cause": "config_error", "resumable": False})
             return {"error": reason}
-        orch._replay_cache, prefix_reason = _load_replay_prefix(resume_dir)
+        orch._replay_cache, prefix_reason = _load_replay_steps(resume_dir)
         orch._log(f"[resume] {resume_dir.name}: 성공 prefix {len(orch._replay_cache)}개 "
                   f"적재 ({prefix_reason})")
     orch.run_dir.mkdir(parents=True, exist_ok=True)

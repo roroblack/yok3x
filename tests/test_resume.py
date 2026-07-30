@@ -312,29 +312,32 @@ def test_verify_is_always_rerun_when_calls_are_replayed(resume_env, monkeypatch)
     assert len(verify_calls) == 1
 
 
-def test_resume_rejects_non_pipeline_parallel_and_extended_specs(resume_env, monkeypatch):
+def test_resume_gating_follows_f2_7_contract(resume_env, monkeypatch):
+    """F2-7 계약(2026-07-27)으로 게이팅이 바뀌었다. 이 테스트는 **구 정책**(fanout·parallel·
+    materialize 전부 거부)을 검증하고 있었으므로 새 계약 기준으로 갱신한다.
+
+    허용: fanout·parallel 켜짐·materialize/changes(출력이 run_id로 격리 — C-1/C-4).
+    제외: acquire만(preflight LLM 호출은 step 재생 대상이 아니라 재개 시 재소모 — C-5).
+    근거: call_key가 단계 번호를 제외하고 프롬프트 전체를 담아 순서 독립이며, 상류가 바뀌면
+    하류 키가 달라져 자동 재실행된다(잘못된 재생이 구조적으로 불가능).
+    """
     cfg, task_file, source_run_id = _complete_run(resume_env, monkeypatch)
     spec = json.loads(task_file.read_text(encoding="utf-8"))
 
-    spec["pattern"] = "fanout"
-    spec["workers"] = ["claude-main"]
-    task_file.write_text(json.dumps(spec), encoding="utf-8")
-    assert "pattern=pipeline" in run_task_file(
-        cfg, task_file, auto=True, resume_run_id=source_run_id)["error"]
+    # acquire만 거부된다 — 사유가 명시돼야 한다(조용한 거부 금지)
+    spec_acq = {**spec, "acquire": {"qa_count": 1}}
+    task_file.write_text(json.dumps(spec_acq), encoding="utf-8")
+    err = run_task_file(cfg, task_file, auto=True, resume_run_id=source_run_id)["error"]
+    assert "acquire" in err
 
-    spec["pattern"] = "pipeline"
-    task_file.write_text(json.dumps(spec), encoding="utf-8")
+    # 나머지는 허용: 순수 판정 함수로 계약을 직접 확인(런 부작용 없이)
     cfg.yok3x["guard"]["parallel"]["enabled"] = True
-    assert "parallel.enabled=false" in run_task_file(
-        cfg, task_file, auto=True, resume_run_id=source_run_id)["error"]
-
+    fan = {"pattern": "fanout", "task": "t", "workers": ["claude-main"]}
+    assert orchestrator._resume_supported(fan, cfg)[0] is True
+    assert orchestrator._resume_supported({**fan, "materialize": {"enabled": True}}, cfg)[0] is True
+    assert orchestrator._resume_supported({**fan, "changes": {"mode": "review"}}, cfg)[0] is True
+    assert orchestrator._resume_supported({**fan, "acquire": {}}, cfg)[0] is False
     cfg.yok3x["guard"]["parallel"]["enabled"] = False
-    for key in ("acquire", "materialize"):
-        spec[key] = {}
-        task_file.write_text(json.dumps(spec), encoding="utf-8")
-        assert key in run_task_file(
-            cfg, task_file, auto=True, resume_run_id=source_run_id)["error"]
-        del spec[key]
 
 
 def test_lineage_lock_blocks_concurrent_resume(resume_env, monkeypatch):
