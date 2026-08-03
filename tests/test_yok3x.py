@@ -364,6 +364,14 @@ def test_codex_percent_at_reads_series_and_respects_window(tmp_path):
     # 경계를 안 주면 이전 창 값을 주워온다(그래서 호출자가 반드시 넘겨야 함)
     assert limits.codex_percent_at(conf, ts(10)) == 80.0
 
+    # 성능(캐시 아님): 창 시작 이전/그 시점은 **정의상 0%** → 파일을 읽지 않고 즉시 답한다.
+    # 리셋 당일에는 day_start == window_start라 이 경로가 늘 타므로 실측 체감이 크다.
+    empty = tmp_path / "no_such_dir"
+    assert limits.codex_percent_at({"sessions_dir": str(empty)}, ts(9),
+                                   window_start=ts(9)) == 0.0
+    assert limits.codex_percent_at({"sessions_dir": str(empty)}, ts(8),
+                                   window_start=ts(9)) == 0.0
+
 
 def test_pace_inputs_codex_uses_percent_series_for_today(tmp_path, monkeypatch):
     """codex 페이싱이 스냅샷이 아니라 시계열 기반 '오늘 소비'를 쓴다(재기동 불변)."""

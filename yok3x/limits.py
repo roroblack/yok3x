@@ -531,6 +531,11 @@ def codex_percent_at(conf: dict[str, Any], at_ts: float,
     (실측: 리셋 당일 하루시작 기준선이 80%로 잡혀 오늘 소비가 0으로 뭉개졌다).
     창 안에 관측이 없으면 **0.0**을 돌려준다 — 창이 막 시작해 아직 사용이 없다는 뜻이다.
     """
+    # 창 시작 시점(또는 그 이전)의 누적은 **정의상 0%** — 파일을 한 개도 읽을 필요가 없다.
+    # 리셋 당일에는 day_start == window_start라 이 경로가 늘 타는데, 없으면 '관측 없음'을 확인하려고
+    # 창 안 파일을 전부 훑게 된다(실측: 수십 MB). 캐시가 아니라 **불필요한 일을 안 하는** 것이다.
+    if window_start is not None and at_ts <= window_start:
+        return 0.0
     root = Path(conf.get("sessions_dir") or (Path.home() / ".codex" / "sessions")).expanduser()
     if not root.exists():
         return None
@@ -540,10 +545,19 @@ def codex_percent_at(conf: dict[str, Any], at_ts: float,
     except OSError:
         return None
     best_ts, best_pct = None, None
-    for f in files:
+    for f in files:                       # mtime 내림차순(최신 우선)
         try:
-            if f.stat().st_mtime < at_ts - 8 * 86400:      # 창보다 오래된 파일은 스킵
-                continue
+            mtime = f.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < at_ts - 8 * 86400:                      # 창보다 오래된 파일은 스킵
+            continue
+        # **증명 가능한 조기 종료**(캐시 아님): 파일 안의 이벤트 시각은 그 파일의 마지막 쓰기(mtime)보다
+        # 늦을 수 없다. 따라서 mtime이 이미 찾은 최선값보다 이르면, 그 파일도 그보다 오래된 나머지
+        # 파일들도 최선을 갱신할 수 없다 → 읽지 않고 멈춘다. 정확도 손실 0, 읽는 파일 수만 준다.
+        if best_ts is not None and mtime <= best_ts:
+            break
+        try:
             text = f.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
