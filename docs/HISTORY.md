@@ -4,6 +4,27 @@
 
 ---
 
+## 미출시(dev) · 2026-08-05 — GUI 서버 무한 대기 실측 진단·수정 (BUG-43, 사용자 지적)
+
+- 사용자: "켜놔도 자꾸 꺼진다 — 다른 곳에서 끄는 건가? 모니터링하다 터지면 알려줘." 라이브 모니터
+    (HTTP+프로세스+부모 3중 폴링)를 걸고 실측한 결과, **외부가 끄는 게 아니라 서버 스스로 데드락**.
+- 진단: 프로세스·리슨 소켓은 살아있는데 모든 HTTP 요청이 타임아웃. `py-spy dump`로 실제 스레드
+    스택을 떠 요청 처리 스레드가 `_kill_tree`(codex app-server 정리) 안 `subprocess.communicate()`의
+    `join()`에서 무한 대기 중임을 확인. `tasklist`로 고아 `codex.exe` 3개·`codex-code-mode-host.exe`
+    1개 누적도 함께 확인(같은 근본원인의 반복 실패 흔적).
+- 근본원인: `_kill_tree`가 `subprocess.run(["taskkill",...], capture_output=True, timeout=5)`를 쓰는데,
+    codex app-server가 남긴 손자 프로세스가 파이프 쓰기 핸들을 물고 있으면 출력을 모으는 리더 스레드가
+    EOF를 못 받아 멈춘다. `timeout=5`는 프로세스 종료에만 적용되고, 예외를 던지기 전 그 리더 스레드를
+    **타임아웃 없이 join**하는 CPython 내부 경로 때문에 사실상 무한 대기가 된다(Windows subprocess 함정).
+    `build_state()`가 매 요청마다 codex 상태를 거치므로 새 요청도 전부 같은 지점에서 멈춘다.
+- 즉시 복구: 고아 프로세스 4개를 강제 종료해 막혀있던 요청이 즉시 완료됨을 실측으로 확인(인과관계 검증).
+- 수정: `capture_output=True` → `stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL`(taskkill 출력은
+    필요 없음 — 파이프 자체를 만들지 않아 이 경로를 원천 차단). 신규 회귀 테스트 1. 370 passed.
+- 남은 위험(정직 표기): `taskkill /T`가 손자 프로세스를 왜 못 잡았는지는 별개 문제(codex CLI의 detached
+    스폰 가능성) — 이번 수정은 그 상황에서도 서버가 멈추지 않게 할 뿐, 고아 자체를 막지는 못한다.
+
+---
+
 ## 미출시(dev) · 2026-07-27 — 첫 로딩 지연 조사: **캐시를 늘리지 않고** 일을 줄여 해결 (사용자 지적)
 
 - 사용자: "처음 로딩이 왜 이렇게 오래 걸리나?" → 실측 `build_state` **콜드 8.9s / 웜 1.3s**.

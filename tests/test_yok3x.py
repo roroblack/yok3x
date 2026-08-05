@@ -340,6 +340,36 @@ def _codex_log(dirpath, rows):
     return f
 
 
+def test_kill_tree_never_captures_output_on_windows(monkeypatch):
+    """BUG-43 회귀 방지: taskkill 호출에 capture_output(=파이프+리더스레드)을 쓰면, codex
+    app-server가 남긴 손자 프로세스가 파이프 쓰기핸들을 물고 있을 때 리더 스레드가 EOF를
+    영원히 못 받아 무한 대기한다(실측: GUI 서버가 요청 스레드 안에서 통째로 멈춤, 고아
+    codex.exe가 누적). subprocess.run의 timeout=5는 이 무한 join을 못 막는다(Windows
+    subprocess 함정). DEVNULL로 파이프 자체를 안 만들어 이 경로를 원천 차단해야 한다."""
+    from yok3x import limits
+
+    calls = []
+    monkeypatch.setattr(limits.os, "name", "nt")
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(limits.subprocess, "run", fake_run)
+
+    class FakeProc:
+        pid = 4242
+        def wait(self, timeout=None):
+            return 0
+    limits._kill_tree(FakeProc())
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:2] == ["taskkill", "/F"]
+    assert kwargs.get("stdout") is subprocess.DEVNULL
+    assert kwargs.get("stderr") is subprocess.DEVNULL
+    assert kwargs.get("capture_output") is not True     # 회귀의 핵심: 다시 켜지면 안 됨
+
+
 def test_codex_percent_at_reads_series_and_respects_window(tmp_path):
     """F2-10: codex는 토큰 트랜스크립트가 없지만 세션 로그에 (시각, 주간%) 시계열이 남는다.
     이걸로 '하루 시작 시점의 %'를 되찾아 오늘 소비를 낸다. **주간 리셋을 가로지르면 안 된다** —

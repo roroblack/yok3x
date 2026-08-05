@@ -443,8 +443,15 @@ def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | 
 def _kill_tree(proc: "subprocess.Popen") -> None:
     try:
         if os.name == "nt":
+            # BUG-43: capture_output=True는 stdout/stderr를 파이프로 읽는 리더 스레드를 만든다.
+            # codex app-server가 손자 프로세스를 남기면(관측: codex.exe 여러 개 + codex-code-mode
+            # -host.exe가 고아로 누적) 그 손자가 파이프 쓰기 핸들을 계속 물고 있어 리더 스레드가
+            # EOF를 영원히 못 받는다. subprocess.run의 timeout=5는 프로세스 종료엔 적용되지만,
+            # 예외를 던지기 전 남은 출력을 모으려고 그 리더 스레드를 **타임아웃 없이** join하므로
+            # 사실상 무제한 대기가 된다(전형적인 Windows subprocess 함정). 이 호출은 taskkill의
+            # 출력이 필요 없으므로 DEVNULL로 파이프 자체를 만들지 않아 이 경로를 원천 차단한다.
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=5)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         else:
             proc.terminate()
     except Exception:
