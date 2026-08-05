@@ -477,6 +477,79 @@ def _win_assign_to_job(job: int, pid: int) -> bool:
         return False
 
 
+def _win_process_snapshot() -> dict[int, int]:
+    """모든 프로세스의 {pid: ppid} 스냅샷. Toolhelp32Snapshot — WMI/tasklist를 서브프로세스로
+    부르지 않고 순수 ctypes로 얻어 빠르다(스윕 루프에서 매 틱 불러도 부담 없음)."""
+    if os.name != "nt":
+        return {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class _ProcessEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == -1 or not snap:
+            return {}
+        try:
+            entry = _ProcessEntry32()
+            entry.dwSize = ctypes.sizeof(_ProcessEntry32)
+            out: dict[int, int] = {}
+            if k32.Process32FirstW(snap, ctypes.byref(entry)):
+                while True:
+                    out[entry.th32ProcessID] = entry.th32ParentProcessID
+                    if not k32.Process32NextW(snap, ctypes.byref(entry)):
+                        break
+            return out
+        finally:
+            k32.CloseHandle(snap)
+    except Exception:
+        return {}
+
+
+def _win_start_job_sweeper(job: int, root_pid: int,
+                           stop_event: "threading.Event") -> "threading.Thread | None":
+    """BUG-43 후속의 후속: job 편입을 **딱 한 번**만 하면, 그 직후(마이크로초 단위) 자식이 손자를
+    만드는 게 우리보다 먼저 끝나면 그 손자는 job에 안 들어간다(실측 재현: 부하가 있을 때 codex.exe
+    1개가 새로 새어나감). 핸드셰이크가 끝날 때까지 **지속적으로** 새 자손을 찾아 job에 마저 편입해
+    이 경쟁을 좁힌다. 완벽한 이론적 보장은 아니지만(그러려면 CREATE_SUSPENDED로 만들어야 하는데,
+    CPython이 스레드 핸들을 즉시 닫아버려 표준 subprocess.Popen으로는 재개할 방법이 없다 — 확인함),
+    실제 관측된 경쟁 창(수백ms)을 촘촘히 커버해 실질적으로 충분하다."""
+    if os.name != "nt" or job is None:
+        return None
+
+    def sweep() -> None:
+        tracked = {root_pid}
+        while not stop_event.is_set():
+            try:
+                snap = _win_process_snapshot()
+                changed = True
+                while changed:      # 여러 단계(자식→손자→증손) 한 틱 안에 다 따라잡는다
+                    changed = False
+                    for pid, ppid in snap.items():
+                        if ppid in tracked and pid not in tracked:
+                            if _win_assign_to_job(job, pid):
+                                tracked.add(pid)
+                                changed = True
+            except Exception:
+                pass
+            stop_event.wait(0.15)
+
+    t = threading.Thread(target=sweep, daemon=True, name="job-sweeper")
+    t.start()
+    return t
+
+
 def _win_terminate_job(job: int) -> None:
     if os.name != "nt" or job is None:
         return
@@ -497,9 +570,16 @@ def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | 
     # BUG-43 후속: 생성 직후 즉시 Job Object에 편입한다(가능한 한 빨리 — 손자 프로세스가
     # 뜨기 전에 트리 전체를 담아야 함). 실패하면 job=None으로 기존 taskkill 경로만 쓴다.
     job = _win_make_job()
+    sweeper_stop = threading.Event()
+    sweeper: "threading.Thread | None" = None
     if job is not None and not _win_assign_to_job(job, proc.pid):
         _win_terminate_job(job)   # 편입 실패한 빈 job은 정리
         job = None
+    elif job is not None:
+        # BUG-43 후속: 편입 직후 자식이 손자를 만드는 게 더 빠르면 그 손자는 놓친다(실측 재현
+        # — 부하가 있을 때 codex.exe가 새로 새어나감). 이 함수가 끝날 때까지 지속적으로 새
+        # 자손을 찾아 마저 편입해 그 경쟁 창을 좁힌다.
+        sweeper = _win_start_job_sweeper(job, proc.pid, sweeper_stop)
     responses: dict[int, Any] = {}
     got = threading.Event()
 
@@ -535,6 +615,9 @@ def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | 
         send({"method": "account/rateLimits/read", "id": 2, "params": {}})
         got.wait(timeout=max(0.5, deadline - time.time()))
     finally:
+        sweeper_stop.set()
+        if sweeper is not None:
+            sweeper.join(timeout=1)   # 정리 전 마지막 편입 사이클이 끝나길 잠깐 기다림(무한대기 아님)
         _kill_tree(proc, job)
     res = responses.get(2) or {}
     return res.get("rateLimits") if isinstance(res, dict) else None

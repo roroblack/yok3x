@@ -483,6 +483,67 @@ def test_job_object_really_kills_a_real_process_tree(tmp_path):
             pass
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object는 Windows 전용")
+def test_job_sweeper_catches_grandchild_that_already_won_the_race(tmp_path):
+    """BUG-43 후속의 후속(경쟁 재현): 손자 프로세스가 **우리가 job에 편입하기도 전에** 이미
+    태어나 있는(실측 재현된) 최악의 경우를 결정론적으로 만든다 — 편입을 일부러 늦춰 손자가
+    먼저 뜨게 한 뒤, 스위퍼가 그래도 그 손자를 찾아 job에 마저 편입해 같이 죽이는지 확인.
+    cmd.exe(래퍼) → python(자식) → python(손자) 3단 트리."""
+    from yok3x import limits
+    import threading as _threading
+    import time as _time
+
+    grandchild_marker = tmp_path / "grandchild_running.txt"
+    marker_literal = repr(str(grandchild_marker))   # 중첩 -c 안에 안전하게 넣을 파이썬 문자열 리터럴
+    grandchild_src = (
+        f"import os,time,pathlib;"
+        f"pathlib.Path({marker_literal}).write_text(str(os.getpid()));time.sleep(30)"
+    )
+    # 손자가 **자기 PID**를 마커에 남긴다 — 종료 후 그 PID로 직접 생존 여부를 확인하기 위해.
+    child_script = (
+        f"import subprocess,sys,time;"
+        f"subprocess.Popen([sys.executable,'-c',{grandchild_src!r}]);"
+        f"time.sleep(30)"
+    )
+    proc = subprocess.Popen(["cmd.exe", "/c", sys.executable, "-c", child_script],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        # 경쟁 재현: 손자가 완전히 뜰 때까지 **일부러 기다린 뒤에야** job을 만들고 편입한다 —
+        # "편입이 손자 생성보다 늦는" 최악의 타이밍을 결정론적으로 강제.
+        deadline = _time.time() + 5
+        while not grandchild_marker.exists() and _time.time() < deadline:
+            _time.sleep(0.1)
+        assert grandchild_marker.exists(), "손자 python이 뜨지 않음(테스트 환경 문제)"
+        grandchild_pid = grandchild_marker.read_text(encoding="utf-8").strip()
+
+        job = limits._win_make_job()
+        assert job is not None
+        assert limits._win_assign_to_job(job, proc.pid) is True   # 직계 자식만, 손자는 아직 안 잡힘
+
+        stop = _threading.Event()
+        sweeper = limits._win_start_job_sweeper(job, proc.pid, stop)
+        _time.sleep(0.5)   # 스위퍼가 최소 한 틱(0.15s 간격) 돌 시간을 준다
+        stop.set()
+        sweeper.join(timeout=2)
+
+        limits._win_terminate_job(job)
+        _time.sleep(0.5)
+
+        # cmd.exe 래퍼(직계 자식)뿐 아니라, **이미 늦게 편입된 손자**까지 죽었어야 한다.
+        check = subprocess.run(["tasklist", "/FI", f"PID eq {proc.pid}"],
+                               capture_output=True, text=True)
+        assert str(proc.pid) not in check.stdout
+        check2 = subprocess.run(["tasklist", "/FI", f"PID eq {grandchild_pid}"],
+                                capture_output=True, text=True)
+        assert grandchild_pid not in check2.stdout, (
+            "손자(늦게 편입)가 살아남음 — 스위퍼가 경쟁을 못 잡았다")
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def test_codex_percent_at_reads_series_and_respects_window(tmp_path):
     """F2-10: codex는 토큰 트랜스크립트가 없지만 세션 로그에 (시각, 주간%) 시계열이 남는다.
     이걸로 '하루 시작 시점의 %'를 되찾아 오늘 소비를 낸다. **주간 리셋을 가로지르면 안 된다** —
