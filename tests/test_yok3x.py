@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import threading
 import time
 
 import subprocess
@@ -369,6 +370,39 @@ def test_kill_tree_never_captures_output_on_windows(monkeypatch):
     assert kwargs.get("stdout") is subprocess.DEVNULL
     assert kwargs.get("stderr") is subprocess.DEVNULL
     assert kwargs.get("capture_output") is not True     # 회귀의 핵심: 다시 켜지면 안 됨
+
+
+def test_probe_cache_serializes_concurrent_misses_no_stampede(monkeypatch, tmp_path):
+    """BUG-43 후속(라이브 관측): 캐시에 락이 없어 동시 요청이 각자 캐시 미스를 보고 각자
+    codex app-server를 새로 스폰했다(실측: node.exe 2개 동시 생존). 락으로 직렬화해
+    **동시 호출 N개가 실제 프로브를 딱 1번**만 실행하고 나머지는 그 결과를 공유하는지 확인."""
+    from yok3x import limits
+    limits._CACHE.clear()
+    limits._CACHE_LOCKS.clear()
+    cfg = Config.load(tmp_path)
+    calls = []
+    start_gate = threading.Event()   # 5개 스레드가 거의 동시에 probe()를 부르게 맞춘다
+
+    def slow_probe(cfg, backend):
+        calls.append(1)
+        time.sleep(0.1)   # 스폰처럼 시간이 걸리는 것을 흉내(이 사이 다른 스레드들이 락에서 대기해야 함)
+        return limits.LimitReading(backend, "codex_appserver", ok=True, real=True,
+                                   windows=[limits.Window("7d", 5.0)])
+    monkeypatch.setattr(limits, "_probe_uncached", slow_probe)
+
+    results = []
+    def worker():
+        start_gate.wait(timeout=2)
+        results.append(limits.probe(cfg, "codex"))
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    start_gate.set()
+    for t in threads:
+        t.join(timeout=3)
+
+    assert len(calls) == 1                          # 실제 스폰(프로브)은 딱 한 번 — 락이 나머지를 막음
+    assert len(results) == 5 and all(r is results[0] for r in results)  # 전부 같은 결과 공유
 
 
 def test_job_object_helpers_are_noop_off_windows(monkeypatch):

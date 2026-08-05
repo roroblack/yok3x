@@ -107,16 +107,39 @@ class LimitReading:
 
 _CACHE: dict[str, tuple[float, LimitReading]] = {}
 _TTL_SEC = 15.0   # 루프 한 바퀴 내 여러 호출이 app-server를 반복 스폰하지 않도록 캐시
+# BUG-43 후속(라이브 관측): 캐시에 락이 없어 **동시 요청이 각자 캐시 미스를 보고 각자 codex
+# app-server를 새로 스폰**했다(캐시 스탬피드) — 한 요청의 build_state()도 내부에서 check_backend
+# ('codex')를 여러 지점(routing preview·coach·메인 게이지)에서 부르는데, 첫 스폰이 끝나기 전에
+# 캐시가 아직 안 채워져 있으면 그 호출들도 각자 또 스폰했다. 실측: node.exe가 동시에 2개 뜬 것,
+# codex.exe가 짧은 시간에 여러 개 새로 생긴 것으로 확인. 오늘 추가한 job-sweeper(스폰마다 0.15초
+# 간격 프로세스 스냅샷 스레드)가 이 중복 스폰 하나하나를 더 무겁게 만들어 체감 지연이 커졌다.
+_CACHE_LOCKS: dict[str, threading.Lock] = {}
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_lock(backend: str) -> threading.Lock:
+    with _CACHE_LOCKS_GUARD:
+        lock = _CACHE_LOCKS.get(backend)
+        if lock is None:
+            lock = threading.Lock()
+            _CACHE_LOCKS[backend] = lock
+        return lock
 
 
 def probe(cfg: Config, backend: str, use_cache: bool = True) -> LimitReading:
-    if use_cache:
-        hit = _CACHE.get(backend)
+    if not use_cache:
+        return _probe_uncached(cfg, backend)   # 명시적 강제 새로고침(CLI 1회성 호출) — 스탬피드 방지 대상 아님
+    hit = _CACHE.get(backend)
+    if hit and (time.time() - hit[0]) < _TTL_SEC:
+        return hit[1]
+    # 백엔드별 락으로 직렬화 — 동시 호출은 하나만 실제로 스폰하고 나머지는 그 결과를 공유해서 기다린다.
+    with _cache_lock(backend):
+        hit = _CACHE.get(backend)              # 대기하는 동안 다른 스레드가 이미 채웠을 수 있다
         if hit and (time.time() - hit[0]) < _TTL_SEC:
             return hit[1]
-    r = _probe_uncached(cfg, backend)
-    _CACHE[backend] = (time.time(), r)
-    return r
+        r = _probe_uncached(cfg, backend)
+        _CACHE[backend] = (time.time(), r)
+        return r
 
 
 def clear_cache() -> None:
