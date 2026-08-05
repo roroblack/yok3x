@@ -405,6 +405,37 @@ def test_probe_cache_serializes_concurrent_misses_no_stampede(monkeypatch, tmp_p
     assert len(results) == 5 and all(r is results[0] for r in results)  # 전부 같은 결과 공유
 
 
+def test_codex_percent_at_cache_serializes_concurrent_misses_no_stampede(monkeypatch):
+    """BUG-43 네 번째 후속(라이브 관측): job-sweeper로 스폰 누수는 막았는데도 동시 요청이
+    12~16초씩 걸렸다 — py-spy로 여러 스레드가 전부 codex_percent_at의 read_text/stat에
+    멈춰 있는 걸 확인. probe()와 같은 락+TTL 캐시로 **동시 호출 N개가 실제 스캔을 딱 1번**만
+    실행하고 나머지는 결과를 공유하는지 확인."""
+    from yok3x import limits
+    limits._PCT_CACHE.clear()
+    calls = []
+    start_gate = threading.Event()
+
+    def slow_uncached(conf, at_ts, window_start=None, max_files=40):
+        calls.append(1)
+        time.sleep(0.1)
+        return 12.5
+    monkeypatch.setattr(limits, "_codex_percent_at_uncached", slow_uncached)
+
+    results = []
+    def worker():
+        start_gate.wait(timeout=2)
+        results.append(limits.codex_percent_at({}, 1000.0, window_start=0.0))
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    start_gate.set()
+    for t in threads:
+        t.join(timeout=3)
+
+    assert len(calls) == 1                     # 실제 스캔은 딱 한 번 — 락이 나머지를 막음
+    assert results == [12.5] * 5                # 전부 같은 결과 공유
+
+
 def test_job_object_helpers_are_noop_off_windows(monkeypatch):
     """BUG-43 후속: Job Object는 Windows 전용 메커니즘이다. os.name != 'nt'면 ctypes를 건드리지
     않고 즉시 None/False를 반환해야 한다(다른 OS에서 크래시하면 안 됨)."""
@@ -454,14 +485,20 @@ def test_kill_tree_skips_terminate_job_when_none(monkeypatch):
     assert calls == []     # _win_terminate_job이 아예 호출되지 않음
 
 
-def test_appserver_rate_limits_cleans_up_failed_job_assignment(monkeypatch):
-    """job 생성은 됐는데 프로세스 편입에 실패하면, 그 빈 job을 정리하고 _kill_tree에는
-    job=None을 넘겨 taskkill-only 경로로 안전하게 폴백한다(반쯤 편입된 job 유출 방지)."""
+def test_appserver_rate_limits_keeps_sweeper_when_wrapper_assign_fails(monkeypatch):
+    """BUG-43 세 번째 후속: npm .cmd 래퍼(proc.pid)는 실제 작업(node.exe)을 띄운 직후
+    스스로 먼저 종료해버릴 수 있다(실측: 살아있는 node.exe의 부모 PID가 이미 사라져 있었음).
+    그 타이밍에 걸려 래퍼 자체의 job 편입이 실패해도 job을 통째로 버리면 안 된다 — 스위퍼는
+    root_pid를 파이썬 쪽 추적 시작점으로만 쓰므로, 래퍼가 낳은 자손은 여전히 스위퍼가 찾아
+    직접 편입할 수 있다. 그래서 편입 실패와 무관하게 스위퍼는 항상 뜨고, job도 유지된다."""
     from yok3x import limits
     monkeypatch.setattr(limits, "_win_make_job", lambda: "JOB-HANDLE")
     monkeypatch.setattr(limits, "_win_assign_to_job", lambda job, pid: False)
     terminated = []
     monkeypatch.setattr(limits, "_win_terminate_job", lambda job: terminated.append(job))
+    sweeper_calls = []
+    monkeypatch.setattr(limits, "_win_start_job_sweeper",
+                        lambda job, root_pid, stop_event: sweeper_calls.append((job, root_pid)) or None)
     kill_calls = []
     monkeypatch.setattr(limits, "_kill_tree",
                         lambda proc, job=None: kill_calls.append(job))
@@ -475,8 +512,9 @@ def test_appserver_rate_limits_cleans_up_failed_job_assignment(monkeypatch):
 
     limits._appserver_rate_limits("codex", ["app-server"], timeout=0.2)
 
-    assert terminated == ["JOB-HANDLE"]   # 실패한 빈 job은 즉시 정리
-    assert kill_calls == [None]           # _kill_tree엔 실패를 반영해 job=None 전달
+    assert terminated == []                       # 편입 실패해도 job을 버리지 않음
+    assert sweeper_calls == [("JOB-HANDLE", 55)]   # 스위퍼는 편입 성공 여부와 무관하게 시작됨
+    assert kill_calls == ["JOB-HANDLE"]            # _kill_tree에도 살아있는 job이 그대로 전달됨
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Object는 Windows 전용")

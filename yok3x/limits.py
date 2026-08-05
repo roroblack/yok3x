@@ -591,17 +591,22 @@ def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | 
                             stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace")
     # BUG-43 후속: 생성 직후 즉시 Job Object에 편입한다(가능한 한 빨리 — 손자 프로세스가
-    # 뜨기 전에 트리 전체를 담아야 함). 실패하면 job=None으로 기존 taskkill 경로만 쓴다.
+    # 뜨기 전에 트리 전체를 담아야 함).
     job = _win_make_job()
     sweeper_stop = threading.Event()
     sweeper: "threading.Thread | None" = None
-    if job is not None and not _win_assign_to_job(job, proc.pid):
-        _win_terminate_job(job)   # 편입 실패한 빈 job은 정리
-        job = None
-    elif job is not None:
-        # BUG-43 후속: 편입 직후 자식이 손자를 만드는 게 더 빠르면 그 손자는 놓친다(실측 재현
-        # — 부하가 있을 때 codex.exe가 새로 새어나감). 이 함수가 끝날 때까지 지속적으로 새
-        # 자손을 찾아 마저 편입해 그 경쟁 창을 좁힌다.
+    if job is not None:
+        # BUG-43 세 번째 후속: `codex`는 npm .cmd 셈이라 proc.pid는 cmd.exe 래퍼일 뿐이고,
+        # 이 래퍼는 진짜 작업(node.exe)을 띄운 직후 수 ms~수십 ms 안에 스스로 종료해버릴 수
+        # 있다(실측: 살아있는 node.exe의 부모로 기록된 PID가 이미 이 세상에 없었다). 그 타이밍에
+        # 걸리면 `_win_assign_to_job(job, proc.pid)`는 이미 죽은 PID를 열려다 실패한다 — 이걸
+        # "job 편입 실패"로 보고 job 전체를 포기하면(예전 코드), 래퍼보다 훨씬 오래 사는 진짜
+        # node.exe/codex.exe는 어떤 보호도 못 받고 고아로 남는다(실측 재현: 요청이 다 끝난 뒤에도
+        # node.exe+codex.exe 쌍이 계속 살아있음). 그런데 스위퍼는 root_pid를 파이썬 쪽 집합의
+        # 시작점으로만 쓰지, 그 PID 자체가 job에 들어있어야 하는 게 아니다 — 래퍼 편입이 실패해도
+        # 래퍼가 낳은 node.exe는 ppid==root_pid로 스냅샷에 여전히 잡히므로 스위퍼가 그걸 찾아
+        # *직접* job에 편입할 수 있다. 그래서 편입 성공 여부와 무관하게 스위퍼는 항상 띄운다.
+        _win_assign_to_job(job, proc.pid)
         sweeper = _win_start_job_sweeper(job, proc.pid, sweeper_stop)
     responses: dict[int, Any] = {}
     got = threading.Event()
@@ -736,7 +741,35 @@ def _latest_rate_limits(f: Path) -> dict | None:
     return None
 
 
+_PCT_CACHE: dict[tuple, tuple[float, float | None]] = {}
+_PCT_CACHE_LOCK = threading.Lock()
+# BUG-43 네 번째 후속(라이브 관측): job-sweeper로 스폰 누수는 막았는데도 동시 요청이 12~16초씩
+# 걸렸다. py-spy로 보니 여러 스레드가 전부 codex_percent_at의 read_text/stat에 멈춰 있었다 —
+# 이 함수엔 probe()와 달리 캐시가 없어서, 같은 build_state() 호출 안의 여러 지점(코치·게이지)과
+# 동시 폴링 요청들이 매번 독립적으로 세션 로그 전체를 다시 스캔했다. at_ts는 호출부(usage.py)에서
+# 항상 '오늘 시작 시각'(day_start)이라 하루 안에는 값이 안 바뀌므로, probe()와 같은 락+TTL 캐시로
+# 중복 스캔을 없앤다(정확도 손실 없음 — at_ts가 과거 시각이라 그 이하 관측치는 시간이 지나도 안 변함).
+_PCT_TTL_SEC = 15.0
+
+
 def codex_percent_at(conf: dict[str, Any], at_ts: float,
+                     window_start: float | None = None,
+                     max_files: int = 40) -> float | None:
+    key = (str(conf.get("sessions_dir") or ""), round(at_ts, 3),
+          round(window_start, 3) if window_start is not None else None, max_files)
+    hit = _PCT_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _PCT_TTL_SEC:
+        return hit[1]
+    with _PCT_CACHE_LOCK:
+        hit = _PCT_CACHE.get(key)              # 대기하는 동안 다른 스레드가 이미 채웠을 수 있다
+        if hit and (time.time() - hit[0]) < _PCT_TTL_SEC:
+            return hit[1]
+        r = _codex_percent_at_uncached(conf, at_ts, window_start, max_files)
+        _PCT_CACHE[key] = (time.time(), r)
+        return r
+
+
+def _codex_percent_at_uncached(conf: dict[str, Any], at_ts: float,
                      window_start: float | None = None,
                      max_files: int = 40) -> float | None:
     """F2-10: **`at_ts` 시점의 codex 주간 사용률(%)** 을 세션 로그의 rate_limits 시계열에서 찾는다.
