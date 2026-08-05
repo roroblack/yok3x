@@ -395,11 +395,111 @@ def _probe_codex_appserver(backend: str, conf: dict[str, Any]) -> LimitReading:
                         error=f"live/파일 모두 실패: {live_err}; {stale.error}")
 
 
+# ---- Windows Job Object: codex.cmd → node → codex.exe → codex-code-mode-host.exe 트리 전체를
+# 확실히 죽이기 위함(BUG-43 후속). `codex`는 npm .cmd 셈이라 yok3x가 Popen으로 잡는 PID는
+# **cmd.exe 래퍼**일 뿐이고, 실제 codex.exe/codex-code-mode-host.exe는 다른 부모 아래 뜬다
+# (실측: cmd.exe→PID A인데 codex.exe의 부모는 A가 아닌 별개 PID — 체인이 이미 끊겨 있음).
+# `taskkill /T`는 이 시점에 트리를 다시 훑으므로 그 손자들을 못 찾아 고아로 남는다(간헐적 — 타이밍에
+# 따라 되기도/안 되기도 함, 실측으로 재현). Job Object는 **생성 시점부터 트리 전체를 담아** 이 PID
+# 추적 문제를 구조적으로 피한다: TerminateJobObject 한 번으로 몇 단계를 거쳤든 전부 죽는다.
+# 실패해도(권한·구버전 Windows 등) 예외를 삼키고 기존 taskkill 경로로 조용히 폴백한다.
+_JOB_KILL_ON_CLOSE = 0x2000
+_JOB_INFO_EXTENDED_LIMIT = 9
+_PROCESS_SET_QUOTA_TERMINATE = 0x0100 | 0x0001
+
+
+def _win_make_job() -> int | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _BasicLimit(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimit(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimit),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+        if not k32.SetInformationJobObject(job, _JOB_INFO_EXTENDED_LIMIT,
+                                           ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        logger.exception("Job Object 생성 실패(taskkill 폴백으로 진행)")
+        return None
+
+
+def _win_assign_to_job(job: int, pid: int) -> bool:
+    if os.name != "nt" or job is None:
+        return False
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        hproc = k32.OpenProcess(_PROCESS_SET_QUOTA_TERMINATE, False, pid)
+        if not hproc:
+            return False
+        try:
+            return bool(k32.AssignProcessToJobObject(job, hproc))
+        finally:
+            k32.CloseHandle(hproc)
+    except Exception:
+        logger.exception("Job Object 편입 실패(taskkill 폴백으로 진행)")
+        return False
+
+
+def _win_terminate_job(job: int) -> None:
+    if os.name != "nt" or job is None:
+        return
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.TerminateJobObject(job, 1)
+        k32.CloseHandle(job)
+    except Exception:
+        logger.exception("Job Object 종료 실패(taskkill 폴백에 맡김)")
+
+
 def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | None:
     proc = subprocess.Popen([exe] + args,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace")
+    # BUG-43 후속: 생성 직후 즉시 Job Object에 편입한다(가능한 한 빨리 — 손자 프로세스가
+    # 뜨기 전에 트리 전체를 담아야 함). 실패하면 job=None으로 기존 taskkill 경로만 쓴다.
+    job = _win_make_job()
+    if job is not None and not _win_assign_to_job(job, proc.pid):
+        _win_terminate_job(job)   # 편입 실패한 빈 job은 정리
+        job = None
     responses: dict[int, Any] = {}
     got = threading.Event()
 
@@ -435,21 +535,31 @@ def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | 
         send({"method": "account/rateLimits/read", "id": 2, "params": {}})
         got.wait(timeout=max(0.5, deadline - time.time()))
     finally:
-        _kill_tree(proc)
+        _kill_tree(proc, job)
     res = responses.get(2) or {}
     return res.get("rateLimits") if isinstance(res, dict) else None
 
 
-def _kill_tree(proc: "subprocess.Popen") -> None:
+def _kill_tree(proc: "subprocess.Popen", job: int | None = None) -> None:
+    # BUG-43 후속: `codex`는 npm .cmd 셈이라 proc.pid는 **cmd.exe 래퍼**일 뿐이고, 실제
+    # codex.exe/codex-code-mode-host.exe는 node.exe를 거쳐 뜨며 **이 시점엔 이미 부모-자식
+    # 연결이 끊겨 있다**(실측 확인: cmd.exe와 codex.exe의 부모 PID가 서로 다름). 그래서
+    # taskkill /T가 트리를 다시 훑어도 손자를 못 찾아 고아로 남는다(간헐적 — 타이밍에 따라
+    # 되기도/안 되기도 함, 실측 재현). Job Object는 **생성 시점부터** 트리 전체를 담아뒀으므로
+    # PID 추적과 무관하게 TerminateJobObject 한 번으로 몇 단계를 거쳤든 전부 죽는다(실증:
+    # 독립 스크립트로 codex.cmd→node→codex.exe 전체가 사라지는 것 확인). 이게 실제 정리 수단이고,
+    # 아래 taskkill은 job이 없거나 실패했을 때의 폴백 + 남은 자투리를 잡는 이중 안전망이다.
+    if job is not None:
+        _win_terminate_job(job)
     try:
         if os.name == "nt":
             # BUG-43: capture_output=True는 stdout/stderr를 파이프로 읽는 리더 스레드를 만든다.
-            # codex app-server가 손자 프로세스를 남기면(관측: codex.exe 여러 개 + codex-code-mode
-            # -host.exe가 고아로 누적) 그 손자가 파이프 쓰기 핸들을 계속 물고 있어 리더 스레드가
+            # 손자 프로세스가 파이프 쓰기 핸들을 물고 있으면(위와 같은 이유) 그 리더 스레드가
             # EOF를 영원히 못 받는다. subprocess.run의 timeout=5는 프로세스 종료엔 적용되지만,
             # 예외를 던지기 전 남은 출력을 모으려고 그 리더 스레드를 **타임아웃 없이** join하므로
-            # 사실상 무제한 대기가 된다(전형적인 Windows subprocess 함정). 이 호출은 taskkill의
-            # 출력이 필요 없으므로 DEVNULL로 파이프 자체를 만들지 않아 이 경로를 원천 차단한다.
+            # 사실상 무제한 대기가 된다(전형적인 Windows subprocess 함정, 실측으로 GUI 서버 전체
+            # 무응답 재현). 이 호출은 taskkill의 출력이 필요 없으므로 DEVNULL로 파이프 자체를
+            # 만들지 않아 이 경로를 원천 차단한다.
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         else:

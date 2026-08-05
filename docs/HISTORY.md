@@ -4,6 +4,31 @@
 
 ---
 
+## 미출시(dev) · 2026-08-05 — BUG-43 후속: 고아 프로세스 진짜 근본원인 발견·Job Object로 해결 (사용자 재지적)
+
+- 1차 수정(`capture_output`→`DEVNULL`) 직후 사용자: "이거 맞아? 근본적인 해결이 아닌 거 같은데?" —
+    정확한 지적. 1차 수정은 **서버가 안 멈추게** 했을 뿐, **고아 codex 프로세스가 생기는 것 자체**는
+    그대로였다. 라이브 프로세스 트리를 다시 실측했다.
+- **진짜 근본원인**: `codex`가 `shutil.which()`로 `codex.cmd`(npm 셈)에 풀린다. yok3x가 `Popen`으로
+    잡는 `proc.pid`는 **cmd.exe 래퍼**일 뿐이고, 실제 `codex.exe`/`codex-code-mode-host.exe`는
+    `node.exe`를 거쳐 뜬다. `Win32_Process` 스냅샷으로 직접 확인: `_kill_tree` 실행 시점엔 **이미
+    cmd.exe와 codex.exe의 부모-자식 연결이 끊겨 있다.** `taskkill /T`가 실패하는 게 아니라, 볼 수
+    있는 트리 안에 대상이 아예 없는 것 — 타이밍에 따라 되기도/안 되기도 해 간헐적으로 관측됐다
+    (고아 4개 누적 실측).
+- **수정**: Windows **Job Object**로 컨테인. `codex.cmd` 프로세스를 띄운 직후 job에 편입해두면,
+    이후 몇 단계를 거쳐 태어나는 자손도 **커널이 생성 시점에 job 소속을 자동 상속**한다(PID 추적
+    불필요). `TerminateJobObject` 한 번으로 트리 전체가 죽는다. `_kill_tree`가 job을 **먼저** 종료하고,
+    기존 taskkill은 job이 없거나 실패했을 때 폴백 + 이중 안전망으로 유지. 실패해도 예외를 삼키고
+    조용히 taskkill-only 경로로 내려간다(비Windows는 즉시 no-op). ctypes만 사용(의존성0 유지).
+- 검증(둘 다 실측, 모킹 아님): ① 독립 스크립트로 실제 codex.cmd 프로세스를 job 편입 후 종료 →
+    새로 뜬 codex.exe만 정확히 사라지고 기존 고아는 안 건드려짐(통제 확인). ② 신규 테스트
+    `test_job_object_really_kills_a_real_process_tree` — 실제 `cmd.exe→python.exe` 트리를 만들어
+    job으로 둘 다 죽는지 스위트 안에서 직접 확인(Windows 전용, `tasklist`로 사후 검증).
+- 신규 테스트 6(비Windows no-op·우선순위·폴백·편입실패 정리·실제 트리 킬 포함). **375 passed**.
+    BUG-43 리포트에 후속 섹션으로 통합.
+
+---
+
 ## 미출시(dev) · 2026-08-05 — GUI 서버 무한 대기 실측 진단·수정 (BUG-43, 사용자 지적)
 
 - 사용자: "켜놔도 자꾸 꺼진다 — 다른 곳에서 끄는 건가? 모니터링하다 터지면 알려줘." 라이브 모니터

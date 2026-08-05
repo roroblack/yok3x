@@ -1,9 +1,12 @@
 # BUG-43 · `_kill_tree`의 `capture_output=True`가 GUI 서버를 통째로 멈춤
 
-- **상태**: 수정 완료 (2026-08-05)
+- **상태**: 수정 완료(근본원인까지, 2026-08-05) — 1차 수정(무한 대기 차단) 후 사용자가 "근본 해결
+  맞냐"고 재지적해 2차로 고아 프로세스 발생 원인(부모-자식 연결 단절)까지 마저 해결
 - **심각도**: **높음** — GUI 서버가 살아있고 포트도 리슨 중인데 모든 요청이 무한 대기(실사용자 영향 직결)
-- **영역**: `yok3x/limits.py` `_kill_tree`(codex app-server 정리)
-- **발견 경로**: 사용자 실측 지적("켜놔도 자꾸 꺼진다") → 라이브 모니터링 + `py-spy` 스택 덤프로 재현
+- **영역**: `yok3x/limits.py` `_kill_tree`·`_appserver_rate_limits`(codex app-server 정리)
+- **발견 경로**: 사용자 실측 지적("켜놔도 자꾸 꺼진다") → 라이브 모니터링 + `py-spy` 스택 덤프로 재현.
+  1차 수정 후 사용자가 "이거 맞아? 근본적인 해결이 아닌 거 같은데?"라고 재지적 → 프로세스 트리
+  실측 재조사로 2차 원인(진짜 근본원인) 발견.
 
 ## 증상
 
@@ -63,12 +66,39 @@ stderr=subprocess.DEVNULL`로 바꿔 **파이프 자체를 만들지 않는다.*
 - 라이브 재현: 고아 프로세스 킬 → 멈춰 있던 요청이 즉시 완료(HTTP 200) 확인.
 - 370 passed.
 
-## 남은 위험(정직 표기)
+## 후속 — 고아 프로세스 근본원인도 확인·해결 (2026-08-05, 사용자 지적으로 재조사)
 
-`taskkill /T`(트리 킬)가 왜 애초에 그 손자 프로세스들을 못 잡았는지는 별개 문제다 — codex CLI가
-내부적으로 프로세스를 분리(detached) 실행하면 Windows가 부모-자식 관계를 못 추적해 `/T`로 못
-잡을 수 있다. 이번 수정은 **그 상황에서도 서버가 멈추지 않게** 하는 것이지, 고아 프로세스 발생
-자체를 막지는 못한다(느리게 쌓일 수 있음 — 별도 후속 과제로 남긴다).
+최초 수정 직후 사용자가 "이게 근본 해결이 맞냐"고 지적. 맞는 지적이었다 — 위 수정은 **서버가
+안 멈추게** 했을 뿐, **고아 프로세스가 생기는 것 자체**는 여전했다. 라이브로 재조사했다.
+
+**추가 근본원인**: `codex`는 `shutil.which()`로 `codex.cmd`(npm 셈)에 풀린다. `Popen([exe]+args)`가
+잡는 `proc.pid`는 **cmd.exe 래퍼의 PID**일 뿐이다. 실제 `codex.exe`/`codex-code-mode-host.exe`는
+`node.exe`를 거쳐 뜨는데, **`_kill_tree`가 실행되는 시점엔 이미 그 부모-자식 연결이 끊겨 있다**
+(실측: 방금 띄운 cmd.exe의 PID와 그 직후 뜬 codex.exe의 부모 PID가 서로 다름을 `Win32_Process`
+스냅샷으로 직접 확인). 그래서 `taskkill /F /T /PID <cmd.exe pid>`가 트리를 다시 훑어도 진짜
+`codex.exe`가 애초에 안 보인다 — `/T`가 실패하는 게 아니라 **볼 수 있는 트리에 대상이 없는 것**.
+타이밍에 따라 되기도/안 되기도 해 간헐적으로 관측됐다(고아 4개 누적을 실측).
+
+**수정**: Windows **Job Object**로 컨테인. `codex.cmd` 프로세스를 띄운 직후(가능한 한 빨리) Job
+Object에 편입해두면, 이후 몇 단계를 거쳐 태어나는 자손(node→codex.exe→codex-code-mode-host.exe)도
+**자동으로 같은 job에 속한다**(Windows 커널이 job 소속을 프로세스 생성 시점에 상속 — PID 추적에
+의존하지 않음). `TerminateJobObject` 한 번으로 몇 단계였든 트리 전체가 죽는다. `_kill_tree`는
+job이 있으면 이걸 **먼저** 호출하고, 기존 `taskkill`은 job이 없거나 실패했을 때의 폴백 + 이중
+안전망으로 유지한다. job 생성·편입 실패는 예외를 삼키고 조용히 taskkill-only 경로로 내려간다
+(비Windows에서도 즉시 no-op).
+
+**검증(둘 다 실측)**:
+- 독립 스크립트로 실제 `codex.cmd` 프로세스를 job에 편입 후 `TerminateJobObject` → 킬 전 있던
+  codex.exe가 킬 후 사라짐 확인(같은 job에 없던 기존 고아는 당연히 안 건드려짐 — 통제 확인).
+- 테스트 `test_job_object_really_kills_a_real_process_tree`(모킹 아님, 실제 Windows 전용):
+  `cmd.exe → python.exe` 실제 트리를 만들어 job 편입 후 `TerminateJobObject`로 **둘 다** 죽는지
+  `tasklist`로 직접 확인 — 스위트 안에서도 재현.
+- 신규 유닛 테스트 4(비Windows no-op·job 우선순위·job 없을 때 폴백·편입 실패 시 정리) 추가.
+
+**남은 정직한 한계**: Job Object 자체가 생성/편입에 실패하는 극단 상황(권한 문제, 이미 다른 job에
+속해 있고 중첩이 막힌 구버전 Windows 등)에서는 여전히 taskkill-only 폴백으로 내려가 원래의 간헐적
+고아 위험이 재발할 수 있다. 다만 이 프로젝트의 실제 환경(Windows 10/11, 중첩 job 기본 지원)에서는
+해당 안 됨을 확인했다.
 
 ## 교훈
 

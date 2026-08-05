@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 import time
 
 import subprocess
@@ -368,6 +369,118 @@ def test_kill_tree_never_captures_output_on_windows(monkeypatch):
     assert kwargs.get("stdout") is subprocess.DEVNULL
     assert kwargs.get("stderr") is subprocess.DEVNULL
     assert kwargs.get("capture_output") is not True     # 회귀의 핵심: 다시 켜지면 안 됨
+
+
+def test_job_object_helpers_are_noop_off_windows(monkeypatch):
+    """BUG-43 후속: Job Object는 Windows 전용 메커니즘이다. os.name != 'nt'면 ctypes를 건드리지
+    않고 즉시 None/False를 반환해야 한다(다른 OS에서 크래시하면 안 됨)."""
+    from yok3x import limits
+    monkeypatch.setattr(limits.os, "name", "posix")
+
+    assert limits._win_make_job() is None
+    assert limits._win_assign_to_job(123, 456) is False
+    limits._win_terminate_job(123)   # 예외 없이 조용히 아무 것도 안 함
+
+
+def test_kill_tree_terminates_job_before_taskkill_fallback(monkeypatch):
+    """BUG-43 후속: job이 있으면 TerminateJobObject를 **먼저** 호출해 트리 전체를 정리하고,
+    taskkill은 그 뒤 이중 안전망으로만 돈다(job이 실패했거나 없을 때를 대비)."""
+    from yok3x import limits
+    monkeypatch.setattr(limits.os, "name", "nt")
+    order = []
+    monkeypatch.setattr(limits, "_win_terminate_job",
+                        lambda job: order.append(("terminate_job", job)))
+    monkeypatch.setattr(limits.subprocess, "run",
+                        lambda args, **kw: order.append(("taskkill", args)))
+
+    class FakeProc:
+        pid = 777
+        def wait(self, timeout=None):
+            return 0
+    limits._kill_tree(FakeProc(), job=999)
+
+    assert order[0] == ("terminate_job", 999)     # job 종료가 먼저
+    assert order[1][0] == "taskkill"              # taskkill은 그 다음(폴백/이중안전망)
+
+
+def test_kill_tree_skips_terminate_job_when_none(monkeypatch):
+    """job이 없으면(생성/편입 실패) 기존 taskkill-only 경로만 돈다 — 회귀 없음."""
+    from yok3x import limits
+    monkeypatch.setattr(limits.os, "name", "nt")
+    calls = []
+    monkeypatch.setattr(limits, "_win_terminate_job", lambda job: calls.append(job))
+    monkeypatch.setattr(limits.subprocess, "run", lambda args, **kw: None)
+
+    class FakeProc:
+        pid = 1
+        def wait(self, timeout=None):
+            return 0
+    limits._kill_tree(FakeProc(), job=None)
+
+    assert calls == []     # _win_terminate_job이 아예 호출되지 않음
+
+
+def test_appserver_rate_limits_cleans_up_failed_job_assignment(monkeypatch):
+    """job 생성은 됐는데 프로세스 편입에 실패하면, 그 빈 job을 정리하고 _kill_tree에는
+    job=None을 넘겨 taskkill-only 경로로 안전하게 폴백한다(반쯤 편입된 job 유출 방지)."""
+    from yok3x import limits
+    monkeypatch.setattr(limits, "_win_make_job", lambda: "JOB-HANDLE")
+    monkeypatch.setattr(limits, "_win_assign_to_job", lambda job, pid: False)
+    terminated = []
+    monkeypatch.setattr(limits, "_win_terminate_job", lambda job: terminated.append(job))
+    kill_calls = []
+    monkeypatch.setattr(limits, "_kill_tree",
+                        lambda proc, job=None: kill_calls.append(job))
+
+    class FakePopen:
+        def __init__(self, *a, **k):
+            self.pid = 55
+            self.stdin = type("S", (), {"write": lambda *a: None, "flush": lambda *a: None})()
+            self.stdout = iter([])   # reader 스레드가 바로 끝나게
+    monkeypatch.setattr(limits.subprocess, "Popen", FakePopen)
+
+    limits._appserver_rate_limits("codex", ["app-server"], timeout=0.2)
+
+    assert terminated == ["JOB-HANDLE"]   # 실패한 빈 job은 즉시 정리
+    assert kill_calls == [None]           # _kill_tree엔 실패를 반영해 job=None 전달
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object는 Windows 전용")
+def test_job_object_really_kills_a_real_process_tree(tmp_path):
+    """BUG-43 후속 실증: 실제 프로세스 트리(cmd.exe → python.exe)를 job에 편입하고
+    TerminateJobObject 한 번으로 **둘 다** 죽는지 진짜로 확인한다(모킹 아님).
+    codex 바이너리 설치 여부와 무관하게 같은 메커니즘(cmd.exe 경유 자식)을 재현."""
+    from yok3x import limits
+    import time as _time
+
+    marker = tmp_path / "still_running.txt"
+    # cmd.exe가 python을 자식으로 띄우게 해 codex.cmd와 같은 '래퍼 → 실제 프로세스' 형태를 재현.
+    proc = subprocess.Popen(
+        ["cmd.exe", "/c", sys.executable, "-c",
+         f"import time,pathlib; pathlib.Path(r'{marker}').write_text('x'); time.sleep(30)"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        job = limits._win_make_job()
+        assert job is not None
+        assert limits._win_assign_to_job(job, proc.pid) is True
+
+        deadline = _time.time() + 5
+        while not marker.exists() and _time.time() < deadline:
+            _time.sleep(0.1)
+        assert marker.exists(), "자식 python이 뜨지 않음(테스트 환경 문제)"
+
+        limits._win_terminate_job(job)
+        _time.sleep(0.5)
+
+        # cmd.exe 래퍼(proc.pid)와 그 자식 python 둘 다 죽었어야 한다.
+        check = subprocess.run(["tasklist", "/FI", f"PID eq {proc.pid}"],
+                               capture_output=True, text=True)
+        assert str(proc.pid) not in check.stdout
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def test_codex_percent_at_reads_series_and_respects_window(tmp_path):
