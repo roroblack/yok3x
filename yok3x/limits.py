@@ -148,6 +148,22 @@ def clear_cache() -> None:
 
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
 _MODELS_TTL = 300.0   # 5분: 모델 목록은 자주 안 바뀜
+_MODELS_CACHE_LOCKS: dict[str, threading.Lock] = {}
+_MODELS_CACHE_LOCKS_GUARD = threading.Lock()
+# BUG-43 여섯 번째 후속(라이브 관측): probe()·codex_percent_at()과 같은 락 없는 캐시가 여기도
+# 있었다. TTL 5분이라 스탬피드 창이 드물게 열리지만, 열릴 때 gemini(키 없는 계정)는 매번
+# _gemini_bundle_models()로 번들 디렉터리의 .js 파일을 전부 읽어 정규식으로 스캔한다 — 동시
+# 요청이 몰리면 다 같이 이 무거운 스캔을 반복해 실측으로 30초 HTTP 다운을 유발했다(여러 스레드가
+# 동시에 _gemini_bundle_models 안에서 멈춰 있는 것을 py-spy로 확인).
+
+
+def _models_cache_lock(backend: str) -> threading.Lock:
+    with _MODELS_CACHE_LOCKS_GUARD:
+        lock = _MODELS_CACHE_LOCKS.get(backend)
+        if lock is None:
+            lock = threading.Lock()
+            _MODELS_CACHE_LOCKS[backend] = lock
+        return lock
 
 
 def list_models(cfg: Config, backend: str) -> list[str]:
@@ -159,12 +175,16 @@ def list_models(cfg: Config, backend: str) -> list[str]:
     hit = _MODELS_CACHE.get(backend)
     if hit and (time.time() - hit[0]) < _MODELS_TTL:
         return hit[1]
-    try:
-        models = _fetch_models(cfg, backend)
-    except Exception:
-        models = []
-    _MODELS_CACHE[backend] = (time.time(), models)
-    return models
+    with _models_cache_lock(backend):
+        hit = _MODELS_CACHE.get(backend)          # 대기하는 동안 다른 스레드가 이미 채웠을 수 있다
+        if hit and (time.time() - hit[0]) < _MODELS_TTL:
+            return hit[1]
+        try:
+            models = _fetch_models(cfg, backend)
+        except Exception:
+            models = []
+        _MODELS_CACHE[backend] = (time.time(), models)
+        return models
 
 
 def _fetch_models(cfg: Config, backend: str) -> list[str]:

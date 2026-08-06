@@ -405,6 +405,38 @@ def test_probe_cache_serializes_concurrent_misses_no_stampede(monkeypatch, tmp_p
     assert len(results) == 5 and all(r is results[0] for r in results)  # 전부 같은 결과 공유
 
 
+def test_list_models_cache_serializes_concurrent_misses_no_stampede(monkeypatch):
+    """BUG-43 여섯 번째 후속(라이브 관측): list_models()의 _MODELS_CACHE에도 probe()·
+    codex_percent_at()과 같은 락 없는 캐시 스탬피드가 있었다 — 키 없는 gemini 계정에서
+    동시 요청이 몰리면 다들 _gemini_bundle_models()(번들 .js 전체 스캔)를 반복 실행해 실측으로
+    30초 HTTP 다운을 유발했다. 락으로 직렬화해 동시 호출 N개가 실제 조회를 딱 1번만 하는지 확인."""
+    from yok3x import limits
+    limits._MODELS_CACHE.clear()
+    limits._MODELS_CACHE_LOCKS.clear()
+    calls = []
+    start_gate = threading.Event()
+
+    def slow_fetch(cfg, backend):
+        calls.append(1)
+        time.sleep(0.1)
+        return ["gemini-2.5-pro"]
+    monkeypatch.setattr(limits, "_fetch_models", slow_fetch)
+
+    results = []
+    def worker():
+        start_gate.wait(timeout=2)
+        results.append(limits.list_models(object(), "gemini"))
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    start_gate.set()
+    for t in threads:
+        t.join(timeout=3)
+
+    assert len(calls) == 1                      # 실제 조회는 딱 한 번 — 락이 나머지를 막음
+    assert results == [["gemini-2.5-pro"]] * 5   # 전부 같은 결과 공유
+
+
 def test_codex_percent_at_cache_serializes_concurrent_misses_no_stampede(monkeypatch):
     """BUG-43 네 번째 후속(라이브 관측): job-sweeper로 스폰 누수는 막았는데도 동시 요청이
     12~16초씩 걸렸다 — py-spy로 여러 스레드가 전부 codex_percent_at의 read_text/stat에
