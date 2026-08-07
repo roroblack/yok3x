@@ -68,30 +68,21 @@ T-1의 유일한 남은 선행조건. 기계(F1-a~g)는 다 갖춰졌고, **실�
 - 비용 감각: 런당 producer+reviewer×라운드 = 수~수십만 토큰. 수십 런이면 상당량 → **사전에 페이싱 확인**.
 - 완료 후 → T-1 착수(`yok3x calib` · 작업E A/B · 임계 재설정).
 
-## T-3. 수정 적용 방식 — auto-commit(ratcheting) vs 파일게시+사람수락 (2026-07-24 등록 · **2026-07-26 결정 완료**, 구현은 R-7과 함께)
+## T-3. 수정 적용 방식 — auto-commit(ratcheting) vs 파일게시+사람수락 — **완료(2026-07-26, v4.5.0)**
 
-**배경**: bernstein/toryo가 "verify 통과 라운드를 자동 git 커밋 + 회귀 라운드 revert"(quality ratcheting)를
-한다. yok3x는 현재 산출물 파일 게시(`yok3x-out/`) → review bundle(F1-d/g) **사람 수락**까지만.
-GUI엔 auto-commit 스위치 없음(파일게시·덮어쓰기 토글만 있음). 어느 방향으로 갈지 결정 필요.
+**결정(2026-07-26 · 사용자)**: 택1(auto-commit 전용)이 아니라 **병행** — 설정 스위치로 사용자가 고르게
+하고 **기본값은 파일게시+사람수락(현행)**, `auto_commit`은 opt-in.
 
-**두 안(택1 또는 병행)**:
-- **1) auto-commit 모드 신규**: `verify 통과 시 자동 git 커밋 + 회귀 revert` opt-in 스위치.
-  - 선행: **R-7 worktree 격리**(병렬 자동커밋엔 필수 — 에이전트끼리 같은 파일 밟음 방지). 리포트 항목 14(toryo).
-  - 장점: bernstein식 무인 진행, 비용 서사 강화. 위험: 자동 git 조작 → 격리·롤백 안전장치 필수.
-- **2) 현행 유지 + GUI 개선**: 파일 게시 + 사람 수락을 유지하되 게시/수락을 GUI에서 더 쉽게(현재 수락은 CLI만).
-  - 장점: 사람 게이트 유지(안전). 단점: 무인 진행 안 됨.
+**구현 완료**: R-7 1·2단계로 함께 구현·릴리스됨(`docs/HISTORY.md` v4.5.0 · 2026-07-26).
+- `yok3x/worktree.py`(R-7 1단계): 병렬 워커를 git worktree로 격리(`guard.parallel.worktree_isolation`,
+  기본 off). 비-git·실패 시 사유 로그 + 공유 workdir 폴백.
+- `orchestrator.py`의 `changes.apply_mode = "review"(기본) | "auto_commit"`(R-7 2단계): auto_commit이면
+  verify 통과 라운드를 격리 브랜치(`yok3x/run_<run_id>`)에 체크포인트 커밋, 회귀 시 revert. 비-git이면
+  사유 로그 후 review로 자기 비활성화.
+- 검증 중 **BUG-39**(cp949 콘솔이 로그의 `—`를 못 그려 크래시 → 체크포인트 유실) 발견·수정.
+- 관련 테스트 7개 통과(`pytest -k "worktree or auto_commit or ratchet"`).
 
-**결정(2026-07-26 · 사용자)**: **택1이 아니라 병행 — 설정 스위치로 사용자가 고르게 하고, 기본값은 2번**
-(파일게시 + 사람 수락). 즉 `auto_commit`은 **opt-in**이며, 켜지 않으면 현행 동작 그대로다.
-- 근거: 자동 git 조작은 되돌리기 어려운 쪽이라 **기본은 사람 게이트 유지**가 안전하다. 무인 진행이 필요한
-  사용자만 명시적으로 켠다(안전 기본값 원칙 — RULE §5.6과 같은 결).
-- 기본값이 현행이라 **이 결정만으로는 동작 변화가 없다**(마이그레이션·회귀 위험 없음).
-
-**남은 착수 조건(설계 결정과 별개)**: auto-commit 분기 **구현**은 여전히 **R-7 worktree 격리 선행**이 필요하다
-(병렬 fanout이 같은 파일을 밟는 상태에서 자동 커밋하면 서로의 변경을 덮어씀). 따라서:
-- 지금: 결정만 확정·기록(기본 2번 = 현행). 스위치 UI/설정 키는 **auto-commit 구현과 함께** 넣는다
-  (동작 없는 죽은 설정을 미리 만들지 않는다).
-- R-7 착수 시: `changes.apply_mode = "review"(기본) | "auto_commit"` 형태로 스위치 + 회귀 revert(ratcheting) 구현.
+**남은 것**: GUI에 스위치 UI는 아직 없음(현재는 config 키로만 켬) — 필요해지면 별도 항목으로.
 
 ## T-4. (다른 대기 항목이 생기면 여기에 추가)
 
