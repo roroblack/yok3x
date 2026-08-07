@@ -4,6 +4,26 @@
 
 ---
 
+## 미출시(dev) · 2026-08-08 — R-5(Tier2·강등) Claude Code 로컬 JSONL 세션·모델별 토큰 귀속
+
+- v4.4.0 계획서 R-5(리포트 7 흡수분) 구현. `limits.claude_usage_breakdown(conf, since, until)`:
+    로컬 Claude Code JSONL(`~/.claude/projects`)에서 세션·모델별 토큰·호출수를 집계해 사후감사용으로
+    낸다. **페이싱 앵커는 그대로 공식 reading**(v4.4.0 정정1 유지) — 이 함수는 별도 감사 뷰일 뿐 어떤
+    가드·페이싱 계산에도 값을 공급하지 않는다.
+- CLI `yok3x claude-usage [--days N] [--json]` 신규(스키마 `yok3x.claude_usage/1`).
+- **리팩터(중복스캔 방지)**: 기존 `_file_usage_events`(페이싱 핫패스)와 신규 세션·모델 파싱이 같은
+    JSONL을 두 번 읽지 않도록, 파싱을 `_file_usage_events_detailed`(ts·tok·session_id·model 4-tuple)로
+    통합하고 `_file_usage_events`는 그 위의 경량 뷰(2-tuple)로 재정의. 캐시 1개 공유 — 이번 세션에서
+    `probe()`·`codex_percent_at`·`list_models()`에 겪은 무캐시 중복스캔 패턴을 여기선 처음부터 피함.
+- **폴백 가드**(Claude Code JSONL은 비문서·불안정 포맷): 줄 단위 파싱 실패·필드 누락은 그 줄만 건너뛰고
+    계속(`session_id`/`model` 없으면 `"(알수없음)"`으로 묶임), `projects_dir` 없음도 빈 리스트로 정상 반환
+    (예외 없음). 회귀 테스트로 `_file_usage_events`가 리팩터 전후 동일 값을 내는지 확인.
+- 실측(실제 데이터): `yok3x claude-usage --days 3` — 세션 20여 개·모델 5종(opus-5/opus-4-8/sonnet-5/
+    sonnet-4-6 등)별 토큰·호출수 정상 출력.
+- 신규 테스트 7. 386 passed.
+
+---
+
 ## 미출시(dev) · 2026-08-06 — BUG-43 여섯 번째 발견: list_models() 캐시도 스탬피드 (라이브 재현, 실제 30초 다운)
 
 - 다섯 번째 발견 수정 후 약 하루 지나 재걸어둔 모니터가 **진짜 HTTP 다운**(연속 3회 실패, 30여 초

@@ -106,6 +106,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="자동화용 종료코드: 0=ok · 3=warn(soft 도달) · 4=stop(hard 도달)")
     sub.add_parser("statusline", help="Claude Code statusLine 핸들러(stdin JSON의 rate_limits 캡처+상태줄 출력)")
 
+    sp = sub.add_parser("claude-usage",
+                        help="Claude Code 로컬 JSONL 세션·모델별 토큰 귀속(R-5, Tier2·사후감사용 — 페이싱 앵커 아님)")
+    sp.add_argument("--days", type=float, default=7.0, help="최근 N일만 집계(기본 7, 0=전체)")
+    sp.add_argument("--json", action="store_true", help="기계판독 JSON 출력")
+
     sp = sub.add_parser("gui", help="브라우저 GUI 프로토타입(실데이터) 실행")
     sp.add_argument("--port", type=int, default=8760)
     sp.add_argument("--no-open", action="store_true", help="브라우저 자동 실행 안 함")
@@ -290,6 +295,29 @@ def main(argv: list[str] | None = None) -> int:
                 return 4
             if "warn" in levels:
                 return 3
+        return 0
+
+    if a.cmd == "claude-usage":
+        from . import limits
+        conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+        now = time.time()
+        since = (now - a.days * 86400.0) if a.days > 0 else None
+        rows = limits.claude_usage_breakdown(conf, since=since, until=now)
+        if a.json:
+            print(json.dumps({"schema": "yok3x.claude_usage/1", "since": since, "until": now,
+                              "rows": rows}, ensure_ascii=False, indent=2))
+            return 0
+        span = f"최근 {a.days:g}일" if a.days > 0 else "전체 기간"
+        print(f"Claude Code 세션·모델별 토큰 귀속({span}, Tier2·사후감사용 — 페이싱 앵커 아님)")
+        if not rows:
+            print("  (데이터 없음 — JSONL 미발견/파싱 실패. 페이싱엔 영향 없음, 공식 reading이 앵커)")
+            return 0
+        for r in rows[:30]:
+            sid = (r["session_id"] or "")[:8] or "?"
+            last = time.strftime("%m-%d %H:%M", time.localtime(r["last_ts"]))
+            print(f"  {sid}  {r['model'] or '?':<24s}  {r['tokens']:>10,}tok  {r['calls']:>4}회  ~{last}")
+        if len(rows) > 30:
+            print(f"  ...외 {len(rows) - 30}건(세션·모델 조합)")
         return 0
 
     if a.cmd == "gui":

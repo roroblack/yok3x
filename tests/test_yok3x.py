@@ -891,6 +891,35 @@ def test_limits_exit_code_is_opt_in(tmp_path, monkeypatch, level, expected):
     assert cli.main(["limits"]) == 0            # opt-in — 기본 동작은 안 바뀐다
 
 
+def test_cli_claude_usage_json_and_text(tmp_path, monkeypatch, capsys):
+    """R-5 CLI 배선: `yok3x claude-usage --json`이 스키마를 내고, 기본(텍스트)은 사람이 읽을 표를 낸다.
+    둘 다 '페이싱 앵커 아님'을 명시(사후감사용이라는 정직 표기)."""
+    from yok3x import cli, limits
+    monkeypatch.chdir(tmp_path)
+    rows = [{"session_id": "sess-A", "model": "claude-opus-4-8", "tokens": 300, "calls": 2,
+            "first_ts": 1000.0, "last_ts": 2000.0}]
+    monkeypatch.setattr(limits, "claude_usage_breakdown", lambda conf, since=None, until=None: rows)
+
+    assert cli.main(["claude-usage", "--json"]) == 0
+    snap = json.loads(capsys.readouterr().out)
+    assert snap["schema"] == "yok3x.claude_usage/1"
+    assert snap["rows"] == rows
+
+    assert cli.main(["claude-usage"]) == 0
+    out = capsys.readouterr().out
+    assert "sess-A" in out and "300" in out and "페이싱 앵커 아님" in out
+
+
+def test_cli_claude_usage_empty_is_honest_not_silent(tmp_path, monkeypatch, capsys):
+    """R-5 폴백 가드가 CLI에도 정직하게 드러난다 — 데이터 없음을 조용히 숨기지 않고 이유를 알린다."""
+    from yok3x import cli, limits
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(limits, "claude_usage_breakdown", lambda conf, since=None, until=None: [])
+    assert cli.main(["claude-usage"]) == 0
+    out = capsys.readouterr().out
+    assert "데이터 없음" in out and "페이싱엔 영향 없음" in out
+
+
 # --------------------------------------------------------- R-3 preflight 예산 검사
 def test_headroom_reuses_ledger_accounting(tmp_path):
     """R-3: headroom은 예약 원장(pending)과 hard_limits를 재사용해 잔여를 낸다 — preflight가
@@ -2477,6 +2506,100 @@ def test_oauth_backoff_on_failure(tmp_path, monkeypatch):
     limits._probe_claude_oauth("claude", conf)
     assert limits._OAUTH_BACKOFF["claude"][0] - time.time() > 1800   # 401은 30분 초과 중단
     limits._OAUTH_BACKOFF.pop("claude", None)
+
+
+def _write_claude_session(path, lines):
+    """R-5 테스트 헬퍼: (timestamp_iso, session_id, model, tokens_dict) 목록을 JSONL로 씀."""
+    import json
+    body = []
+    for ts, sid, model, u in lines:
+        body.append(json.dumps({"sessionId": sid, "type": "assistant", "timestamp": ts,
+                                "message": {"model": model, "usage": u}}))
+    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+
+
+def test_claude_usage_breakdown_aggregates_by_session_and_model(tmp_path):
+    """R-5(Tier2): 세션·모델별로 토큰·호출수를 집계하고 토큰 내림차순으로 정렬한다."""
+    from yok3x import limits
+    root = tmp_path / "proj"
+    root.mkdir()
+    _write_claude_session(root / "a.jsonl", [
+        ("2026-08-01T00:00:00Z", "sess-A", "claude-opus-4-8", {"input_tokens": 100, "output_tokens": 100}),
+        ("2026-08-01T00:05:00Z", "sess-A", "claude-opus-4-8", {"input_tokens": 50, "output_tokens": 50}),
+        ("2026-08-01T00:10:00Z", "sess-A", "claude-sonnet-5", {"input_tokens": 10, "output_tokens": 10}),
+    ])
+    _write_claude_session(root / "b.jsonl", [
+        ("2026-08-01T01:00:00Z", "sess-B", "claude-sonnet-5", {"input_tokens": 500, "output_tokens": 500}),
+    ])
+    rows = limits.claude_usage_breakdown({"projects_dir": str(root)})
+    by_key = {(r["session_id"], r["model"]): r for r in rows}
+    assert by_key[("sess-A", "claude-opus-4-8")]["tokens"] == 300
+    assert by_key[("sess-A", "claude-opus-4-8")]["calls"] == 2
+    assert by_key[("sess-A", "claude-sonnet-5")]["tokens"] == 20
+    assert by_key[("sess-B", "claude-sonnet-5")]["tokens"] == 1000
+    assert rows[0]["tokens"] == 1000   # 토큰 내림차순 정렬 — sess-B가 1위
+
+
+def test_claude_usage_breakdown_since_until_filters(tmp_path):
+    """R-5: since/until 밖의 이벤트는 집계에서 빠진다."""
+    from yok3x import limits
+    from datetime import datetime, timezone
+    root = tmp_path / "proj"
+    root.mkdir()
+    old_ts = datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat()
+    new_ts = datetime(2026, 8, 1, tzinfo=timezone.utc).isoformat()
+    _write_claude_session(root / "a.jsonl", [
+        (old_ts, "sess-old", "claude-opus-4-8", {"input_tokens": 999, "output_tokens": 0}),
+        (new_ts, "sess-new", "claude-opus-4-8", {"input_tokens": 111, "output_tokens": 0}),
+    ])
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()
+    rows = limits.claude_usage_breakdown({"projects_dir": str(root)}, since=since)
+    sessions = {r["session_id"] for r in rows}
+    assert "sess-new" in sessions and "sess-old" not in sessions
+
+
+def test_claude_usage_breakdown_missing_dir_returns_empty(tmp_path):
+    """R-5 폴백 가드: projects_dir이 없어도 예외 없이 빈 리스트."""
+    from yok3x import limits
+    assert limits.claude_usage_breakdown({"projects_dir": str(tmp_path / "no-such-dir")}) == []
+
+
+def test_claude_usage_breakdown_malformed_lines_degrade_gracefully(tmp_path):
+    """R-5 폴백 가드: 깨진 JSON·model/sessionId 누락 줄은 죽지 않고 건너뛰거나 '(알수없음)'으로 묶인다
+    (Claude Code JSONL은 비문서·불안정 포맷 — 포맷 변경에 강해야 한다)."""
+    from yok3x import limits
+    import json
+    root = tmp_path / "proj"
+    root.mkdir()
+    lines = [
+        "not even json {{{",
+        json.dumps({"type": "assistant", "timestamp": "2026-08-01T00:00:00Z",
+                    "message": {"usage": {"input_tokens": 7, "output_tokens": 0}}}),   # sessionId·model 없음
+        json.dumps({"sessionId": "sess-ok", "timestamp": "2026-08-01T00:00:00Z",
+                    "message": {"model": "claude-sonnet-5", "usage": {"input_tokens": 3, "output_tokens": 0}}}),
+    ]
+    (root / "a.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rows = limits.claude_usage_breakdown({"projects_dir": str(root)})
+    keys = {(r["session_id"], r["model"]) for r in rows}
+    assert ("(알수없음)", "(알수없음)") in keys
+    assert ("sess-ok", "claude-sonnet-5") in keys
+
+
+def test_file_usage_events_matches_detailed_view(tmp_path):
+    """회귀 방지: `_file_usage_events`(페이싱 핫패스)가 `_file_usage_events_detailed`에서 session_id·
+    model만 뺀 것과 동일해야 한다 — R-5를 위해 파서를 공유로 리팩터링하면서 페이싱 출력이 바뀌면 안 됨."""
+    from yok3x import limits
+    root = tmp_path / "proj"
+    root.mkdir()
+    f = root / "a.jsonl"
+    _write_claude_session(f, [
+        ("2026-08-01T00:00:00Z", "sess-A", "claude-opus-4-8", {"input_tokens": 100, "output_tokens": 20}),
+        ("2026-08-01T00:05:00Z", "sess-A", "claude-sonnet-5", {"input_tokens": 5, "output_tokens": 5}),
+    ])
+    detailed = limits._file_usage_events_detailed(f)
+    light = limits._file_usage_events(f)
+    assert light == [(ts, tok) for ts, tok, _sid, _model in detailed]
+    assert len(light) == 2
 
 
 def test_oauth_live_persists_to_disk_across_process(tmp_path, monkeypatch):

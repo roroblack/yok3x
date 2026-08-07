@@ -1521,15 +1521,20 @@ def _probe_claude_statusline(backend: str, conf: dict[str, Any]) -> LimitReading
     return est
 
 
-# 파싱 결과 캐시: path -> (mtime, size, [(ts, tokens), ...]). 트랜스크립트 JSONL은 append-only라
-# mtime·size가 그대로면 재파싱이 불필요하다. 한 번의 build_state가 여러 창(5h·7d·오늘·since-reset)을
-# 질의하며 매번 전 파일을 read+json.loads 하던 게 병목(build_state 13초)이었다 — 파싱을 파일당 1회로
-# 줄이고 창 질의는 메모리의 이벤트를 cutoff로 필터만 한다(사용자 지적: 대시보드가 느려 저장이 안 되는 듯).
-_TRANSCRIPT_EVENT_CACHE: dict[str, tuple[float, int, list[tuple[float, int]]]] = {}
+# 파싱 결과 캐시: path -> (mtime, size, [(ts, tokens, session_id, model), ...]). 트랜스크립트 JSONL은
+# append-only라 mtime·size가 그대로면 재파싱이 불필요하다. 한 번의 build_state가 여러 창(5h·7d·오늘·
+# since-reset)을 질의하며 매번 전 파일을 read+json.loads 하던 게 병목(build_state 13초)이었다 — 파싱을
+# 파일당 1회로 줄이고 창 질의는 메모리의 이벤트를 cutoff로 필터만 한다(사용자 지적: 대시보드가 느려
+# 저장이 안 되는 듯). R-5(Tier2 강등: 세션·모델별 귀속)가 session_id·model도 같은 파싱에서 함께
+# 뽑아 쓴다 — 같은 파일을 두 번 읽지 않는다(probe()·codex_percent_at·list_models에서 겪은 것과 같은
+# 무캐시 중복스캔 패턴을 여기선 애초에 만들지 않음).
+_TRANSCRIPT_EVENT_CACHE: dict[str, tuple[float, int, list[tuple[float, int, str, str]]]] = {}
 
 
-def _file_usage_events(f: Path) -> list[tuple[float, int]]:
-    """파일의 (timestamp, 토큰합) 이벤트 목록. mtime·size 불변이면 캐시 재사용(재파싱 안 함)."""
+def _file_usage_events_detailed(f: Path) -> list[tuple[float, int, str, str]]:
+    """파일의 (timestamp, 토큰합, session_id, model) 이벤트 목록. mtime·size 불변이면 캐시 재사용.
+    Claude Code JSONL은 비문서·불안정 포맷이라 필드 하나가 없어도 그 줄만 건너뛰고 계속한다
+    (폴백 가드 — R-5는 사후감사용이라 파싱 실패가 페이싱에 전파되면 안 된다)."""
     try:
         stt = f.stat()
     except OSError:
@@ -1538,7 +1543,7 @@ def _file_usage_events(f: Path) -> list[tuple[float, int]]:
     hit = _TRANSCRIPT_EVENT_CACHE.get(key)
     if hit and hit[0] == stt.st_mtime and hit[1] == stt.st_size:
         return hit[2]
-    events: list[tuple[float, int]] = []
+    events: list[tuple[float, int, str, str]] = []
     try:
         text = f.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
@@ -1550,18 +1555,33 @@ def _file_usage_events(f: Path) -> list[tuple[float, int]]:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(d, dict):
+            continue
         ts = _parse_iso(d.get("timestamp"))
         if ts is None:
             continue
         msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+        if not isinstance(msg, dict):
+            msg = {}
         u = msg.get("usage") or d.get("usage") or {}
         if not isinstance(u, dict):
             continue
-        events.append((ts, _int(u.get("input_tokens")) + _int(u.get("output_tokens"))
-                       + _int(u.get("cache_creation_input_tokens"))
-                       + _int(u.get("cache_read_input_tokens"))))
+        tok = (_int(u.get("input_tokens")) + _int(u.get("output_tokens"))
+              + _int(u.get("cache_creation_input_tokens"))
+              + _int(u.get("cache_read_input_tokens")))
+        sid = d.get("sessionId")
+        session_id = sid if isinstance(sid, str) else ""
+        m = msg.get("model")
+        model = m if isinstance(m, str) else ""
+        events.append((ts, tok, session_id, model))
     _TRANSCRIPT_EVENT_CACHE[key] = (stt.st_mtime, stt.st_size, events)
     return events
+
+
+def _file_usage_events(f: Path) -> list[tuple[float, int]]:
+    """페이싱 핫패스가 쓰는 경량 뷰: (timestamp, 토큰합)만. 실제 파싱은
+    `_file_usage_events_detailed`가 하고 캐시를 공유한다(중복 스캔 없음)."""
+    return [(ts, tok) for ts, tok, _sid, _model in _file_usage_events_detailed(f)]
 
 
 def _rolling_claude_tokens(root: Path, now: float, window_sec: float) -> int:
@@ -1581,6 +1601,42 @@ def _rolling_claude_tokens(root: Path, now: float, window_sec: float) -> int:
             if ts >= cutoff:
                 total += tok
     return total
+
+
+def claude_usage_breakdown(conf: dict[str, Any], since: float | None = None,
+                           until: float | None = None) -> list[dict[str, Any]]:
+    """R-5(Tier2·강등): 로컬 Claude Code JSONL에서 **세션·모델별** 토큰 귀속을 낸다(사후감사용).
+
+    ref: 외부 리서치 리포트 7번 — "yok3x는 자기가 돌린 것만 안다"는 지적은 페이싱엔 안 맞다(공식
+    reading이 앵커라 별도 터미널도 잡힘, v4.4.0 정정1) 하지만 **세션·모델별로 어디에 토큰이 쓰였는지**는
+    JSONL에만 있다. **페이싱 앵커는 그대로 공식 reading**(`_probe_claude_oauth` 등) — 이 함수는 그 값을
+    바꾸지 않고 별도의 감사용 뷰만 만든다. 반환은 토큰 내림차순, 항목 없으면 빈 리스트(폴백 가드 —
+    JSONL 없음/파싱 전멸이어도 예외를 던지지 않는다).
+    """
+    root = _claude_root(conf)
+    if not root.exists():
+        return []
+    try:
+        files = list(root.rglob("*.jsonl"))
+    except OSError:
+        return []
+    agg: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in files:
+        for ts, tok, session_id, model in _file_usage_events_detailed(f):
+            if since is not None and ts < since:
+                continue
+            if until is not None and ts > until:
+                continue
+            key = (session_id or "(알수없음)", model or "(알수없음)")
+            e = agg.get(key)
+            if e is None:
+                agg[key] = e = {"session_id": key[0], "model": key[1],
+                                "tokens": 0, "calls": 0, "first_ts": ts, "last_ts": ts}
+            e["tokens"] += tok
+            e["calls"] += 1
+            e["first_ts"] = min(e["first_ts"], ts)
+            e["last_ts"] = max(e["last_ts"], ts)
+    return sorted(agg.values(), key=lambda e: -e["tokens"])
 
 
 # ---------------------------------------------------------------- command (범용: ccusage/tokscale/CodexBar export)
