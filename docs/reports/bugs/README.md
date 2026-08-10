@@ -49,6 +49,7 @@
 | [42](BUG-42-absolute-verify-cmd-escapes-stage-false-candidate-label.md) | **절대경로 verify_cmd가 스테이징을 우회해 원본을 검증하고도 'candidate' 라벨(T-1 지상진실 오염)** | **높음** | — | ✅(완화) |
 | [43](BUG-43-kill-tree-capture-output-hangs-server.md) | **`_kill_tree`의 capture_output이 손자 프로세스 핸들에 걸려 GUI 서버 전체를 무한 대기시킴** | **높음** | — | ✅ |
 | [44](BUG-44-pace-tooltip-null-pace-crashes-render.md) | `paceTip` 계산이 `t.pace===null`을 안 가려 `render()`가 죽고 GUI가 "서버 연결 끊김"으로 오탐 | 중간 | — | ✅ |
+| [45](BUG-45-pace-strategy-and-seg-buttons-never-persist.md) | `.seg` 범용 코드가 `onclick` 속성 핸들러를 덮어써 균등/유동/분산·경고만/정지+승인·plan 버튼이 전부 저장 안 됨 | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

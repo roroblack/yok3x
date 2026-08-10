@@ -1270,8 +1270,13 @@ document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
   document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
   t.classList.add("active");document.getElementById(t.dataset.v).classList.add("active");});
-document.querySelectorAll(".seg").forEach(sg=>sg.querySelectorAll("button").forEach(b=>b.onclick=()=>{
-  sg.querySelectorAll("button").forEach(x=>x.classList.remove("on"));b.classList.add("on");}));
+// BUG-45: 예전에는 ".seg" 전체 버튼에 b.onclick을 무조건 덮어썼다 — pacemodeseg/pacestratseg/
+// planseg는 onclick="savePace(...)/savePaceStrategy(...)/savePlan(...)" 속성 핸들러로 서버에 저장까지
+// 하는데, 그 핸들러가 통째로 가려져(클릭해도 시각적 토글만 되고 저장은 전혀 안 됨) 세 곳 모두 먹통이었다.
+// 서버 저장이 필요 없는 순수 시각적 선택은 #c-pattern 하나뿐이므로 그 세그먼트만 명시적으로 다룬다
+// (codex 교차검증: onclick 속성 유무로 판별하는 것보다 대상을 명시하는 편이 더 안전하다는 제안 반영).
+document.querySelectorAll("#c-pattern button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("#c-pattern button").forEach(x=>x.classList.remove("on"));b.classList.add("on");});
 function clk(){document.getElementById("clock").textContent=new Date().toLocaleTimeString("ko-KR");}
 setInterval(clk,1000);clk();
 load();setInterval(load,7000);

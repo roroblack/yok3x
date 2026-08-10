@@ -607,7 +607,11 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             cur["enabled"] = bool(dp["enabled"])
         if dp.get("mode") in ("warn", "pause"):
             cur["mode"] = dp["mode"]
-        if dp.get("strategy") in ("fixed", "catch_up"):     # 균등/유동(남은일수 배분)
+        # BUG-45: "spread"가 이 화이트리스트에 빠져 있어 GUI에서 "분산" 선택이 조용히 무시되고
+        # {"ok": true}만 돌아왔다(실측: 클릭해도 서버 값이 안 바뀜, 저장 성공한 것처럼 보임).
+        # spread는 usage._pace_cfg가 이미 정식 인식하는 값이라(_daily_cap 분기 존재) 여기 검증만
+        # 낡아 있었다 — spread 도입(v3.6.0) 때 이 화이트리스트 갱신을 놓친 것.
+        if dp.get("strategy") in ("fixed", "catch_up", "spread"):
             cur["strategy"] = dp["strategy"]
         for k in ("pct_of_weekly", "soft_frac"):
             if k in dp:

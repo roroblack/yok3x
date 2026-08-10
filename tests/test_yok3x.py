@@ -2211,6 +2211,32 @@ def test_daily_pace_cap_excludes_today_and_is_stable(tmp_path):
     assert round(r2["used"], 1) == 3.0 and round(r2["cap"], 1) == 24.6   # 상한 안 깎임(안정)
 
 
+def test_apply_config_accepts_all_three_daily_pace_strategies(tmp_path):
+    """BUG-45 회귀 방지: guiserver._apply_config의 strategy 화이트리스트가 "spread"를 빠뜨려서,
+    GUI에서 '분산' 버튼을 눌러도 {"ok": true}만 돌아오고 실제 값은 조용히 안 바뀌던 버그.
+    세 값(fixed/catch_up/spread) 전부 실제로 저장돼야 한다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    for strat in ("fixed", "catch_up", "spread"):
+        r = gs._apply_config(cfg, {"daily_pace": {"strategy": strat}})
+        assert r.get("ok") is True
+        assert cfg.yok3x["guard"]["daily_pace"]["strategy"] == strat, (
+            f"strategy={strat} 저장 안 됨(BUG-45 재발) — 실제 값: "
+            f"{cfg.yok3x['guard']['daily_pace']['strategy']}")
+
+
+def test_apply_config_rejects_unknown_daily_pace_strategy_silently(tmp_path):
+    """알 수 없는 strategy 값은(오타 등) 저장하지 않고 기존 값을 유지한다 — 에러도 안 내지만
+    조용히 덮어쓰지도 않는다(현재 동작 그대로 문서화. 완전히 검증하려면 명시적 에러가 더 낫지만
+    그건 별도 개선 — 최소한 잘못된 값으로 덮어써지지는 않아야 함)."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"]["strategy"] = "catch_up"
+    r = gs._apply_config(cfg, {"daily_pace": {"strategy": "bogus-typo"}})
+    assert r.get("ok") is True
+    assert cfg.yok3x["guard"]["daily_pace"]["strategy"] == "catch_up"   # 안 덮어써짐
+
+
 def test_daily_pace_strategy_options_distinct(tmp_path):
     """세 전략이 뚜렷이 구분: fixed=고정 · catch_up=즉시조임 · spread=균등분산(초과 시 핵심 차이)."""
     import time as _t
