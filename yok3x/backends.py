@@ -72,6 +72,7 @@ class BackendResult:
 def run_backend(name: str, spec: dict[str, Any], prompt: str,
                 cwd: str | None = None, model: str | None = None,
                 effort: str | None = None, read_only: bool = False,
+                mcp_config_path: str | None = None, mcp_allowed_tools: str = "",
                 process_started: Callable[[Any], None] | None = None,
                 process_finished: Callable[[Any], None] | None = None,
                 cancel_event: Any | None = None) -> BackendResult:
@@ -81,7 +82,8 @@ def run_backend(name: str, spec: dict[str, Any], prompt: str,
         res = _run_mock(name, spec, prompt, cancel_event=cancel_event)
     elif btype == "cli":
         res = _run_cli(name, spec, prompt, cwd=cwd, model=model, effort=effort,
-                       read_only=read_only, process_started=process_started,
+                       read_only=read_only, mcp_config_path=mcp_config_path,
+                       mcp_allowed_tools=mcp_allowed_tools, process_started=process_started,
                        process_finished=process_finished, cancel_event=cancel_event)
     elif btype in ("openai_http", "native", "local"):
         res = _run_openai_http(name, spec, prompt, model=model)
@@ -138,6 +140,7 @@ def terminate_process(proc: Any, grace_sec: float = 0.5) -> None:
 def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              cwd: str | None = None, model: str | None = None,
              effort: str | None = None, read_only: bool = False,
+             mcp_config_path: str | None = None, mcp_allowed_tools: str = "",
              process_started: Callable[[Any], None] | None = None,
              process_finished: Callable[[Any], None] | None = None,
              cancel_event: Any | None = None) -> BackendResult:
@@ -168,6 +171,20 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
             old = cmd.index("--disallowedTools")
             del cmd[old:old + 2]
         cmd += read_only_args
+    # v4.1.0 MCP 워커도구(a1): mcp_config_path는 orchestrator의 mcp_policy가 화이트리스트·승인
+    # 판정을 이미 끝낸 뒤에만 채워진다 — 여기는 그 결과를 argv에 얹기만 한다(정책 판단 없음).
+    # backend에 mcp_arg 템플릿이 없으면(codex/gemini 등) 조용히 무시된다(fail-closed).
+    if mcp_config_path and spec.get("mcp_arg"):
+        mcp_args = [str(a).replace("{mcp_config_path}", mcp_config_path)
+                        .replace("{allowed_tools}", mcp_allowed_tools)
+                   for a in spec["mcp_arg"]]
+        # 도구가 켜지면 기존 전면 차단(--disallowedTools) 대신 --allowedTools 화이트리스트가
+        # 통제한다 — 남아 있으면 claude가 두 플래그를 동시에 받아 충돌할 수 있어 제거한다.
+        for flag in ("--disallowedTools", "--allowedTools"):
+            if flag in cmd:
+                old = cmd.index(flag)
+                del cmd[old:old + 2]
+        cmd += mcp_args
     # Windows: claude/codex/gemini는 npm .cmd 심 — CreateProcess가 PATHEXT를
     # 해석하지 않으므로 shutil.which로 실제 경로(claude.cmd 등)로 치환한다.
     resolved = shutil.which(cmd[0])

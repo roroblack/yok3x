@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, calibration, knot, reserve, triage, usage, worktree
+from . import acquire, artifacts, calibration, knot, mcp_policy, reserve, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -398,6 +398,18 @@ class Orchestrator:
             raise RunAborted("사용자 중단(q)", cause="user_abort")
         ok = ans == "y"
         self._log(f"[gate] {'승인' if ok else '거부'}: {description}")
+        return ok
+
+    def _gate_mcp(self, description: str) -> bool:
+        """v4.1.0 MCP 워커도구 전용 승인 게이트. **`auto_approve`로 우회되지 않는다** — 계획서
+        codex 리뷰의 '도구 워커는 승인 필수'를 강하게 적용(권장이 아니라 매번 대화형 확인).
+        일반 `_gate`와 분리한 이유: 도구가 실제 파일/실행 접근을 하므로, 이번 런 전체가
+        auto_approve여도 이 호출만은 사람이 그 순간 명시적으로 봐야 한다."""
+        ans = self.ask(f"[gate][mcp] {description} — 진행? [y/N/q] ").strip().lower()
+        if ans == "q":
+            raise RunAborted("사용자 중단(q)", cause="user_abort")
+        ok = ans == "y"
+        self._log(f"[gate][mcp] {'승인' if ok else '거부'}: {description}")
         return ok
 
     # ------------------------------------------------------------ 코딩 기능
@@ -1044,6 +1056,21 @@ class Orchestrator:
                 self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
             return BackendResult(backend="-", ok=False, error="skipped by gate")
 
+        # v4.1.0 MCP 워커도구(a1): 워커가 mcp_tools를 요청했을 때만 화이트리스트+승인 판정을 거친다.
+        # 대다수 워커는 mcp_tools 미설정이라 resolve_mcp_grant가 즉시 빈 grant를 내고, 아래 블록은
+        # 전부 no-op — 기존 동작(도구 없는 텍스트 생산자)이 그대로 유지된다.
+        mcp_grant = mcp_policy.resolve_mcp_grant(cfg.yok3x.get("mcp_servers") or {}, w)
+        if isinstance(w.get("mcp_tools"), dict):    # 요청이 있었을 때만 감사로그(스팸 방지)
+            mcp_policy.record_grant(cfg.paths.yok3x_dir, run_id=self.run_id, step=idx,
+                                    worker=worker, backend=backend, grant=mcp_grant)
+        if mcp_grant.active:
+            # auto_approve를 우회하지 않는 전용 게이트(_gate_mcp) — 도구 사용은 매번 사람이 본다.
+            if not self._gate_mcp(f"step {idx}: {worker} — MCP 도구 사용 요청 "
+                                  f"(서버={sorted(mcp_grant.servers)}, 도구={mcp_grant.allow_tools})"):
+                with self._state_lock:
+                    self.steps.append(StepLog(idx, worker, task_kind, "skipped"))
+                return BackendResult(backend="-", ok=False, error="mcp tool grant declined by gate")
+
         # 적응형 열화 P1(최종 backend·verdict 기준). 라우팅/폴오버 후 backend의 lite로 낮춤.
         action, lite = usage.degrade_plan(cfg, worker, verdict, backend=backend)
         if action == "downgrade" and lite:
@@ -1062,6 +1089,11 @@ class Orchestrator:
         backend_kwargs = {"cwd": run_cwd, "model": model_override, "effort": effort}
         if spec.read_only:
             backend_kwargs["read_only"] = True
+        mcp_config_file: str | None = None
+        if mcp_grant.active:
+            mcp_config_file = mcp_policy.write_mcp_config_file(mcp_grant)
+            backend_kwargs["mcp_config_path"] = mcp_config_file
+            backend_kwargs["mcp_allowed_tools"] = ",".join(mcp_grant.allow_tools)
         abort_event = getattr(self._parallel_local, "abort_event", None)
         if abort_event is not None:
             # 병렬 경로에서만 Popen 핸들을 노출한다. 단일 호출은 기존 subprocess.run 계약 유지.
@@ -1070,7 +1102,14 @@ class Orchestrator:
                 process_finished=self._unregister_process,
                 cancel_event=abort_event,
             )
-        res = run_backend(backend, cfg.backends[backend], spec.prompt, **backend_kwargs)
+        try:
+            res = run_backend(backend, cfg.backends[backend], spec.prompt, **backend_kwargs)
+        finally:
+            if mcp_config_file:      # 서버 spec에 자격증명이 있을 수 있어 임시 파일을 남기지 않는다.
+                try:
+                    os.remove(mcp_config_file)
+                except OSError:
+                    pass
 
         # 5) 검증 체크리스트 + 파일 로그
         checklist = self._checklist(res)

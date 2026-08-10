@@ -4092,3 +4092,214 @@ def test_daily_pace_strategy_change_applies_same_day(tmp_path):
     dp["strategy"] = "catch_up"                              # 같은 날 전략만 변경
     s2 = usage.daily_pace_status(cfg, "claude", 0.0, reset_at=reset_at)
     assert round(s2["cap"]) == 28                            # 즉시 유동 반영(안전캡)
+
+
+# --------------------------------------------------------- v4.1.0 MCP 워커도구(a1)
+
+def test_resolve_mcp_grant_default_denied_no_request():
+    """워커가 mcp_tools를 아예 설정 안 하면(대다수) 항상 비활성 — 기존 텍스트 생산자 동작 불변."""
+    from yok3x import mcp_policy
+    g = mcp_policy.resolve_mcp_grant({"fs": {"command": "npx"}}, {"backend": "claude"})
+    assert not g.active and not g.servers and not g.allow_tools
+    assert "opt-in 안 함" in g.denied_reason
+
+
+def test_resolve_mcp_grant_denied_when_whitelist_empty():
+    """전역 mcp_servers가 비어있으면(기본값) 워커가 요청해도 fail-closed."""
+    from yok3x import mcp_policy
+    worker = {"mcp_tools": {"servers": ["fs"], "allow_tools": ["mcp__fs__read"]}}
+    g = mcp_policy.resolve_mcp_grant({}, worker)
+    assert not g.active
+    assert "화이트리스트가 비어있음" in g.denied_reason
+
+
+def test_resolve_mcp_grant_denied_unknown_server():
+    """화이트리스트에 없는 서버를 요청하면 그 서버는 거부되고(전체 거부), 이유가 남는다."""
+    from yok3x import mcp_policy
+    worker = {"mcp_tools": {"servers": ["not-registered"], "allow_tools": ["mcp__not-registered__x"]}}
+    g = mcp_policy.resolve_mcp_grant({"fs": {"command": "npx"}}, worker)
+    assert not g.active
+    assert "화이트리스트에 없음" in g.denied_reason
+
+
+def test_resolve_mcp_grant_denied_no_valid_allow_tools():
+    """서버는 화이트리스트에 있어도 allow_tools가 비었거나 형식이 잘못되면 전체 거부한다
+    (서버를 안다고 해서 그 서버의 모든 도구를 자동 허용하지 않음 — 도구명 명시가 필수)."""
+    from yok3x import mcp_policy
+    reg = {"fs": {"command": "npx"}}
+    g1 = mcp_policy.resolve_mcp_grant(reg, {"mcp_tools": {"servers": ["fs"], "allow_tools": []}})
+    assert not g1.active
+    g2 = mcp_policy.resolve_mcp_grant(reg, {"mcp_tools": {"servers": ["fs"],
+                                                          "allow_tools": ["not-a-valid-name"]}})
+    assert not g2.active
+
+
+def test_resolve_mcp_grant_drops_tool_outside_granted_server():
+    """도구명이 mcp__<server>__<tool> 형태여도, 그 서버가 이번 요청에서 승인된 서버 집합 밖이면
+    버려진다(서버 경계를 넘는 도구명 요청 차단 — 예: fs만 허용됐는데 mcp__other__delete 요청)."""
+    from yok3x import mcp_policy
+    reg = {"fs": {"command": "npx"}}
+    worker = {"mcp_tools": {"servers": ["fs"],
+                            "allow_tools": ["mcp__fs__read", "mcp__other__delete"]}}
+    g = mcp_policy.resolve_mcp_grant(reg, worker)
+    assert g.active
+    assert g.allow_tools == ["mcp__fs__read"]
+    assert "형식·서버경계 위반" in g.denied_reason   # 버려진 것도 기록에 남음(감사용)
+
+
+def test_resolve_mcp_grant_active_happy_path():
+    """화이트리스트 서버 + 유효한 allow_tools면 활성 grant를 낸다."""
+    from yok3x import mcp_policy
+    reg = {"fs": {"command": "npx", "args": ["-y", "server-filesystem"]}}
+    worker = {"mcp_tools": {"servers": ["fs"], "allow_tools": ["mcp__fs__read", "mcp__fs__list"]}}
+    g = mcp_policy.resolve_mcp_grant(reg, worker)
+    assert g.active
+    assert g.servers == reg
+    assert g.allow_tools == ["mcp__fs__read", "mcp__fs__list"]
+    assert g.denied_reason == ""
+
+
+def test_write_mcp_config_file_writes_valid_json(tmp_path):
+    """claude --mcp-config가 읽을 임시 JSON이 mcpServers 스키마로 정확히 쓰여진다."""
+    from yok3x import mcp_policy
+    grant = mcp_policy.McpGrant(servers={"fs": {"command": "npx", "args": ["x"]}},
+                                allow_tools=["mcp__fs__read"])
+    path = mcp_policy.write_mcp_config_file(grant)
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert data == {"mcpServers": {"fs": {"command": "npx", "args": ["x"]}}}
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_record_grant_appends_jsonl(tmp_path):
+    """감사로그에 승인/거부 여부와 서버·도구·사유가 남는다. 실패 대상 없음."""
+    from yok3x import mcp_policy
+    grant = mcp_policy.McpGrant(servers={"fs": {}}, allow_tools=["mcp__fs__read"])
+    mcp_policy.record_grant(tmp_path, run_id="run-1", step=3, worker="claude-main",
+                            backend="claude", grant=grant, timestamp=1000.0)
+    rec = json.loads(mcp_policy.audit_log_path(tmp_path).read_text(encoding="utf-8").strip())
+    assert rec == {"ts": 1000.0, "run_id": "run-1", "step": 3, "worker": "claude-main",
+                   "backend": "claude", "activated": True, "servers": ["fs"],
+                   "allow_tools": ["mcp__fs__read"], "denied_reason": ""}
+
+
+def test_run_cli_injects_mcp_args_and_removes_disallowed(monkeypatch):
+    """mcp_config_path가 주어지고 backend에 mcp_arg 템플릿이 있으면 argv에 주입되고, 기존
+    --disallowedTools(전면 차단)는 도구 화이트리스트와 충돌하지 않게 제거된다."""
+    from yok3x import backends
+    cap = {}
+    class _P:
+        stdout = '{"result":"ok","is_error":false}'; stderr = ""; returncode = 0
+    monkeypatch.setattr(backends.subprocess, "run", lambda cmd, **kw: (cap.__setitem__("c", cmd), _P())[1])
+    monkeypatch.setattr(backends.shutil, "which", lambda x: x)
+    spec = {"type": "cli", "command": ["claude", "-p", "--disallowedTools", "Bash,Edit,Write"],
+           "mcp_arg": ["--mcp-config", "{mcp_config_path}", "--allowedTools", "{allowed_tools}"],
+           "parser": "raw"}
+    backends.run_backend("claude", spec, "hi",
+                         mcp_config_path="/tmp/mcp.json", mcp_allowed_tools="mcp__fs__read")
+    assert "--disallowedTools" not in cap["c"]
+    assert cap["c"][-4:] == ["--mcp-config", "/tmp/mcp.json", "--allowedTools", "mcp__fs__read"]
+
+
+def test_run_cli_ignores_mcp_when_backend_lacks_mcp_arg_template(monkeypatch):
+    """backend spec에 mcp_arg가 없으면(codex/gemini 등) mcp_config_path가 와도 조용히 무시된다
+    (fail-closed — mcp_policy가 승인해도 이 backend는 도구를 못 씀)."""
+    from yok3x import backends
+    cap = {}
+    class _P:
+        stdout = '{"result":"ok","is_error":false}'; stderr = ""; returncode = 0
+    monkeypatch.setattr(backends.subprocess, "run", lambda cmd, **kw: (cap.__setitem__("c", cmd), _P())[1])
+    monkeypatch.setattr(backends.shutil, "which", lambda x: x)
+    spec = {"type": "cli", "command": ["codex", "exec"], "parser": "raw"}   # mcp_arg 없음
+    backends.run_backend("codex", spec, "hi",
+                         mcp_config_path="/tmp/mcp.json", mcp_allowed_tools="mcp__fs__read")
+    assert cap["c"] == ["codex", "exec"]
+
+
+def test_execute_call_no_mcp_request_never_touches_gate_mcp(mock_root, monkeypatch):
+    """대다수 워커(mcp_tools 미설정)는 _gate_mcp가 아예 호출되지 않는다(기존 동작 완전 불변)."""
+    cfg = Config.load(mock_root)
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda *a, **kw: BackendResult(backend=a[0], ok=True, text="ok"))
+    o = Orchestrator(cfg, auto=True)
+    calls = []
+    monkeypatch.setattr(Orchestrator, "_gate_mcp", lambda self, desc: calls.append(desc) or True)
+    assert o.call_worker("claude-main", "t").ok
+    assert calls == []
+
+
+def test_execute_call_mcp_grant_forces_gate_even_with_auto_approve(mock_root, monkeypatch):
+    """워커에 유효한 mcp_tools grant가 걸리면 auto_approve=True(런 전체 자동승인)여도
+    _gate_mcp가 불려 사람 확인을 요구한다 — 계획서 codex 리뷰의 '승인 필수' 강한 적용."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["mcp_servers"] = {"fs": {"command": "npx"}}
+    cfg.yok3x["workers"]["claude-main"]["mcp_tools"] = {
+        "servers": ["fs"], "allow_tools": ["mcp__fs__read"]}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda *a, **kw: BackendResult(backend=a[0], ok=True, text="ok"))
+    o = Orchestrator(cfg, auto=True)     # 런 전체는 auto-approve
+    gate_calls = []
+    monkeypatch.setattr(Orchestrator, "_gate_mcp",
+                        lambda self, desc: gate_calls.append(desc) or True)
+    assert o.call_worker("claude-main", "t").ok
+    assert len(gate_calls) == 1 and "mcp__fs__read" in gate_calls[0]
+
+
+def test_execute_call_mcp_gate_declined_skips_step_without_calling_backend(mock_root, monkeypatch):
+    """MCP 게이트에서 거부하면 그 워커 호출은 실행되지 않고(run_backend 미호출) skipped로 남는다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["mcp_servers"] = {"fs": {"command": "npx"}}
+    cfg.yok3x["workers"]["claude-main"]["mcp_tools"] = {
+        "servers": ["fs"], "allow_tools": ["mcp__fs__read"]}
+    backend_calls = []
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda *a, **kw: backend_calls.append(1) or BackendResult(backend=a[0], ok=True))
+    o = Orchestrator(cfg, auto=True)
+    monkeypatch.setattr(Orchestrator, "_gate_mcp", lambda self, desc: False)   # 사람이 거부
+    res = o.call_worker("claude-main", "t")
+    assert not res.ok and "declined" in res.error
+    assert backend_calls == []
+
+
+def test_execute_call_mcp_grant_approved_passes_config_to_backend_and_cleans_up(mock_root, monkeypatch):
+    """게이트 승인 시 임시 mcp_config_path·mcp_allowed_tools가 run_backend에 전달되고,
+    호출이 끝나면(성공이든 실패든) 임시 파일이 정리된다(비밀값이 남을 수 있는 파일이라 유지 안 함)."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["mcp_servers"] = {"fs": {"command": "npx"}}
+    cfg.yok3x["workers"]["claude-main"]["mcp_tools"] = {
+        "servers": ["fs"], "allow_tools": ["mcp__fs__read", "mcp__fs__list"]}
+    seen = {}
+    written_path = {}
+
+    def fake_backend(name, spec, prompt, **kwargs):
+        written_path["path"] = kwargs.get("mcp_config_path")
+        assert written_path["path"] and Path(written_path["path"]).exists()   # 실제로 존재하는 동안 호출됨
+        seen["allowed_tools"] = kwargs.get("mcp_allowed_tools")
+        return BackendResult(backend=name, ok=True, text="ok")
+    monkeypatch.setattr(orchestrator, "run_backend", fake_backend)
+    o = Orchestrator(cfg, auto=True)
+    monkeypatch.setattr(Orchestrator, "_gate_mcp", lambda self, desc: True)
+    assert o.call_worker("claude-main", "t").ok
+    assert seen["allowed_tools"] == "mcp__fs__read,mcp__fs__list"
+    assert not Path(written_path["path"]).exists()   # 호출 후 정리됨
+
+
+def test_execute_call_mcp_denied_request_audits_without_gate(mock_root, monkeypatch):
+    """워커가 mcp_tools를 요청했지만 정책상 거부(화이트리스트 밖 등)되면: 감사로그엔 남지만
+    _gate_mcp는 안 불리고(활성 grant가 아니므로) 호출은 평소처럼(도구 없이) 진행된다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["mcp_servers"] = {}   # 화이트리스트 비어있음 → 무조건 거부
+    cfg.yok3x["workers"]["claude-main"]["mcp_tools"] = {
+        "servers": ["fs"], "allow_tools": ["mcp__fs__read"]}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda *a, **kw: BackendResult(backend=a[0], ok=True, text="ok"))
+    o = Orchestrator(cfg, auto=True)
+    gate_calls = []
+    monkeypatch.setattr(Orchestrator, "_gate_mcp", lambda self, desc: gate_calls.append(desc) or True)
+    assert o.call_worker("claude-main", "t").ok
+    assert gate_calls == []                          # 활성 아니라 게이트 자체가 안 불림
+    from yok3x import mcp_policy
+    log = mcp_policy.audit_log_path(cfg.paths.yok3x_dir).read_text(encoding="utf-8").strip()
+    rec = json.loads(log)
+    assert rec["activated"] is False and "비어있음" in rec["denied_reason"]

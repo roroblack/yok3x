@@ -4,6 +4,36 @@
 
 ---
 
+## 미출시(dev) · 2026-08-08 — v4.1.0 MCP 워커도구 a1(설정 전달) — opt-in·화이트리스트·승인필수·fail-closed
+
+- 계획서 `docs/plans/v4.1.0-plan-mcp-worker-tools-2026-07-15.md`의 a1(yok3x가 MCP 서버 설정을
+    워커 CLI에 전달만 하고 실행은 워커가 함) 구현. codex 안전 리뷰의 강한 기본값을 사용자 확인 후
+    그대로 적용: **opt-in·읽기전용 유지·화이트리스트·승인필수·감사로그·fail-closed**.
+- **신규 `yok3x/mcp_policy.py`**(순수 함수, 의존성0): `resolve_mcp_grant(전역 화이트리스트, 워커설정)` —
+    워커가 `mcp_tools`를 요청 안 했거나, 전역 `mcp_servers`(기본 빈 dict)가 비어있거나, 요청 서버가
+    화이트리스트에 없거나, 유효한 `allow_tools`(`mcp__<server>__<tool>` 형식, **요청 서버 경계 안의
+    것만**)가 하나도 안 남으면 **전부 빈 grant**(도구 없음)로 fail-closed. `write_mcp_config_file`은
+    claude `--mcp-config`용 임시 JSON을 만들고 호출자가 정리, `record_grant`는 승인/거부 여부를
+    `.yok3x/mcp_audit.jsonl`에 append(호출 실패해도 런을 안 죽임).
+- **`_run_cli`(backends.py)**: `mcp_config_path`/`mcp_allowed_tools`가 주어지고 backend spec에
+    `mcp_arg` 템플릿이 있을 때만 argv에 주입. **템플릿 없는 backend(codex/gemini)는 조용히 무시**
+    (fail-closed) — claude만 `DEFAULT_BACKENDS`에 `mcp_arg`(`--mcp-config {path} --allowedTools
+    {tools}`) 추가. 주입 시 기존 전면 `--disallowedTools`는 제거(도구 화이트리스트가 대신 통제).
+- **`orchestrator.execute_call`**: 기존 승인 게이트 통과 뒤 `mcp_policy.resolve_mcp_grant` 판정.
+    grant가 활성이면 **`_gate_mcp`(신규, `auto_approve`로 우회 불가) 승인을 별도로 또 받아야** 실행됨 —
+    런 전체가 auto-approve여도 도구 사용 호출만은 매번 사람이 본다(계획서 codex 리뷰 "승인 필수"의
+    강한 해석). 임시 mcp config 파일은 호출 직후(성공·실패 무관) 정리(비밀값 잔류 방지).
+- **정직한 한계(코드·문서 양쪽에 명시)**: a1은 yok3x가 개별 도구 *호출*을 가로채지 않는다(워커 CLI
+    런타임이 직접 실행) — 그래서 인자·경로·호스트 단위 실시간 검증은 이 계층에서 **불가능**하다.
+    감사 로그도 "무엇이 *허가*됐는지"이지 "실제로 어떤 도구가 몇 번 *호출*됐는지"가 아니다. 호출 단위
+    통제가 필요하면 계획서가 이미 후속으로 미뤄둔 **a2(yok3x가 직접 MCP 클라이언트)**가 선행돼야
+    한다 — a2는 별도 계획으로 TODO 등록(지금 범위 밖).
+- 신규 테스트 14(정책 판정 6·config파일/감사로그 2·argv 주입 2·오케스트레이터 통합 4). 401 passed.
+- 실 MCP 서버 설치·검증은 사용자 몫으로 계획서에 이미 명시(P4) — 이번 구현은 그 전달 경로의
+    안전장치(정책·게이트·감사·fail-closed)까지가 범위.
+
+---
+
 ## 미출시(dev) · 2026-08-08 — R-5(Tier2·강등) Claude Code 로컬 JSONL 세션·모델별 토큰 귀속
 
 - v4.4.0 계획서 R-5(리포트 7 흡수분) 구현. `limits.claude_usage_breakdown(conf, since, until)`:

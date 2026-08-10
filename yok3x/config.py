@@ -118,6 +118,12 @@ DEFAULT_YOK3X = {
         },
         "daily_pace_override": {}           # {backend: "YYYY-MM-DD"} 오늘이면 페이싱 정지 1일 해제
     },
+    # v4.1.0 MCP 워커도구(a1, "설정 전달"만 — 실행은 워커 CLI가 함): 전역 **화이트리스트**.
+    # 기본 빈 dict = 아무 서버도 없음 = 전체 opt-in(워커가 mcp_tools를 요청해도 여기 없으면
+    # fail-closed로 거부). 여기 등록된 것만 워커별 workers.<name>.mcp_tools.servers로 요청 가능.
+    # 이름 → MCP 서버 spec(그대로 claude --mcp-config JSON의 mcpServers.<name>에 들어감).
+    # 예: {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}}
+    "mcp_servers": {},
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
     # codex : app-server JSON-RPC 로 '지금 이 순간' 5h/7d used_percent 라이브 조회(진짜 실측).
     #         실패 시 세션 파일(stale) → 원장 순으로 폴백.
@@ -302,6 +308,11 @@ DEFAULT_BACKENDS = {
         "effort_arg": ["--effort", "{effort}"],  # 추론 강도(low/medium/high) — 워커 effort 지정 시
         # ACQUIRE 조사 시 Read/Glob/Grep/Bash는 허용하고 쓰기 도구만 차단한다.
         "read_only_arg": ["--disallowedTools", "Edit,Write,MultiEdit,NotebookEdit"],
+        # v4.1.0 MCP 워커도구(a1): mcp_policy가 화이트리스트+승인을 거쳐 판정한 grant가 있을 때만
+        # 주입된다({mcp_config_path}=임시 JSON 파일, {allowed_tools}=콤마구분 mcp__server__tool 목록).
+        # 이 템플릿이 없는 backend(codex/gemini 등)는 MCP 요청이 자동으로 fail-closed된다
+        # (mcp_policy.resolve_mcp_grant가 아니라 _run_cli의 `spec.get("mcp_arg")` 부재로 무시).
+        "mcp_arg": ["--mcp-config", "{mcp_config_path}", "--allowedTools", "{allowed_tools}"],
         "parser": "claude_json",
         "timeout_sec": 600
     },
