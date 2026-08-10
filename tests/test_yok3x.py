@@ -4534,3 +4534,101 @@ def test_finish_sync_layer_failure_does_not_break_run(tmp_path, monkeypatch):
     status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
     assert status["state"] == "done"
     assert status["sync_layer"]["ok"] is False and "boom" in status["sync_layer"]["reason"]
+
+
+# --------------------------------------------------------- v4.6.0 S6a 온디맨드 클릭형 퀴즈/설명
+
+def test_explain_and_quiz_claim_prompt_stay_scoped_to_one_claim():
+    """S6a: 프롬프트가 그 claim 하나의 텍스트·근거만 담고(다른 claim 안 섞임), 근거 없으면
+    '근거로는 알 수 없음'을 요구한다(§3.5 근거 있는 환각 방지)."""
+    from yok3x import sync_layer
+    claim = {"type": "FACT", "text": "3개 파일이 변경됨",
+             "evidence_refs": [{"file": "a.py", "symbol_or_hunk": "foo", "source": "diff"}]}
+    p1 = sync_layer.explain_claim_prompt(claim)
+    assert "3개 파일이 변경됨" in p1 and "a.py::foo" in p1
+    assert "근거로는 알 수 없음" in p1
+    p2 = sync_layer.quiz_claim_prompt(claim)
+    assert "3개 파일이 변경됨" in p2 and "Q:" in p2 and "A:" in p2
+
+
+def test_sync_claim_action_rejects_unsafe_run_id(mock_root):
+    """경로 탈출 시도(review.py의 기존 _safe_run_id 재사용)는 파일 조회 전에 거부된다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    r = gs._sync_claim_action(cfg, {"run_id": "../../etc", "claim_id": "x", "action": "explain"})
+    assert not r["ok"] and "잘못된 run_id" in r["error"]
+
+
+def test_sync_claim_action_rejects_bad_action(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    r = gs._sync_claim_action(cfg, {"run_id": "run-1", "claim_id": "x", "action": "delete"})
+    assert not r["ok"] and "explain 또는 quiz" in r["error"]
+
+
+def test_sync_claim_action_missing_bundle_gives_clear_reason(mock_root):
+    """번들이 없으면(그 런에서 sync_layer 미사용) 조용히 실패하지 않고 이유를 알려준다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    r = gs._sync_claim_action(cfg, {"run_id": "no-such-run", "claim_id": "x", "action": "explain"})
+    assert not r["ok"] and "understanding_bundle 없음" in r["error"]
+
+
+def test_sync_claim_action_unknown_claim_id(mock_root):
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    run_dir = cfg.paths.runs / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "understanding_bundle.json").write_text(
+        json.dumps({"claims": [{"claim_id": "c1", "type": "FACT", "text": "x", "evidence_refs": []}]}),
+        encoding="utf-8")
+    r = gs._sync_claim_action(cfg, {"run_id": "run-1", "claim_id": "does-not-exist", "action": "explain"})
+    assert not r["ok"] and "claim_id 없음" in r["error"]
+
+
+def test_sync_claim_action_happy_path_calls_backend_once_and_records_usage(mock_root, monkeypatch):
+    """정상 경로: claim 조회 → 프롬프트 조립 → 백엔드 1회 호출 → 결과 반환 + 원장 기록."""
+    from yok3x import guiserver as gs, usage as usage_mod
+    cfg = Config.load(mock_root)
+    cfg.yok3x["sync_layer"]["on_demand_backend"] = "mock"
+    run_dir = cfg.paths.runs / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "understanding_bundle.json").write_text(
+        json.dumps({"claims": [{"claim_id": "c1", "type": "FACT", "text": "파일 변경됨",
+                                "evidence_refs": [{"file": "a.py", "symbol_or_hunk": "",
+                                                    "source": "diff"}]}]}),
+        encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(gs.backends, "run_backend",
+                        lambda name, spec, prompt, **kw: (calls.append(prompt) or
+                                                          BackendResult(backend=name, ok=True,
+                                                                       text="설명입니다", total_tokens=42)))
+    recorded = []
+    monkeypatch.setattr(usage_mod, "record", lambda cfg, worker, kind, res, run_id="":
+                        recorded.append((worker, kind, run_id)))
+
+    r = gs._sync_claim_action(cfg, {"run_id": "run-1", "claim_id": "c1", "action": "explain"})
+    assert r == {"ok": True, "action": "explain", "claim_id": "c1", "text": "설명입니다",
+                "cost_usd": 0.0, "tokens": 42}
+    assert len(calls) == 1 and "파일 변경됨" in calls[0]
+    assert recorded == [("sync_layer", "explain", "run-1")]
+
+
+def test_sync_claim_action_guard_stop_blocks_call(mock_root, monkeypatch):
+    """요금 가드가 stop이면 백엔드 호출 자체가 안 나간다(온디맨드 경로도 가드 우회 없음)."""
+    from yok3x import guiserver as gs, usage as usage_mod
+    cfg = Config.load(mock_root)
+    cfg.yok3x["sync_layer"]["on_demand_backend"] = "mock"
+    run_dir = cfg.paths.runs / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "understanding_bundle.json").write_text(
+        json.dumps({"claims": [{"claim_id": "c1", "type": "FACT", "text": "x", "evidence_refs": []}]}),
+        encoding="utf-8")
+    monkeypatch.setattr(usage_mod, "check_backend",
+                        lambda cfg, b: usage_mod.GuardVerdict(b, 1.0, "7d", "stop", "한도 초과"))
+    calls = []
+    monkeypatch.setattr(gs.backends, "run_backend", lambda *a, **kw: calls.append(1))
+
+    r = gs._sync_claim_action(cfg, {"run_id": "run-1", "claim_id": "c1", "action": "quiz"})
+    assert not r["ok"] and "요금 가드 정지" in r["error"]
+    assert calls == []

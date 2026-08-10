@@ -289,3 +289,48 @@ def render_markdown(bundle: dict[str, Any], tier: str | None = None) -> str:
             lines.append(f"- [ ] {q}")
         lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- S6a: 온디맨드 클릭형 퀴즈/설명
+# 사용자 제안(2026-08-08, §3.6): "코드 보다가 체크하고 싶은 부분을 클릭하면 그 자리에서 퀴즈/설명".
+# S6의 'standard' 자동 트리거보다 먼저 착수 — 호출이 **사용자가 실제로 원할 때만** 발생해 더 싸다.
+# 여기 두 함수는 프롬프트만 조립한다(LLM 호출 자체는 guiserver.py가 기존 워커 인프라로 한다) —
+# 호출 범위를 그 claim 하나로 좁혀(§3.4) 전체 저장소나 다른 claim이 섞여 들어가지 않게 한다.
+
+def _claim_context(claim: dict[str, Any]) -> str:
+    lines = [f"[주장] ({claim.get('type', '?')}) {claim.get('text', '')}"]
+    refs = claim.get("evidence_refs") or []
+    if refs:
+        lines.append("[근거]")
+        for ref in refs:
+            loc = ref.get("file", "") + (f"::{ref['symbol_or_hunk']}" if ref.get("symbol_or_hunk") else "")
+            lines.append(f"- {loc} (출처: {ref.get('source', '?')})")
+    else:
+        lines.append("[근거] 없음 — 이 주장은 원래 미해결/근거부족으로 분류돼 있었다.")
+    return "\n".join(lines)
+
+
+def explain_claim_prompt(claim: dict[str, Any]) -> str:
+    """S6a `explain`: 특정 claim 하나를 더 깊이 재설명하는 프롬프트. 근거를 벗어난 확신을
+    요구하지 않는다 — 모르면 모른다고 답하게 명시(§3.5 "근거 있는 환각" 방지)."""
+    return (
+        "당신은 아래 '주장' 하나를 사용자가 이해하도록 돕는 역할이다. 코드를 수정하지 말고, "
+        "새 주장을 지어내지 말고, 오직 이 주장과 그 근거만 근거로 설명하라.\n\n"
+        f"{_claim_context(claim)}\n\n"
+        "[요청] 이 주장이 왜 그런지, 어떤 근거로 그렇게 판단했는지 2~4문장으로 쉽게 설명하라. "
+        "근거로 확인 안 되는 부분은 추측하지 말고 '근거로는 알 수 없음'이라고 명시하라."
+    )
+
+
+def quiz_claim_prompt(claim: dict[str, Any]) -> str:
+    """S6a `quiz`: 특정 claim 하나에 대한 이해 확인 질문 1~2개 생성. 원안(§7)의 '좋은 문제 유형'
+    (흐름추적·반사실·불변조건·근거) 중 이 claim에 맞는 것만 골라 묻게 한다 — 암기형 질문 금지."""
+    return (
+        "당신은 아래 '주장' 하나에 대한 이해도 확인 질문을 만드는 역할이다. 파일명을 외웠는지 묻는 "
+        "암기형 질문 대신, 흐름추적(다음에 뭐가 일어나는지)·반사실(이걸 지우면 뭐가 깨지는지)·"
+        "불변조건(항상 지켜져야 하는 게 뭔지)·근거(무엇이 이걸 증명하는지) 중 이 주장에 실제로 "
+        "맞는 유형으로만 1~2개 질문을 만들어라. 정답도 함께 제시하되, 근거에 없는 내용으로 정답을 "
+        "지어내지 말고 근거 범위 안에서만 답하라.\n\n"
+        f"{_claim_context(claim)}\n\n"
+        "[출력형식] 각 질문을 'Q: ...' / 'A: ...'로 줄바꿈해 나열하라."
+    )

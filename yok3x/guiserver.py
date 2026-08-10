@@ -16,7 +16,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-from . import backends, limits, usage
+from . import backends, limits, sync_layer, usage
 from ._version import __version__
 from .config import Config
 
@@ -446,6 +446,56 @@ def _write_inline_spec(cfg: Config, spec: dict) -> Path:
     return tf
 
 
+# ---------------------------------------------------------------- v4.6.0 Cognitive Sync Layer S6a
+
+def _sync_claim_action(cfg: Config, body: dict) -> dict:
+    """온디맨드(§3.6 사용자 제안): claim 하나를 골라 `explain`/`quiz` 1회만 호출한다.
+
+    자동 트리거가 아니다 — 사용자가 GUI에서 실제로 클릭했을 때만 이 경로를 탄다. 가드(요금
+    한도)·원장 기록은 일반 워커 호출과 동일하게 적용(전용 경로라고 우회하지 않음)."""
+    from . import review as _review
+    run_id = str(body.get("run_id", "")).strip()
+    claim_id = str(body.get("claim_id", "")).strip()
+    action = str(body.get("action", "")).strip()
+    if action not in ("explain", "quiz"):
+        return {"ok": False, "error": "action은 explain 또는 quiz만 허용"}
+    if not _review._safe_run_id(run_id):
+        return {"ok": False, "error": f"잘못된 run_id: {run_id!r}"}
+    if not claim_id:
+        return {"ok": False, "error": "claim_id 필요"}
+
+    bundle_path = cfg.paths.runs / run_id / "understanding_bundle.json"
+    try:
+        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except OSError:
+        return {"ok": False, "error": f"understanding_bundle 없음(run_id={run_id}) — "
+                                      "그 런에서 sync_layer.enabled가 꺼져 있었을 수 있음"}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "understanding_bundle 파싱 실패"}
+
+    claim = next((c for c in (bundle.get("claims") or []) if c.get("claim_id") == claim_id), None)
+    if claim is None:
+        return {"ok": False, "error": f"claim_id 없음: {claim_id}"}
+
+    sl_cfg = cfg.yok3x.get("sync_layer") or {}
+    backend_name = sl_cfg.get("on_demand_backend") or "claude"
+    if backend_name not in cfg.backends:
+        return {"ok": False, "error": f"backend 없음: {backend_name}"}
+    verdict = usage.check_backend(cfg, backend_name)
+    if verdict.level == "stop":
+        return {"ok": False, "error": f"요금 가드 정지: {backend_name} {verdict.metric} "
+                                      f"{verdict.ratio:.0%} ({verdict.detail})"}
+
+    prompt = (sync_layer.explain_claim_prompt if action == "explain"
+             else sync_layer.quiz_claim_prompt)(claim)
+    res = backends.run_backend(backend_name, cfg.backends[backend_name], prompt)
+    usage.record(cfg, "sync_layer", action, res, run_id=run_id)
+    if not res.ok:
+        return {"ok": False, "error": res.error or "호출 실패"}
+    return {"ok": True, "action": action, "claim_id": claim_id, "text": res.text,
+           "cost_usd": res.cost_usd, "tokens": res.total_tokens}
+
+
 # ---------------------------------------------------------------- config 편집
 
 def _apply_config(cfg: Config, body: dict) -> dict:
@@ -664,6 +714,14 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
 
             if path == "/api/config":
                 self._json(200, _apply_config(cfg, body))
+                return
+
+            if path == "/api/sync/claim_action":      # v4.6.0 S6a: 온디맨드 claim 클릭 explain/quiz
+                try:
+                    r = _sync_claim_action(cfg, body)
+                except Exception as e:
+                    r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                self._json(200 if r.get("ok") else 400, r)
                 return
 
             self._json(404, {"error": "not found"})

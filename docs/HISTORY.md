@@ -4,6 +4,26 @@
 
 ---
 
+## 미출시(dev) · 2026-08-08 — v4.6.0 S6a: 온디맨드 클릭형 claim 퀴즈/설명 API(사용자 제안)
+
+- 사용자 제안: "코드 보다가 체크하고 싶은 부분이 있으면 에이전트 챗 로그에서 클릭해서 바로 퀴즈를
+    받거나 설명을 볼 수 있게" — S6의 `standard`(위험도 T2+ 자동 트리거) 모드보다 **먼저 착수**. 자동
+    트리거보다 싸다(LLM 호출이 사용자가 실제로 원할 때만 발생).
+- `sync_layer.explain_claim_prompt`/`quiz_claim_prompt`: claim **하나**로 범위를 고정한 프롬프트
+    (§3.4 "전체 저장소 대신 관련 부분만" 원칙). 근거 없는 확신을 요구하지 않고 "근거로는 알 수 없음"을
+    명시하게 지시(§3.5 근거 있는 환각 방지). quiz는 암기형 질문 대신 흐름추적·반사실·불변조건·근거
+    유형만 요구(원안 §7 문제 유형 채택).
+- `guiserver.py`의 `POST /api/sync/claim_action`(`_sync_claim_action`): run_id 경로탈출 방어는
+    review.py의 기존 `_safe_run_id` 재사용(중복 구현 안 함) · understanding_bundle 조회 · claim_id
+    검증 · **요금 가드 정상 적용**(온디맨드라고 우회 없음, stop이면 호출 자체가 안 나감) · 기존
+    `usage.record`로 원장 기록.
+- 실측: 실제 GUI 서버(mock 백엔드)를 기동해 curl로 explain/quiz 둘 다 정상 응답 확인.
+- 신규 테스트 7(프롬프트 범위 고정·경로탈출 거부·잘못된 action·번들 없음·claim_id 없음·정상 경로·
+    가드 stop 시 호출 자체 안 나감). 423 passed.
+- **GUI(실제 클릭 UI)는 미포함** — 이 커밋은 API까지만, `gui/index.html`은 건드리지 않음(별도 승인 필요).
+
+---
+
 ## 미출시(dev) · 2026-08-08 — v4.6.0 Cognitive Sync Layer S1~S5(기계 조립, LLM 호출 0, 기본 off)
 
 - 계획서 `docs/plans/v4.6.0-plan-cognitive-sync-layer-2026-08-08.md`(codex 공동설계)의 MVP 절반
