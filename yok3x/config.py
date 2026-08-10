@@ -124,6 +124,16 @@ DEFAULT_YOK3X = {
     # 이름 → MCP 서버 spec(그대로 claude --mcp-config JSON의 mcpServers.<name>에 들어감).
     # 예: {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}}
     "mcp_servers": {},
+    # v4.6.0 Cognitive Sync Layer(근거기반 변경 이해). **기본 off**(다른 opt-in 기능과 동일한 원칙 —
+    # 새 파일을 런마다 조용히 만들지 않는다). enabled=True면 mode="off"라도 changes.diff·run.log·
+    # ACQUIRE에서 근거기반 설명을 기계적으로 조립한다(신규 LLM 호출 0) — mode는 그 위에 얹는 LLM
+    # 비용 단계(light=최대1회·standard=T2+만 최대1회·deep=명시 예산시 상한2)만 통제한다.
+    "sync_layer": {
+        "enabled": False,
+        "mode": "off",                        # off | light | standard | deep
+        "deep_call_budget": 2,
+        "auto_disable_if_uncorrelated": True,  # calibration으로 효과 무상관 확인되면 자동 off(§3.4)
+    },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
     # codex : app-server JSON-RPC 로 '지금 이 순간' 5h/7d used_percent 라이브 조회(진짜 실측).
     #         실패 시 세션 파일(stale) → 원장 순으로 폴백.

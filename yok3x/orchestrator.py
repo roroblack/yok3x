@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, calibration, knot, mcp_policy, reserve, triage, usage, worktree
+from . import acquire, artifacts, calibration, knot, mcp_policy, reserve, sync_layer, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -1990,6 +1990,31 @@ class Orchestrator:
         knot.save(self.cfg, f"run-{self.run_id}",
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",
                   tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
+        # v4.6.0 Cognitive Sync Layer(§ HISTORY 2026-08-08): 기본 off. enabled면 mode="off"에서도
+        # (mode 자체는 아직 light/standard/deep의 추가 LLM 호출을 통제하는 자리표시 — 그 구현은 S6
+        # 후속) changes.diff·run.log·acquire.json에서 근거기반 설명을 기계적으로 조립한다(호출 0).
+        # 실패해도 mat/changes와 같은 원칙으로 런 완료 자체는 절대 안 깨뜨린다.
+        sync_meta: dict[str, Any] = {}
+        sl_cfg = self.cfg.yok3x.get("sync_layer") or {}
+        if sl_cfg.get("enabled"):
+            try:
+                review_root = self._review_root() if self._review_enabled() else None
+                wd = Path(self.workdir) if self.workdir else None
+                bundle = sync_layer.build_understanding_bundle(self.run_dir, review_root, wd)
+                tier = self.triage.get("tier") if isinstance(self.triage, dict) else None
+                md = sync_layer.render_markdown(bundle, tier=tier)
+                _atomic_write_json(self.run_dir / "understanding_bundle.json", bundle)
+                (self.run_dir / "understanding_bundle.md").write_text(md, encoding="utf-8")
+                if review_root is not None:
+                    review_root.mkdir(parents=True, exist_ok=True)
+                    _atomic_write_bytes(review_root / "understanding_bundle.md", md.encode("utf-8"))
+                sync_meta = {"enabled": True, "claims": len(bundle["claims"]), "tier": tier}
+                self._log(f"[sync] 변경 이해 요약 {len(bundle['claims'])}개 claim 조립"
+                          f"(mode={sl_cfg.get('mode', 'off')})")
+            except Exception as e:      # Cognitive Sync Layer 실패가 런 완료를 막으면 안 됨
+                self._log(f"[sync] 조립 예외: {type(e).__name__}: {e}")
+                sync_meta = {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}"}
+
         status_extra = {}
         if mat.get("enabled"):
             status_extra["materialized"] = mat
@@ -1999,6 +2024,8 @@ class Orchestrator:
                 "files": changes["files"],
                 "root": changes["root"],
             }
+        if sync_meta:
+            status_extra["sync_layer"] = sync_meta
         if self.gate is not None:
             status_extra["gate"] = self.gate
         if self._ratchet_commits:      # 체크포인트 브랜치는 사람이 검토·병합한다(자동 병합 없음)

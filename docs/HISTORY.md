@@ -4,6 +4,41 @@
 
 ---
 
+## 미출시(dev) · 2026-08-08 — v4.6.0 Cognitive Sync Layer S1~S5(기계 조립, LLM 호출 0, 기본 off)
+
+- 계획서 `docs/plans/v4.6.0-plan-cognitive-sync-layer-2026-08-08.md`(codex 공동설계)의 MVP 절반
+    (S1~S5, 신규 LLM 호출이 전혀 없는 부분) 구현. 나머지(S6 light/standard/deep 모드·S7 calibration
+    연동·S8 CLI·S9 GUI)는 후속.
+- **신규 `yok3x/sync_layer.py`**(순수 함수, 의존성0): `build_understanding_bundle(run_dir, review_root,
+    workdir)`가 F1-d 검토번들(`changes.diff`/`changes.json`)·`run.log`의 `[route]/[degrade]/[failover]/
+    [gate]` 결정·ACQUIRE(`acquire.json`)를 **기계적으로 조립**해 `Claim`(FACT/RECORDED_DECISION/
+    INFERENCE/OPEN_QUESTION) 목록을 낸다. 근거(evidence_refs) 없이 FACT/RECORDED_DECISION으로 분류될
+    뻔한 claim은 자동으로 `OPEN_QUESTION`으로 강등(정직 표기 — 억지로 채우지 않음, codex의 "근거 있는
+    환각" 경고 반영). ACQUIRE verdict 매핑은 acquire.py의 의미를 그대로 존중: confirmed→FACT,
+    partial(위치 힌트로만)/contradicted(폐기)→OPEN_QUESTION.
+- **Drift Detector**(`check_drift`): claim이 참조하는 파일들의 **콘텐츠 해시**를 조립 시점에 찍어두고,
+    나중에 재조회 시 바뀌었거나(또는 파일이 사라졌으면) 그 파일을 근거로 쓰는 claim만 STALE로 표시.
+    **정직한 한계**: 파일 단위 해시다(hunk·심볼 단위가 이상적이지만 AST 파서가 필요해 의존성0 범위
+    밖 — 문서에 명시). 과소 무효화보다 과다 무효화가 안전하다는 원칙으로 보수적으로 설계.
+- **정적 이해 체크리스트**(`static_checklist`): 기존 T1(triage) tier(direct/local/api)에 맞는
+    LLM 없는 템플릿 질문. 모르는 tier는 가장 엄격한 `api`로 fail-closed.
+- **`orchestrator._finish`**: `sync_layer.enabled`(**기본 False** — 다른 opt-in 기능과 같은 원칙, 새
+    파일을 조용히 만들지 않음) 켜지면 run_dir·review_root 양쪽에 `understanding_bundle.json`/`.md`를
+    쓰고 status.json에 claim 개수·tier 기록. 실패해도(폴백 가드) 런 완료 자체는 절대 안 깨짐(mat/changes
+    와 같은 원칙 — BUG-39류 재발 방지).
+- **설계 변경(계획서 대비 정직한 정정 2건)**: (1) 계획서는 `StepLog`에 changed_files/changed_symbols
+    필드를 추가하자고 했으나, 구현 중 확인해보니 diff는 StepLog가 아니라 F1-d 검토번들에만 있어 그
+    스키마 변경이 불필요했다 — `changes.diff`를 조립 시점에 직접 파싱하는 쪽이 더 단순하고 침습이
+    적어 그렇게 함(StepLog 불변). (2) 계획서의 `mode`(off/light/standard/deep) 하나로만 설계된 설정을
+    `enabled`(전체 기능 on/off) + `mode`(LLM 비용 단계)로 분리 — 이 프로젝트의 다른 모든 opt-in
+    기능(daily_pace·worktree_isolation·auto_commit·mcp_servers 등)이 전부 이 2단 구조라 일관성 유지.
+- 실측(mock 백엔드 실제 런): `[sync] 변경 이해 요약 2개 claim 조립(mode=off)` 로그 확인,
+    `understanding_bundle.md`에 RECORDED_DECISION(run.log의 gate 결정) + tier 기반 체크리스트 정상 출력.
+- 신규 테스트 15(파싱·verdict 매핑·조립 통합·강등 로직·캐시키·drift·checklist·렌더 12 + orchestrator
+    통합 3). 416 passed.
+
+---
+
 ## 미출시(dev) · 2026-08-08 — v4.1.0 MCP 워커도구 a1(설정 전달) — opt-in·화이트리스트·승인필수·fail-closed
 
 - 계획서 `docs/plans/v4.1.0-plan-mcp-worker-tools-2026-07-15.md`의 a1(yok3x가 MCP 서버 설정을

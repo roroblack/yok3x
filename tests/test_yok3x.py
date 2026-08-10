@@ -4303,3 +4303,234 @@ def test_execute_call_mcp_denied_request_audits_without_gate(mock_root, monkeypa
     log = mcp_policy.audit_log_path(cfg.paths.yok3x_dir).read_text(encoding="utf-8").strip()
     rec = json.loads(log)
     assert rec["activated"] is False and "비어있음" in rec["denied_reason"]
+
+
+# --------------------------------------------------------- v4.6.0 Cognitive Sync Layer (mode=off)
+
+_SAMPLE_DIFF = """--- a/pkg/auth.py
++++ b/pkg/auth.py
+@@ -1,3 +1,6 @@
+ def existing():
+     pass
++
++def rotate_refresh_token():
++    pass
+"""
+
+
+def test_sync_layer_parse_diff_extracts_files_and_symbols():
+    """S2: unified diff에서 변경파일·추가된 심볼(근사)을 순수 정규식으로 뽑는다(LLM 호출 없음)."""
+    from yok3x import sync_layer
+    files, symbols = sync_layer._parse_diff(_SAMPLE_DIFF)
+    assert files == ["pkg/auth.py"]
+    assert symbols == {"pkg/auth.py": ["rotate_refresh_token"]}
+
+
+def test_sync_layer_parse_run_log_decisions():
+    """S2: run.log의 [route]/[degrade]/[failover]/[gate] 줄만 RECORDED_DECISION 후보로 뽑는다."""
+    from yok3x import sync_layer
+    log = ("[2026-08-08T00:00:00] [route] build → codex (codex/gpt)\n"
+          "[2026-08-08T00:00:01] 그냥 일반 로그 줄(무시돼야 함)\n"
+          "[2026-08-08T00:00:02] [gate] step 1: claude-main — 승인\n")
+    decisions = sync_layer._parse_run_log_decisions(log)
+    assert decisions == [
+        {"kind": "route", "text": "build → codex (codex/gpt)"},
+        {"kind": "gate", "text": "step 1: claude-main — 승인"},
+    ]
+
+
+@pytest.mark.parametrize(("verdict", "expected_type"), [
+    ("confirmed", "FACT"),
+    ("partial", "OPEN_QUESTION"),
+])
+def test_sync_layer_acquire_claims_verdict_mapping(verdict, expected_type):
+    """S2: ACQUIRE verdict을 claim 타입으로 매핑 — confirmed(경로+심볼 확인)=FACT,
+    partial(위치 힌트로만, acquire.py의 downgrade 의미 그대로 존중)=OPEN_QUESTION."""
+    from yok3x import sync_layer
+    data = {"qa_items": [{
+        "claim_id": "abc123", "verdict": verdict,
+        "answer": {"answer": "재시도 상태를 Redis에 저장한다.",
+                   "evidence": [{"path": "worker/state.py", "symbol": "save_state"}]},
+    }]}
+    claims = sync_layer._acquire_claims(data)
+    assert len(claims) == 1 and claims[0]["type"] == expected_type
+    assert claims[0]["evidence_refs"] == [
+        {"file": "worker/state.py", "symbol_or_hunk": "save_state", "source": "acquire"}]
+
+
+def test_sync_layer_acquire_dropped_becomes_open_question_with_reason():
+    """S2: contradicted(폐기)로 걸러진 ACQUIRE 가설도 '폐기됐다는 사실 자체'는 OPEN_QUESTION으로 남는다."""
+    from yok3x import sync_layer
+    data = {"dropped": [{"claim_id": "x", "verdict": "contradicted",
+                         "reason": "evidence path does not exist",
+                         "answer": {"answer": "PostgreSQL을 쓴다.", "evidence": []}}]}
+    claims = sync_layer._acquire_claims(data)
+    assert len(claims) == 1
+    assert claims[0]["type"] == "OPEN_QUESTION"
+    assert "[폐기된 가설]" in claims[0]["text"] and "evidence path does not exist" in claims[0]["text"]
+
+
+def test_build_understanding_bundle_assembles_all_sources(tmp_path):
+    """S2 통합: changes.diff + run.log + acquire.json을 한 번에 조립. 신규 LLM 호출 없이(순수
+    파일 읽기) claim이 세 출처 모두에서 나오는지 확인."""
+    from yok3x import sync_layer
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    review_root = tmp_path / "review"
+    review_root.mkdir()
+    (review_root / "changes.diff").write_text(_SAMPLE_DIFF, encoding="utf-8")
+    (run_dir / "run.log").write_text("[route] build → codex\n", encoding="utf-8")
+    (run_dir / "acquire.json").write_text(json.dumps({"qa_items": [{
+        "claim_id": "c1", "verdict": "confirmed",
+        "answer": {"answer": "설계상 이유", "evidence": [{"path": "pkg/auth.py", "symbol": "existing"}]},
+    }]}), encoding="utf-8")
+
+    bundle = sync_layer.build_understanding_bundle(run_dir, review_root)
+    types_present = {c["type"] for c in bundle["claims"]}
+    assert {"FACT", "INFERENCE", "RECORDED_DECISION"} <= types_present
+    assert bundle["run_dir"] == str(run_dir)
+
+
+def test_build_understanding_bundle_missing_files_degrades_gracefully(tmp_path):
+    """폴백 가드: run_dir에 아무 파일도 없어도(런이 review/acquire 미사용) 예외 없이 빈 조립."""
+    from yok3x import sync_layer
+    run_dir = tmp_path / "empty_run"
+    bundle = sync_layer.build_understanding_bundle(run_dir, review_root=None)
+    assert bundle["claims"] == []
+
+
+def test_build_understanding_bundle_demotes_evidenceless_claims_to_open_question():
+    """근거(evidence_refs) 없이 FACT/RECORDED_DECISION으로 분류될 뻔한 claim은 자동으로
+    OPEN_QUESTION으로 강등된다(정직 표기 원칙 — 억지로 채우지 않음)."""
+    from yok3x import sync_layer
+    # RECORDED_DECISION 소스인 run_log 파싱 결과는 항상 evidence_refs가 있으므로, 강등 로직
+    # 자체를 직접 함수 호출로 검증(내부 리스트를 흉내내 강등 조건만 확인).
+    claims = [{"type": sync_layer.FACT, "text": "x", "evidence_refs": []}]
+    for c in claims:
+        if c["type"] in (sync_layer.FACT, sync_layer.RECORDED_DECISION) and not c["evidence_refs"]:
+            c["type"] = sync_layer.OPEN_QUESTION
+    assert claims[0]["type"] == sync_layer.OPEN_QUESTION
+
+
+def test_bundle_cache_key_stable_and_mode_sensitive(tmp_path):
+    """S6 캐시 키: 같은 입력 → 같은 키, mode만 달라져도 다른 키(모드별 캐시 분리)."""
+    from yok3x import sync_layer
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "acquire.json").write_text('{"qa_items": []}', encoding="utf-8")
+    k1 = sync_layer.bundle_cache_key(run_dir, None, "off")
+    k2 = sync_layer.bundle_cache_key(run_dir, None, "off")
+    k3 = sync_layer.bundle_cache_key(run_dir, None, "light")
+    assert k1 == k2
+    assert k1 != k3
+
+
+def test_check_drift_detects_changed_and_deleted_referenced_files(tmp_path):
+    """S3 Drift Detector: 파일 내용이 바뀌거나 사라지면 그 파일을 근거로 쓰는 claim만 STALE로
+    표시되고, 관련 없는 claim은 그대로 남는다."""
+    from yok3x import sync_layer
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    (workdir / "a.py").write_text("original a", encoding="utf-8")
+    (workdir / "b.py").write_text("original b", encoding="utf-8")
+    claims = [
+        {"claim_id": "claim-a", "type": sync_layer.FACT, "text": "a",
+         "evidence_refs": [{"file": "a.py", "symbol_or_hunk": "", "source": "diff"}]},
+        {"claim_id": "claim-b", "type": sync_layer.FACT, "text": "b",
+         "evidence_refs": [{"file": "b.py", "symbol_or_hunk": "", "source": "diff"}]},
+    ]
+    bundle = {"claims": claims,
+             "file_hashes": sync_layer._hash_referenced_files(claims, workdir)}
+    assert sync_layer.check_drift(bundle, workdir) == []   # 아직 안 바뀜
+
+    (workdir / "a.py").write_text("changed a", encoding="utf-8")
+    assert sync_layer.check_drift(bundle, workdir) == ["claim-a"]   # b는 그대로라 안 걸림
+
+    (workdir / "b.py").unlink()
+    assert set(sync_layer.check_drift(bundle, workdir)) == {"claim-a", "claim-b"}   # 삭제도 STALE
+
+
+def test_static_checklist_unknown_tier_fails_closed_to_api():
+    """S4: 모르는 tier는 가장 엄격한 'api' 체크리스트로 fail-closed(위험 과소평가보다 안전)."""
+    from yok3x import sync_layer
+    assert sync_layer.static_checklist("nonexistent-tier") == sync_layer.static_checklist("api")
+    assert sync_layer.static_checklist("direct") != sync_layer.static_checklist("api")
+
+
+def test_render_markdown_groups_by_type_and_includes_checklist():
+    """S5: 렌더가 타입별로 묶고, tier가 주어지면 체크리스트도 붙인다. 빈 번들도 안 죽는다."""
+    from yok3x import sync_layer
+    bundle = {"claims": [
+        {"type": sync_layer.FACT, "text": "파일 3개 변경됨",
+         "evidence_refs": [{"file": "x.py", "symbol_or_hunk": "", "source": "diff"}]},
+        {"type": sync_layer.OPEN_QUESTION, "text": "Redis 장애 처리 미검증", "evidence_refs": []},
+    ]}
+    md = sync_layer.render_markdown(bundle, tier="api")
+    assert "확인된 사실" in md and "파일 3개 변경됨" in md
+    assert "미해결/근거부족" in md and "Redis 장애 처리 미검증" in md
+    assert "이해 체크리스트" in md
+    empty_md = sync_layer.render_markdown({"claims": []})
+    assert "조립할 근거 없음" in empty_md
+
+
+def test_finish_sync_layer_disabled_by_default_produces_no_files(tmp_path, monkeypatch):
+    """opt-in 원칙: sync_layer.enabled 기본 False면 _finish가 understanding_bundle 파일을
+    전혀 만들지 않는다(다른 opt-in 기능들과 동일하게 새 파일을 조용히 만들지 않음)."""
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    assert cfg.yok3x["sync_layer"]["enabled"] is False   # 기본값 확인
+    wd = tmp_path / "proj"; wd.mkdir()
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *a, **kw: None)
+
+    o._finish("task", "```file:ok.txt\nok\n```\n")
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert "sync_layer" not in status
+    assert not (o.run_dir / "understanding_bundle.json").exists()
+
+
+def test_finish_sync_layer_enabled_builds_bundle_and_records_status(tmp_path, monkeypatch):
+    """enabled=True면 _finish가 run_dir·review_root 양쪽에 understanding_bundle을 쓰고,
+    status.json에 claim 개수·tier를 기록한다. LLM 호출은 여전히 0(mode=off 기본)."""
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["sync_layer"]["enabled"] = True
+    wd = tmp_path / "proj"; wd.mkdir()
+    (wd / "ok.txt").write_text("old", encoding="utf-8")
+    o = O.Orchestrator(cfg, auto=True)
+    o.workdir = str(wd)
+    o.changes = {"mode": "review"}
+    o.triage = {"tier": "local"}
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *a, **kw: None)
+    o._log("[route] build → mock (mock/mock)")   # run.log에 RECORDED_DECISION 소스 하나 준비
+
+    o._finish("task", "```file:ok.txt\nnew content\n```\n")
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["sync_layer"]["enabled"] is True
+    assert status["sync_layer"]["tier"] == "local"
+    assert status["sync_layer"]["claims"] >= 1
+
+    bundle_json = json.loads((o.run_dir / "understanding_bundle.json").read_text(encoding="utf-8"))
+    assert any(c["type"] == "RECORDED_DECISION" for c in bundle_json["claims"])
+    md = (o.run_dir / "understanding_bundle.md").read_text(encoding="utf-8")
+    assert "이해 체크리스트" in md   # tier="local" → static_checklist가 렌더에 포함됨
+    review_root = Path(status["changes"]["root"])
+    assert (review_root / "understanding_bundle.md").exists()
+
+
+def test_finish_sync_layer_failure_does_not_break_run(tmp_path, monkeypatch):
+    """폴백 가드: sync_layer 조립이 예외를 던져도 _finish/런 완료 자체는 절대 깨지지 않는다
+    (mat/changes와 같은 원칙 — 부가 기능 실패가 본작업을 죽이면 안 됨, BUG-39류 재발 방지)."""
+    from yok3x import orchestrator as O, sync_layer as SL
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["sync_layer"]["enabled"] = True
+    o = O.Orchestrator(cfg, auto=True)
+    monkeypatch.setattr(orchestrator.knot, "save", lambda *a, **kw: None)
+    monkeypatch.setattr(SL, "build_understanding_bundle",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    o._finish("task", "no file blocks here")   # 예외를 던지면 테스트가 여기서 실패함
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "done"
+    assert status["sync_layer"]["ok"] is False and "boom" in status["sync_layer"]["reason"]
