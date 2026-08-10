@@ -189,6 +189,14 @@ def _recent_runs(cfg: Config, n: int = 6) -> list:
         except Exception:
             continue
         steps = data.get("steps", [])
+        # v4.6.0 S9: sync_layer가 켜진 런만 understanding_bundle.json이 있다(기본 off이므로
+        # 대다수 런은 없음 — 없으면 조용히 생략, GUI는 claim 영역 자체를 숨긴다).
+        understanding = None
+        try:
+            raw_bundle = json.loads((d / "understanding_bundle.json").read_text(encoding="utf-8"))
+            understanding = {"claims": raw_bundle.get("claims") or []}
+        except (OSError, json.JSONDecodeError):
+            pass
         runs.append({
             "run_id": data.get("run_id"), "pattern": data.get("pattern"),
             "state": data.get("state"), "task": data.get("task", ""),
@@ -205,6 +213,7 @@ def _recent_runs(cfg: Config, n: int = 6) -> list:
                             # 관찰가능성(A-lite): 스텝별 계측. None이면 GUI가 '—'로 표시
                             "tokens": s.get("tokens"), "cost_usd": s.get("cost_usd"),
                             "duration_ms": s.get("duration_ms")} for s in steps[-8:]],
+            "understanding": understanding,
         })
     return runs
 

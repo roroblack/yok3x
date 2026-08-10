@@ -36,6 +36,20 @@ function load(...names) {
   return Object.fromEntries(names.map((n) => [n, ctx[n]]));
 }
 
+/** `const NAME = {...}` 한 개를 소스 그대로 뽑는다(중괄호 균형 기준, extract()의 const 버전). */
+function extractConst(name) {
+  const start = html.indexOf(`const ${name}=`);
+  assert.notEqual(start, -1, `gui/index.html에 const ${name}=가 없다`);
+  let depth = 0, i = html.indexOf("{", start);
+  const open = i;
+  for (; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") { depth--; if (depth === 0) break; }
+  }
+  assert.ok(i > open, `${name}: 중괄호 균형을 찾지 못함`);
+  return html.slice(start, i + 1) + ";";
+}
+
 test("esc(): HTML 특수문자를 모두 이스케이프 (BUG-19 회귀)", () => {
   const { esc } = load("esc");
   // BUG-19: 에이전트 산출물의 <button>/<div>가 이스케이프 없이 innerHTML에 들어가 DOM이 붕괴했다.
@@ -79,4 +93,69 @@ test("fmtTok()/fmtDur(): 사람이 읽는 축약 — 측정불가는 —", () =>
   assert.equal(fmtDur(null), "—");            // 0과 '측정 불가'를 구분(A-lite 원칙)
   assert.equal(fmtDur(1500), "1.5s");
   assert.equal(fmtDur(125_000), "2m5s");
+});
+
+test("paceTipText(): pace가 null이면 빈 문자열(BUG-44 회귀 방지 — 예전엔 render() 전체가 죽었음)", () => {
+  const { paceTipText } = load("paceTipText");
+  assert.equal(paceTipText(null, 50, false, null, 14, null, ""), "");
+  assert.equal(paceTipText(undefined, 50, false, null, 14, null, ""), "");
+});
+
+test("paceTipText(): pace 있으면 소비율·상한을 담은 툴팁을 낸다", () => {
+  const { paceTipText } = load("paceTipText");
+  const tip = paceTipText({ used: 5.2 }, 20, false, null, 14, null, "");
+  assert.ok(tip.includes("이번주 20%") && tip.includes("오늘 5.2%") && tip.includes("14%까지 여유"));
+  const overTip = paceTipText({ used: 30 }, 40, true, 8.2, 14, null, "");
+  assert.ok(overTip.includes("초과") && overTip.includes("8.2%"));
+});
+
+/** renderClaims는 document 없이도 순수 문자열을 반환한다 — esc/CLAIM_TYPE_LABEL/window만 있으면 됨. */
+function loadRenderClaims() {
+  const ctx = vm.createContext({ window: {} });
+  vm.runInContext(
+    [extract("esc"), extractConst("CLAIM_TYPE_LABEL"), extract("renderClaims")].join("\n"),
+    ctx
+  );
+  return ctx.renderClaims;
+}
+
+test("renderClaims(): claim 없는 run은 빈 문자열(v4.6.0 S9)", () => {
+  const renderClaims = loadRenderClaims();
+  assert.equal(renderClaims({ run_id: "r1", understanding: null }), "");
+  assert.equal(renderClaims({ run_id: "r1", understanding: { claims: [] } }), "");
+});
+
+test("renderClaims(): claim 텍스트·근거가 이스케이프돼 렌더된다 (BUG-19 계열 재확인)", () => {
+  const renderClaims = loadRenderClaims();
+  const html2 = renderClaims({
+    run_id: "r1",
+    understanding: {
+      claims: [{
+        claim_id: "c1", type: "OPEN_QUESTION",
+        text: "<script>alert(1)</script>",
+        evidence_refs: [{ file: "a.py", symbol_or_hunk: "<b>x</b>", source: "diff" }],
+      }],
+    },
+  });
+  assert.ok(!html2.includes("<script>alert(1)</script>"), "claim text가 이스케이프 안 됨");
+  assert.ok(html2.includes("&lt;script&gt;"));
+  assert.ok(html2.includes("QUESTION"));               // CLAIM_TYPE_LABEL 매핑
+  assert.ok(html2.includes('data-claim="c1"'));
+  assert.ok(html2.includes('data-action="explain"') && html2.includes('data-action="quiz"'));
+});
+
+test("renderClaims(): window._claimOpen/_claimResults 상태를 반영한다(폴링 재렌더 생존, 실측 확인된 버그)", () => {
+  const ctx = vm.createContext({ window: {} });
+  vm.runInContext(
+    [extract("esc"), extractConst("CLAIM_TYPE_LABEL"), extract("renderClaims")].join("\n"),
+    ctx
+  );
+  const claim = { claim_id: "c1", type: "FACT", text: "x", evidence_refs: [] };
+  const run = { run_id: "r1", understanding: { claims: [claim] } };
+  const key = "r1|c1";
+  ctx.window._claimOpen = { [key]: true };
+  ctx.window._claimResults = { [key]: '<div class="claim-result">답</div>' };
+  const out = ctx.renderClaims(run);
+  assert.ok(out.includes('class="claim open"'), "open 상태가 class에 반영 안 됨");
+  assert.ok(out.includes('<div class="claim-result">답</div>'), "저장된 result가 안 보임");
 });

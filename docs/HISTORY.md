@@ -4,6 +4,31 @@
 
 ---
 
+## 미출시(dev) · 2026-08-10 — v4.6.0 S9: claim 클릭형 GUI(codex 디자인 컨설트) + BUG-44 발견·수정
+
+- **S9 GUI 구현**(사용자 명시 승인 — "디자인 부분은 코덱스에게 시키고 니가 수정해"): codex에게
+    실제 저장소를 읽게 하고 삽입 지점·스니펫을 상담받은 뒤 Claude가 구현. codex가 짚어낸 선행 조건
+    (`/api/state`가 애초에 `understanding_bundle.json`을 안 내려주고 있었음)부터 처리:
+  - `guiserver._recent_runs()`가 각 run에 `understanding:{claims:[...]}` 추가(sync_layer 미사용
+    런은 `None` — GUI가 조용히 숨김).
+  - `gui/index.html`: `.claims`/`.claim` CSS(기존 배지·색상 관례 재사용, FACT=파랑·DECISION=보라·
+    INFERENCE=노랑·OPEN_QUESTION=빨강) + `renderClaims`/`toggleClaim`/`claimAction` — claim 클릭 →
+    설명/퀴즈 버튼 노출 → 클릭 시에만 `POST /api/sync/claim_action` 호출(자동 아님) → 결과 인라인.
+  - 라이브 브라우저로 전체 흐름 실제 검증(클릭→호출→결과 표시).
+- **BUG-44(검증 중 우연히 발견)**: 이 작업과 무관한 기존(2026-07-24) 버그 — `paceTip` 계산이
+    `t.pace===null`을 안 가려 `render()` 전체가 죽었고, `load()`의 catch가 이를 "서버 연결 끊김"으로
+    오분류(실제로는 fetch 성공, 렌더 예외였음). `paceTipText()` 순수 함수로 추출해 가드 + 재발방지
+    테스트. 자세한 내용은 `docs/reports/bugs/BUG-44-...md`.
+  - **곁가지 확인**: 진단 중 잠깐 "한글이 깨졌다"고 오판할 뻔함 — 실제로는 이 세션 터미널의 cp949
+    콘솔 출력 문제였을 뿐 파일·HTTP 응답은 처음부터 정상 UTF-8이었다(파일로 저장해 바이트 확인).
+- 상태 지속성 버그도 하나 더 잡음(같은 검증 과정에서): `toggleClaim`이 DOM class만 토글해 7초
+    폴링 재렌더마다 열림 상태가 사라짐 — `window._claimOpen`에 영속시켜 수정.
+- 신규 테스트: Python 1(`_recent_runs`의 `understanding` 노출) + JS 9(`paceTipText` 2·`renderClaims`
+    3 포함, 기존 4 유지) = 424 passed(Python) + JS 9 전부 통과.
+- v4.6.0 계획서 S9 완료 표시.
+
+---
+
 ## 미출시(dev) · 2026-08-08 — v4.6.0 S6a: 온디맨드 클릭형 claim 퀴즈/설명 API(사용자 제안)
 
 - 사용자 제안: "코드 보다가 체크하고 싶은 부분이 있으면 에이전트 챗 로그에서 클릭해서 바로 퀴즈를

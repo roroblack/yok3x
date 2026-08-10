@@ -194,6 +194,23 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .arow select{min-width:96px}
 .qbox{margin-top:11px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:8px 10px;font-size:11.5px}
 .qitem{font-family:var(--font-code);font-size:11px;padding:2px 0}
+/* v4.6.0 S9: Cognitive Sync Layer claim 클릭형 설명/퀴즈. sync_layer.enabled(기본 off)인 런만 나타남. */
+.claims{margin:8px 0 0 95px;border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:8px 10px}
+.claims-title{font-size:11px;color:var(--ink2);margin-bottom:5px}
+.claim{border:2px solid var(--ink);border-radius:9px;background:var(--panel);padding:6px 8px;margin:5px 0;box-shadow:2px 2px 0 var(--ink)}
+.claim-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.claim-type{font-family:var(--font-code);font-size:10px;border:1.5px solid var(--ink);border-radius:7px;padding:1px 6px;white-space:nowrap}
+.claim-type.fact{background:var(--blue);color:#fff}
+.claim-type.recorded_decision{background:var(--purple);color:#fff}
+.claim-type.inference{background:var(--yellow)}
+.claim-type.open_question{background:var(--red);color:#fff}
+.claim-text{border:0;background:none;text-align:left;padding:3px 0;cursor:pointer;font:inherit;color:var(--ink);flex:1}
+.claim-actions{display:none;gap:5px;margin-top:5px}
+.claim.open .claim-actions{display:flex}
+.claim-actions .btn{font-size:11px;padding:4px 8px}
+.claim-result{margin-top:6px;border:2px solid var(--ink);border-radius:8px;background:var(--tint-ok);padding:7px 9px;font-family:var(--font-code);font-size:11px;white-space:pre-wrap}
+.claim-result.error{background:var(--tint-stop);color:var(--red)}
+.claim-result.loading{background:var(--tint-warn);color:var(--ink2)}
 .foot{text-align:center;font-size:11px;color:var(--ink2);margin-top:24px;font-family:var(--font-code)}
 </style>
 </head>
@@ -559,6 +576,17 @@ function paceMarks(p){
   if(sf<cap-0.3)m+=`<span class="mk psoft" style="left:${sf}%" title="오늘 경고선 ${sf.toFixed(1)}%"></span>`;
   m+=`<span class="mk pcap" style="left:${cap}%" title="오늘 상한 ${cap.toFixed(1)}% (넘으면 ${p.blocked?'정지':'경고'})"></span>`;
   return m;}
+// BUG-44: pace가 없는 창(daily_pace 미지원 backend·측정 실패)에서도 호출되는 자리라 pace 없으면
+// 빈 문자열로 돌아가야 한다 — 예전엔 이 계산이 무조건 pace.used를 참조해 render() 전체가 죽고
+// GUI가 "서버 연결 끊김"으로 오탐(실제론 fetch 성공, render()의 예외였음)됐다.
+function paceTipText(pace,usedPercent,over,fd,cap,ec,tok){
+  if(!pace) return "";
+  return `이번주 ${usedPercent}% 소비 · 오늘 ${pace.used}% 소비`
+    + (over?` · ⚠균등 페이스 초과 → 리셋까지 하루 ~${fd}%씩이면 초과 없이 지속`
+           :` · 오늘 ${cap}%까지 여유`
+             + (ec!=null&&Math.round(ec)<Math.round(cap)?` · 엄격 균등선 기준으론 오늘 ${ec}%(쓴 만큼 줄어듦)`:""))
+    + (tok?` · ${tok}`:` · (실제 토큰 소모량은 추정 모드에서만 표시 — 지금은 실측 % 모드)`);
+}
 // 창별 색상 레벨(자기 used% 기준). 툴 전체 level을 모든 창에 쓰면 5h만 노랑이어도 7d까지 노랑이 되는 버그.
 function wlvl(p,g){const h=((g&&g.hard)||1)*100,so=((g&&g.soft)||.8)*100;return p>=h?"stop":p>=so?"warn":"";}
 // 7일 바에 '하루 페이싱 예산' 눈금 — cap_pct(주간의 하루치, 기본 14%)의 배수마다 세로 눈금.
@@ -644,11 +672,7 @@ function render(s){
       // 툴팁(오버레이): 안내문구가 아니라 **실제 값** — 이번주 소비%·오늘 소비·(초과 시)리셋까지 하루
       // 지속가능%·토큰 소모량(있을 때만; live % 모드는 토큰 없음). data-tip(네이티브 title 아님) — 일부
       // 렌더러(프리뷰 등)가 OS title 툴팁을 안 그려서 CSS ::after로 직접 그린다(사용자 지적).
-      const paceTip=`이번주 ${w.used_percent}% 소비 · 오늘 ${t.pace.used}% 소비`
-        + (over?` · ⚠균등 페이스 초과 → 리셋까지 하루 ~${fd}%씩이면 초과 없이 지속`
-               :` · 오늘 ${cap}%까지 여유`
-                 + (ec!=null&&Math.round(ec)<Math.round(cap)?` · 엄격 균등선 기준으론 오늘 ${ec}%(쓴 만큼 줄어듦)`:""))
-        + (tok?` · ${tok}`:` · (실제 토큰 소모량은 추정 모드에서만 표시 — 지금은 실측 % 모드)`);
+      const paceTip=paceTipText(t.pace,w.used_percent,over,fd,cap,ec,tok);
       const pl=(isWk&&t.pace)
         ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}% / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
         :`<span class="rst"${tok?` data-tip="${esc(tok)}"`:""}>${rstTxt}</span>`;
@@ -960,6 +984,55 @@ function populateConsoleFilter(s){
   })).join("");
   sel.dataset.k=key; sel.value=(cur==="__all__"||labels.includes(cur))?cur:"__all__";
 }
+// v4.6.0 S9: claim은 사용자가 클릭했을 때만 explain/quiz를 호출한다(자동 아님 — 백엔드와 같은 원칙).
+const CLAIM_TYPE_LABEL={FACT:"FACT",RECORDED_DECISION:"DECISION",INFERENCE:"INFERENCE",OPEN_QUESTION:"QUESTION"};
+function renderClaims(r){
+  const claims=((r.understanding||{}).claims||[]);
+  if(!claims.length) return "";
+  return `<div class="claims"><div class="claims-title">이해 확인 · claim ${claims.length}개(클릭하면 설명/퀴즈)</div>
+    ${claims.map(c=>{
+      const type=String(c.type||"OPEN_QUESTION").toLowerCase();
+      const key=esc((r.run_id||"")+"|"+(c.claim_id||""));
+      const result=(window._claimResults||{})[key]||"";
+      // renderConsoleLog가 7초마다 innerHTML을 통째로 새로 그린다 — 클릭으로 연 상태를 DOM
+      // class로만 두면 다음 폴링에서 그냥 사라진다(실측 확인). window._claimOpen에 영속시킨다.
+      const open=(window._claimOpen||{})[key]?" open":"";
+      return `<div class="claim${open}" data-claim-key="${key}">
+        <div class="claim-head">
+          <span class="claim-type ${type}">${CLAIM_TYPE_LABEL[c.type]||esc(c.type)}</span>
+          <button class="claim-text" data-key="${key}" onclick="toggleClaim(this)">${esc(c.text||"")}</button>
+        </div>
+        <div class="claim-actions">
+          <button class="btn" data-action="explain" data-run="${esc(r.run_id)}" data-claim="${esc(c.claim_id)}" onclick="claimAction(this)">설명</button>
+          <button class="btn" data-action="quiz" data-run="${esc(r.run_id)}" data-claim="${esc(c.claim_id)}" onclick="claimAction(this)">퀴즈</button>
+        </div>
+        ${result}
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+function toggleClaim(btn){
+  const key=btn.dataset.key;
+  window._claimOpen=window._claimOpen||{};
+  window._claimOpen[key]=!window._claimOpen[key];
+  btn.closest(".claim").classList.toggle("open");
+}
+async function claimAction(btn){
+  const box=btn.closest(".claim"), key=box.dataset.claimKey;
+  window._claimResults=window._claimResults||{};
+  window._claimResults[key]='<div class="claim-result loading">처리 중…</div>';
+  renderConsoleLog(window._lastState);
+  try{
+    const r=await fetch("/api/sync/claim_action",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({run_id:btn.dataset.run,claim_id:btn.dataset.claim,action:btn.dataset.action})});
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.error||("HTTP "+r.status));
+    window._claimResults[key]=`<div class="claim-result">${esc(j.text||"응답 없음")}</div>`;
+  }catch(e){
+    window._claimResults[key]=`<div class="claim-result error">실패: ${esc(e.message||e)}</div>`;
+  }
+  renderConsoleLog(window._lastState);
+}
 function renderConsoleLog(s){
   s=s||window._lastState; if(!s) return;
   const log=document.getElementById("console-log"); if(!log) return;
@@ -975,7 +1048,8 @@ function renderConsoleLog(s){
         ${st.score!=null?`<span class="score">SCORE ${esc(st.score)}</span>`:""}
         ${stepBadges(st)}
         ${(st.issues&&st.issues.length)?`<span class="iss">⚠ ${esc(st.issues.join("; ").slice(0,50))}</span>`:""}</div>
-        ${esc((st.summary||"").slice(0,120))}</div></div>`).join("")}`).join("")
+        ${esc((st.summary||"").slice(0,120))}</div></div>`).join("")}
+    ${renderClaims(r)}`).join("")
     : (filter==="__all__" ? '<div class="sub">아직 실행이 없다. 아래에 작업을 입력하고 전송해봐.</div>'
         : (((s.saved_tasks||[]).some(t=>(t.label||"").trim()===filter))
             ? '<div class="sub">💾 저장된 작업 · 아직 실행 없음. [열기]로 폼에 불러오거나 [실행]으로 돌려봐.</div>'

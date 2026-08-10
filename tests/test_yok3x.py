@@ -1153,6 +1153,27 @@ def test_run_label_flows_to_status_and_recent(mock_root):
     assert "task-foo" in {r["label"] for r in _recent_runs(cfg, 10)}    # 라벨 없으면 파일명 폴백
 
 
+def test_recent_runs_exposes_understanding_bundle_when_present(mock_root):
+    """v4.6.0 S9: sync_layer.enabled인 런은 /api/state의 runs[].understanding.claims로 노출된다.
+    미사용 런은 None(GUI가 claim 영역을 숨기는 신호)."""
+    from yok3x.guiserver import _recent_runs
+    cfg = Config.load(mock_root)
+    tf = mock_root / "t.json"
+    tf.write_text(json.dumps({"pattern": "producer-reviewer", "task": "t",
+                              "producer": "claude-main", "reviewer": "codex-critic", "max_rounds": 1},
+                             ensure_ascii=False), encoding="utf-8")
+    run_task_file(cfg, tf, auto=True)
+    runs = _recent_runs(cfg, 10)
+    assert runs[0]["understanding"] is None      # sync_layer 미사용 — 조용히 생략
+
+    run_dir = cfg.paths.runs / runs[0]["run_id"]
+    (run_dir / "understanding_bundle.json").write_text(
+        json.dumps({"claims": [{"claim_id": "c1", "type": "FACT", "text": "x", "evidence_refs": []}]}),
+        encoding="utf-8")
+    runs2 = _recent_runs(cfg, 10)
+    assert runs2[0]["understanding"]["claims"][0]["claim_id"] == "c1"
+
+
 def test_inline_spec_label_defaults_untitled(mock_root):
     from yok3x.guiserver import _write_inline_spec, _recent_runs
     cfg = Config.load(mock_root)
