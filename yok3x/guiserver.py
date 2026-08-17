@@ -152,6 +152,10 @@ def build_state(cfg: Config) -> dict:
         # claude 토큰 자동갱신 on/off + 토큰 상태(읽기만 — 여기서 refresh 트리거 금지)
         "claude_auto_refresh": bool(((cfg.yok3x.get("limits") or {}).get("claude") or {})
                                     .get("auto_refresh", False)),
+        "claude_autocalibrate": bool(((cfg.yok3x.get("limits") or {}).get("claude") or {})
+                                      .get("autocalibrate", True)),
+        "claude_autocalibrate_reason": ((usage._load_pace(cfg).get("claude") or {})
+                                         .get("calib_stop_reason", "")),
         "claude_token": limits.claude_token_status(
             (cfg.yok3x.get("limits") or {}).get("claude") or {}),
         "profiles": list(cfg.yok3x.get("profiles", {})),
@@ -584,6 +588,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
     auto_refresh = body.get("auto_refresh")           # claude 토큰 자체갱신 on/off
+    autocalibrate = body.get("autocalibrate")
     soft = body.get("soft_ratio")
     hard = body.get("hard_ratio")
     for nm, v in (("soft_ratio", soft), ("hard_ratio", hard)):
@@ -628,6 +633,15 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["offline_enabled"] = bool(offline_enabled)
     if auto_refresh is not None:
         cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})["auto_refresh"] = bool(auto_refresh)
+    if autocalibrate is not None:
+        claude_limits = cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
+        claude_limits["autocalibrate"] = bool(autocalibrate)
+        if autocalibrate:
+            pace = usage._load_pace(cfg)
+            claude_pace = pace.get("claude")
+            if isinstance(claude_pace, dict):
+                claude_pace.pop("calib_stop_reason", None)
+                usage._save_pace(cfg, pace)
     if soft is not None:
         cfg.yok3x["guard"]["soft_ratio"] = float(soft)
     if hard is not None:

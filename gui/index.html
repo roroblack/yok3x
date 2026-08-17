@@ -414,6 +414,12 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         <b id="arstat" class="mono" style="font-size:11px;margin-left:auto"></b>
       </div>
       <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div id="sac" class="switch off" onclick="toggleAutoCalibrate()" title="실측 API의 Claude 5h/7d 토큰 상한 자동 보정"></div>
+        <b id="actext" style="font-size:12px">OFF</b>
+        <span class="sub" style="margin:0">실측 API로 claude 5h/7d 토큰 상한을 자동 보정</span>
+        <span id="acreason" class="sub" style="margin:0;color:var(--red)" data-tip="큰 폭의 반대 방향 변동이 반복되면 안전을 위해 자동 정지됩니다"></span>
+      </div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="claude-login-btn" class="btn" onclick="startClaudeLogin()">재로그인</button>
         <span id="claude-login-flow" class="sub"></span>
       </div>
@@ -662,6 +668,12 @@ function render(s){
       else if(tk.mins_left!=null) st.innerHTML=`<span style="color:var(--green)">토큰 유효</span><span style="color:var(--ink2)"> · ${tk.mins_left}분 남음</span>`;
       else st.textContent="";
     }}
+  const sac=document.getElementById("sac");
+  if(sac){const ac=!!s.claude_autocalibrate;
+    sac.classList.toggle("off",!ac); document.getElementById("actext").textContent=ac?"ON":"OFF";
+    const reason=document.getElementById("acreason");
+    if(reason) reason.textContent=(!ac&&s.claude_autocalibrate_reason)?"⚠ 자동 정지: "+s.claude_autocalibrate_reason:"";
+  }
   // 하루 페이싱 동기화
   const pc=(s.guard&&s.guard.pace)||{};
   const swp=document.getElementById("swpace");
@@ -889,6 +901,12 @@ async function toggleAutoRefresh(){
   try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_refresh:turnOn})});
     if(r.ok){document.getElementById("swar").classList.toggle("off",!turnOn);document.getElementById("artext").textContent=turnOn?"ON":"OFF";load();}
   }catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
+}
+async function toggleAutoCalibrate(){
+  const turnOn=document.getElementById("sac").classList.contains("off");
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({autocalibrate:turnOn})});
+    if(r.ok){document.getElementById("sac").classList.toggle("off",!turnOn);document.getElementById("actext").textContent=turnOn?"ON":"OFF";load();}
+  }catch(e){console.warn(e);toast("서버 연결 실패 — 반영하지 않음");}
 }
 // Claude CLI가 브라우저를 열고 로컬 callback까지 처리하므로 URL/코드 입력은 필요 없다.
 async function startClaudeLogin(){

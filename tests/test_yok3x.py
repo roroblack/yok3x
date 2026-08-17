@@ -3268,6 +3268,75 @@ def test_token_refresh_disabled_when_off_or_no_config(tmp_path, monkeypatch):
 
 
 # -------------------------------------- CLI 백엔드 stdin 데드락 방지(회귀 잠금)
+def _seed_calib_history(cfg, values, directions):
+    usage._save_pace(cfg, {"claude": {"calib_history": [
+        {"ts": i, "key": "limit_5h_tokens", "value": value,
+         "direction": direction}
+        for i, (value, direction) in enumerate(zip(values, directions))
+    ]}})
+
+
+def test_autocalibrate_circuit_breaker_stops_reversing_large_updates(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf.update({"autocalibrate": True, "limit_5h_tokens": 100, "min_interval_sec": 0})
+    _seed_calib_history(cfg, [100, 125, 100], ["up", "up", "down"])
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    _stub_window_tokens(monkeypatch, 12.5)
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [_calib_win("5h", 10.0)]))
+    assert got["skipped"] == "진동 감지 — autocalibrate 자동 정지"
+    assert conf["autocalibrate"] is False
+    assert conf["limit_5h_tokens"] == 100
+
+
+def test_autocalibrate_circuit_breaker_avoids_false_positives(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf.update({"autocalibrate": True, "limit_5h_tokens": 100, "min_interval_sec": 0})
+    _seed_calib_history(cfg, [100, 110, 120], ["up", "up", "up"])
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    _stub_window_tokens(monkeypatch, 12.5)
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [_calib_win("5h", 10.0)]))
+    assert "진동" not in str(got["skipped"])
+    assert conf["autocalibrate"] is True
+
+    cfg2 = Config.load(tmp_path / "small")
+    conf2 = cfg2.yok3x["limits"]["claude"]
+    conf2.update({"autocalibrate": True, "limit_5h_tokens": 100, "min_interval_sec": 0})
+    _seed_calib_history(cfg2, [100, 110, 100], ["up", "up", "down"])
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    _stub_window_tokens(monkeypatch, 11.0)
+    got2 = limits.autocalibrate_claude(
+        cfg2, conf2, limits.LimitReading("claude", "claude_oauth", True, True,
+                                         [_calib_win("5h", 10.0)]))
+    assert "진동" not in str(got2["skipped"])
+    assert conf2["autocalibrate"] is True
+
+
+def test_apply_config_and_build_state_expose_autocalibrate(tmp_path, monkeypatch):
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    assert gs._apply_config(cfg, {"autocalibrate": True})["ok"]
+    assert cfg.yok3x["limits"]["claude"]["autocalibrate"] is True
+    assert gs._apply_config(cfg, {"autocalibrate": False})["ok"]
+    assert cfg.yok3x["limits"]["claude"]["autocalibrate"] is False
+    monkeypatch.setattr(gs.usage, "today_totals", lambda c: {})
+    empty = type("V", (), {"reading": None, "real": False, "level": "ok",
+                            "ratio": 0, "source": "none", "detail": ""})()
+    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b: empty)
+    monkeypatch.setattr(gs.usage, "coach_messages", lambda c: [])
+    monkeypatch.setattr(gs, "_routing_preview", lambda c: {})
+    monkeypatch.setattr(gs, "_profile_routes", lambda c: {})
+    monkeypatch.setattr(gs.limits, "list_models", lambda c, b: [])
+    monkeypatch.setattr(gs.limits, "claude_token_status", lambda c: {})
+    state = gs.build_state(cfg)
+    assert state["claude_autocalibrate"] is False
+
+
 def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     # headless 실행 중 CLI가 대화형 입력을 기다려 데드락하지 않도록 stdin=DEVNULL,
     # 프롬프트는 argv({prompt})로 치환, Windows에서 UTF-8 디코딩이 되어야 한다.
@@ -5175,4 +5244,3 @@ def test_claude_login_status_reports_missing_token(monkeypatch):
                         lambda conf: {"exists": False, "expired": None})
 
     assert gs._claude_login_status(cfg) == {"exists": False, "expired": None}
-

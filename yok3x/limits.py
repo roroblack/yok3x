@@ -1400,6 +1400,70 @@ def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
             out["skipped"] = "; ".join(reasons) or "변경 없음"
             return out
 
+        # Persist calibration history in the existing pace state.  Importing
+        # lazily avoids the usage -> limits module cycle.
+        from .usage import _load_pace, _save_pace
+
+        pace_state = _load_pace(cfg)
+        claude_pace = pace_state.setdefault("claude", {})
+        history = claude_pace.get("calib_history", [])
+        if not isinstance(history, list):
+            history = []
+
+        def _oscillates(key: str, value: int) -> tuple[bool, list[dict[str, Any]]]:
+            same = [h for h in history if isinstance(h, dict) and h.get("key") == key]
+            if not same:
+                return False, []
+            try:
+                previous = int(same[-1]["value"])
+            except (KeyError, TypeError, ValueError):
+                return False, []
+            if previous <= 0 or value == previous:
+                return False, []
+            direction = "up" if value > previous else "down"
+            candidate = same[-2:] + [{"key": key, "value": value,
+                                       "direction": direction}]
+            if len(candidate) != 3:
+                return False, []
+            changes = []
+            for idx in (1, 2):
+                old_value = int(candidate[idx - 1]["value"])
+                new_value = int(candidate[idx]["value"])
+                changes.append(abs(new_value - old_value) / old_value)
+            alternating = (candidate[1]["direction"] != candidate[0]["direction"]
+                           and candidate[2]["direction"] != candidate[1]["direction"])
+            return bool(alternating and all(change >= 0.15 for change in changes)), candidate
+
+        tripped = None
+        for key, value in updates.items():
+            hit, observed = _oscillates(key, value)
+            if hit:
+                tripped = (key, observed)
+                break
+        if tripped:
+            key, observed = tripped
+            target = cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
+            target["autocalibrate"] = False
+            claude_pace["calib_stop_reason"] = "진동 감지 — autocalibrate 자동 정지"
+            _save_pace(cfg, pace_state)
+            config_path = cfg.paths.yok3x_json
+            if config_path.exists():
+                try:
+                    shutil.copy2(config_path, config_path.with_name(config_path.name + ".bak"))
+                except OSError as exc:
+                    print(f"[calib] 자동 정지 백업 경고: {exc}", flush=True)
+            cfg.save_yok3x()
+            values = [int(item["value"]) for item in observed]
+            directions = [item["direction"] for item in observed]
+            print(f"[calib] 자동 정지: {key} 최근 값={values}, 방향={directions}, 각 변화율 15% 이상",
+                  flush=True)
+            if key == "limit_5h_tokens":
+                out["5h"] = None
+            else:
+                out["7d"] = None
+            out["skipped"] = "진동 감지 — autocalibrate 자동 정지"
+            return out
+
         target = cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})
         old = {key: target.get(key) for key in updates}
         missing = {key for key in updates if key not in target}
@@ -1415,6 +1479,15 @@ def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
                     target[key] = value
             raise
         _CLAUDE_CALIBRATION_STATE[state_key] = now
+        for key, value in updates.items():
+            previous = next((h for h in reversed(history)
+                             if isinstance(h, dict) and h.get("key") == key), None)
+            old_value = int(previous["value"]) if previous else value
+            history.append({"ts": now, "key": key, "value": int(value),
+                            "direction": "up" if value >= old_value else "down"})
+        claude_pace["calib_history"] = history[-5:]
+        claude_pace.pop("calib_stop_reason", None)
+        _save_pace(cfg, pace_state)
         out["skipped"] = "; ".join(reasons)
         # yok3x.json을 실제로 바꾸는 부작용이라 사용자에게 보여야 한다. logger.info는 핸들러
         # 미구성 시 삼켜지므로, 코드베이스 관례([reserve]·[acquire]·[guard])대로 print를 쓴다.
