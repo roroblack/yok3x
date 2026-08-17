@@ -7,6 +7,7 @@ verify_cmd 게이트에 `pytest -q`를 걸면 프로젝트가 자기 자신을 d
 from __future__ import annotations
 
 import copy
+import io
 import json
 import sys
 import threading
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from yok3x import __version__, backends, calibration, limits, matview, orchestrator, usage
+from yok3x import __version__, backends, calibration, limits, matview, orchestrator, sync_layer, usage
 from yok3x.backends import BackendResult, run_backend
 from yok3x.config import DEFAULT_YOK3X, Config, scaffold
 from yok3x.orchestrator import Orchestrator, run_task_file
@@ -28,6 +29,79 @@ def mock_root(tmp_path):
     """mock 백엔드로 초기화된 격리 작업 디렉터리."""
     scaffold(tmp_path, use_mock=True)
     return tmp_path
+
+
+def _write_sync_calibration(cfg, rows, applied_ids=()):
+    """S7 테스트용 calibration 원자료와 run별 comprehension bundle을 만든다."""
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    for run_id in applied_ids:
+        run_dir = cfg.paths.runs / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "understanding_bundle.json").write_text(
+            json.dumps({"claims": [], "standard_quiz": {"questions": []}}), encoding="utf-8")
+
+
+def _sync_row(run_id, verify_ok, gate_pass, score=8.0):
+    return calibration.make_record(run_id=run_id, verify_ok=verify_ok,
+                                   verify_scope="candidate", score=score,
+                                   gate_pass=gate_pass)
+
+
+def test_sync_correlation_report_compares_comprehension_groups(mock_root):
+    cfg = Config.load(mock_root)
+    rows = ([_sync_row(f"with-{i}", False, False, 5.0) for i in range(3)]
+            + [_sync_row(f"with-{i}", True, True, 9.0) for i in range(2)]
+            + [_sync_row(f"without-{i}", True, True, 9.0) for i in range(5)])
+    _write_sync_calibration(cfg, rows, {f"with-{i}" for i in range(5)})
+    report = sync_layer.correlation_report(cfg)
+    assert report["with_comprehension"] == {"count": 5, "defect_rate": 0.6}
+    assert report["without_comprehension"] == {"count": 5, "defect_rate": 0.0}
+    assert report["sample_size_sufficient"] is True
+    assert report["correlated"] is True
+
+
+def test_sync_correlation_report_defers_with_small_samples(mock_root):
+    cfg = Config.load(mock_root)
+    rows = [_sync_row("with-1", False, False, 5.0),
+            *[_sync_row(f"without-{i}", True, True) for i in range(5)]]
+    _write_sync_calibration(cfg, rows, {"with-1"})
+    report = sync_layer.correlation_report(cfg)
+    assert report["sample_size_sufficient"] is False
+    assert report["correlated"] is False
+
+
+def test_sync_uncorrelated_sample_auto_disables_layer(mock_root):
+    cfg = Config.load(mock_root)
+    rows = ([_sync_row(f"with-{i}", True, True) for i in range(5)]
+            + [_sync_row(f"without-{i}", True, True) for i in range(5)])
+    _write_sync_calibration(cfg, rows, {f"with-{i}" for i in range(5)})
+    cfg.yok3x["sync_layer"]["enabled"] = True
+    report = sync_layer.apply_correlation_policy(cfg)
+    assert report["auto_disabled"] is True
+    assert cfg.yok3x["sync_layer"]["enabled"] is False
+    assert Config.load(mock_root).yok3x["sync_layer"]["enabled"] is False
+
+
+def test_sync_auto_disable_can_be_disabled_by_config(mock_root):
+    cfg = Config.load(mock_root)
+    rows = ([_sync_row(f"with-{i}", True, True) for i in range(5)]
+            + [_sync_row(f"without-{i}", True, True) for i in range(5)])
+    _write_sync_calibration(cfg, rows, {f"with-{i}" for i in range(5)})
+    cfg.yok3x["sync_layer"].update(enabled=True, auto_disable_if_uncorrelated=False)
+    report = sync_layer.apply_correlation_policy(cfg)
+    assert report["auto_disabled"] is False
+    assert cfg.yok3x["sync_layer"]["enabled"] is True
+
+
+def test_sync_calibration_missing_or_empty_is_safe(mock_root):
+    cfg = Config.load(mock_root)
+    assert sync_layer.correlation_report(cfg) == {}
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n", encoding="utf-8")
+    assert sync_layer.correlation_report(cfg) == {}
 
 
 # --------------------------------------------------------------- ① deepcopy 격리
@@ -2793,13 +2867,25 @@ def test_implausible_estimate_is_dropped_for_ledger(monkeypatch, tmp_path):
 
 
 # -------------------------------------- claude transcript 자동 캘리브레이션 + 토큰 노출
+def _calib_win(name, pct, resets_in=3600.0):
+    """캘리브레이션용 창. BUG-47 이후 autocalibrate는 `resets_at`(창 위상)이 있어야 보정한다 —
+    분자(로컬 토큰)를 서버 창과 같은 구간으로 맞춰야 역산이 성립하기 때문."""
+    return limits.Window(name, pct, resets_at=time.time() + resets_in)
+
+
+def _stub_window_tokens(monkeypatch, toks):
+    """위상 정렬 토큰 합계 스텁. autocalibrate는 claude_window_tokens만 쓴다(트레일링 롤링 아님)."""
+    monkeypatch.setattr(limits, "claude_window_tokens",
+                        lambda c, w, ra, now=None: toks)
+
+
 def test_autocalibrate_claude_saves_cap_from_live_percent(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)
     conf = cfg.yok3x["limits"]["claude"]
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000)
+    _stub_window_tokens(monkeypatch, 1_000_000)
     reading = limits.LimitReading("claude", "claude_oauth", ok=True, real=True,
-                                  windows=[limits.Window("5h", 10.0)])
+                                  windows=[_calib_win("5h", 10.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2819,11 +2905,11 @@ def test_autocalibrate_claude_rejects_small_percent_or_zero_tokens(
     conf = cfg.yok3x["limits"]["claude"]
     conf["limit_5h_tokens"] = 12_345_678
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: toks)
+    _stub_window_tokens(monkeypatch, toks)
 
     got = limits.autocalibrate_claude(
         cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
-                                       [limits.Window("5h", pct)]))
+                                       [_calib_win("5h", pct)]))
 
     assert got["5h"] is None and reason in str(got["skipped"])
     assert conf["limit_5h_tokens"] == 12_345_678
@@ -2834,11 +2920,11 @@ def test_autocalibrate_claude_rate_limits_writes(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)
     conf = cfg.yok3x["limits"]["claude"]
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000)
+    _stub_window_tokens(monkeypatch, 1_000_000)
     first = limits.LimitReading("claude", "claude_oauth", True, True,
-                                [limits.Window("5h", 10.0)])
+                                [_calib_win("5h", 10.0)])
     second = limits.LimitReading("claude", "claude_oauth", True, True,
-                                 [limits.Window("7d", 10.0)])
+                                 [_calib_win("7d", 10.0)])
     limits.autocalibrate_claude(cfg, conf, first)
 
     got = limits.autocalibrate_claude(cfg, conf, second)
@@ -2855,9 +2941,9 @@ def test_autocalibrate_claude_rejects_implausible_cap(tmp_path, monkeypatch):
     # 10%에서 200억 tok이면 2000억 cap = 기존의 20,000배 → 오염된 표본으로 본다.
     # 상한은 max_calib_multiple(기본 1000배). 실측상 7d는 cache read 누적으로 정상적으로도
     # ~153배가 나오므로(5h는 ~1배) 100배로 막으면 정상 보정이 거부된다 — 그래서 1000배다.
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 20_000_000_000)
+    _stub_window_tokens(monkeypatch, 20_000_000_000)
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
-                                  [limits.Window("5h", 10.0)])
+                                  [_calib_win("5h", 10.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2873,10 +2959,11 @@ def test_autocalibrate_claude_allows_cache_read_inflation(tmp_path, monkeypatch)
     conf = cfg.yok3x["limits"]["claude"]
     conf["limit_7d_tokens"] = 500_000_000          # 이미 보정된 값(override>0) → 클램프 대상
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    # 5%에서 38.3억 tok → 파생 cap 766억(=153배)이지만 비현실 거부는 안 됨. 클램프로 +25%만 반영.
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 3_830_000_000)
+    # 10%에서 76.6억 tok → 파생 cap 766억(=153배)이지만 비현실 거부는 안 됨. 클램프로 +25%만 반영.
+    # (BUG-47 이후 5% 같은 저관측은 양자화 오차가 커 아예 건너뛴다 — 여기선 10%로 관측한다.)
+    _stub_window_tokens(monkeypatch, 7_660_000_000)
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
-                                  [limits.Window("7d", 5.0)])
+                                  [_calib_win("7d", 10.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2891,14 +2978,14 @@ def test_autocalibrate_claude_clamps_swing_and_converges(tmp_path, monkeypatch):
     conf = cfg.yok3x["limits"]["claude"]
     conf["limit_5h_tokens"] = 200_000_000          # 이미 보정된 값
     # 파생 cap = 10억(=5배 폭등 시도). 클램프 없으면 그대로 저장돼 스윙의 씨앗이 된다.
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_000_000_000)
+    _stub_window_tokens(monkeypatch, 1_000_000_000)
 
     prev = 200_000_000
     for step in range(6):
         limits._CLAUDE_CALIBRATION_STATE.clear()   # 스텝마다 rate-limit 우회
         got = limits.autocalibrate_claude(
             cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
-                                           [limits.Window("5h", 10.0)]))
+                                           [_calib_win("5h", 10.0)]))
         cur = conf["limit_5h_tokens"]
         # 회당 변화는 절대 25%를 넘지 않는다(스윙/폭등 방지).
         assert cur <= prev * 1.25 + 1, (step, prev, cur)
@@ -2916,9 +3003,9 @@ def test_autocalibrate_claude_multiple_bounds_come_from_config(tmp_path, monkeyp
     conf["limit_5h_tokens"] = 10_000_000
     conf["max_calib_multiple"] = 2.0               # 상한을 좁히면 거부돼야
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 10_000_000)  # 10%→1억=10배
+    _stub_window_tokens(monkeypatch, 10_000_000)   # 10%→1억=10배
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
-                                  [limits.Window("5h", 10.0)])
+                                  [_calib_win("5h", 10.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2932,9 +3019,9 @@ def test_autocalibrate_claude_skips_negligible_change(tmp_path, monkeypatch):
     conf["limit_5h_tokens"] = 10_000_000
     limits._CLAUDE_CALIBRATION_STATE.clear()
     # 역산 cap=10.5M: 기존 대비 정확히 +5%라 파일 churn 없이 유지한다.
-    monkeypatch.setattr(limits, "claude_rolling_tokens", lambda c, w: 1_050_000)
+    _stub_window_tokens(monkeypatch, 1_050_000)
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
-                                  [limits.Window("5h", 10.0)])
+                                  [_calib_win("5h", 10.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2947,10 +3034,10 @@ def test_autocalibrate_claude_ignores_per_model_window(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)
     conf = cfg.yok3x["limits"]["claude"]
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens",
-                        lambda c, w: pytest.fail("per-model 창은 transcript를 읽으면 안 됨"))
+    monkeypatch.setattr(limits, "claude_window_tokens",
+                        lambda *a, **k: pytest.fail("per-model 창은 transcript를 읽으면 안 됨"))
     reading = limits.LimitReading("claude", "claude_oauth", True, True,
-                                  [limits.Window("7d·Fable", 22.0)])
+                                  [_calib_win("7d·Fable", 22.0)])
 
     got = limits.autocalibrate_claude(cfg, conf, reading)
 
@@ -2963,15 +3050,102 @@ def test_autocalibrate_claude_off_preserves_existing_behavior(tmp_path, monkeypa
     conf = cfg.yok3x["limits"]["claude"]
     conf["autocalibrate"] = False
     limits._CLAUDE_CALIBRATION_STATE.clear()
-    monkeypatch.setattr(limits, "claude_rolling_tokens",
-                        lambda c, w: pytest.fail("off이면 transcript를 읽으면 안 됨"))
+    monkeypatch.setattr(limits, "claude_window_tokens",
+                        lambda *a, **k: pytest.fail("off이면 transcript를 읽으면 안 됨"))
 
     got = limits.autocalibrate_claude(
         cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
-                                       [limits.Window("5h", 10.0)]))
+                                       [_calib_win("5h", 10.0)]))
 
     assert "비활성" in str(got["skipped"])
     assert conf["limit_5h_tokens"] == 0 and not cfg.paths.yok3x_json.exists()
+
+
+# -------------------------------------- BUG-47 회귀: 창 위상 정렬 + 저관측 거부
+def test_claude_window_tokens_counts_only_since_window_start(tmp_path, monkeypatch):
+    """서버 창(텀블링)과 같은 구간만 센다 — 리셋 이전 토큰은 분자에 들어오면 안 된다."""
+    now = 1_000_000.0
+    resets_at = now + 3600.0                        # 7d 창이 1시간 뒤 리셋 → 창 시작 = now-7d+1h
+    seen: dict[str, float] = {}
+
+    def fake(root, n, window_sec):
+        seen["cutoff"] = n - window_sec
+        return 42
+
+    monkeypatch.setattr(limits, "_rolling_claude_tokens", fake)
+    monkeypatch.setattr(limits, "_claude_root", lambda c: tmp_path)
+
+    got = limits.claude_window_tokens({}, "7d", resets_at, now)
+
+    assert got == 42
+    # cutoff는 '지금-7일'(트레일링)이 아니라 'resets_at-7일'(창 시작)이어야 한다.
+    assert seen["cutoff"] == pytest.approx(resets_at - 7 * 86400.0)
+    assert seen["cutoff"] != pytest.approx(now - 7 * 86400.0)
+
+
+def test_autocalibrate_claude_ignores_pre_reset_tokens(tmp_path, monkeypatch):
+    """BUG-47 핵심: 리셋 직후 트레일링 합계는 '지난 창'까지 끌고 와 파생 cap을 부풀린다(실측 3.68배).
+    위상 정렬 합계를 쓰면 같은 live %에서도 참값이 나온다."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    limits._CLAUDE_CALIBRATION_STATE.clear()
+    now = time.time()
+    resets_at = now + 6 * 86400.0                  # 7d 창 1일차(리셋 직후)
+    win_start = resets_at - 7 * 86400.0
+
+    # 창 시작 이전 90억(지난 창) + 창 안 13.3억. 트레일링이면 둘 다 세서 cap이 7.7배 부풀었다.
+    def tokens(root, n, window_sec):
+        return 1_334_000_000 if (n - window_sec) >= win_start - 1 else 10_244_000_000
+
+    monkeypatch.setattr(limits, "_rolling_claude_tokens", tokens)
+    monkeypatch.setattr(limits, "_claude_root", lambda c: tmp_path)
+
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [limits.Window("7d", 10.0, resets_at=resets_at)]))
+
+    assert got["7d"] == 13_340_000_000, got        # 13.34억/0.10 — 창 안 토큰만
+    assert got["7d"] < 100_000_000_000            # 트레일링(102.4억/0.10)이면 여기서 걸린다
+
+
+def test_autocalibrate_claude_skips_without_reset_phase(tmp_path, monkeypatch):
+    """위상을 모르면(resets_at 없음/과거) 미정렬 역산 대신 건너뛴다 — 틀린 cap보다 무보정이 낫다."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 10_000_000
+    monkeypatch.setattr(limits, "claude_window_tokens",
+                        lambda *a, **k: pytest.fail("위상 없으면 읽지 않는다"))
+
+    for win in (limits.Window("5h", 30.0),                                  # resets_at 없음
+                limits.Window("5h", 30.0, resets_at=time.time() - 600)):    # 이미 지난 값
+        limits._CLAUDE_CALIBRATION_STATE.clear()
+        got = limits.autocalibrate_claude(
+            cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True, [win]))
+        assert got["5h"] is None and "위상" in str(got["skipped"])
+        assert conf["limit_5h_tokens"] == 10_000_000
+
+
+def test_autocalibrate_claude_skips_quantization_noise(tmp_path, monkeypatch):
+    """정수 %의 상대 불확실도(0.5/pct)가 ±5% 데드밴드보다 크면(=pct<10) 보정하지 않는다 —
+    노이즈와 구분되지 않는 관측으로 cap을 쓰면 폴마다 값이 튀어 수렴하지 않는다(BUG-35 재발 경로)."""
+    cfg = Config.load(tmp_path)
+    conf = cfg.yok3x["limits"]["claude"]
+    conf["limit_5h_tokens"] = 10_000_000
+    _stub_window_tokens(monkeypatch, 1_000_000)
+
+    limits._CLAUDE_CALIBRATION_STATE.clear()       # 5% → 0.5/5 = ±10% > 5% → 거부
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [_calib_win("5h", 5.0)]))
+    assert got["5h"] is None and "양자화오차" in str(got["skipped"])
+    assert conf["limit_5h_tokens"] == 10_000_000
+
+    limits._CLAUDE_CALIBRATION_STATE.clear()       # 20% → ±2.5% ≤ 5% → 통과
+    got = limits.autocalibrate_claude(
+        cfg, conf, limits.LimitReading("claude", "claude_oauth", True, True,
+                                       [_calib_win("5h", 20.0)]))
+    # 파생 cap 5M(=1M/0.20)이지만 기존 보정값 10M이 있어 회당 -25% 클램프(BUG-35)로 7.5M.
+    assert got["5h"] == 7_500_000, got
 
 
 def test_claude_transcript_tokens_are_exposed_in_gui_state(tmp_path, monkeypatch):
@@ -4071,6 +4245,65 @@ def test_review_bundle_discovery_supports_run_dir_base(tmp_path):
     assert review_module.find_bundle(cfg, run_id) == root
 
 
+def _write_sync_bundle_for_cli(tmp_path, run_id="run_sync_cli", **extra):
+    run_dir = tmp_path / ".yok3x" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    bundle = {
+        "claims": [{
+            "claim_id": "claim-cli-1",
+            "type": sync_layer.FACT,
+            "text": "CLI에 표시할 핵심 사실",
+            "evidence_refs": [{"file": "app.py", "symbol_or_hunk": "main", "source": "diff"}],
+        }],
+        **extra,
+    }
+    (run_dir / "understanding_bundle.json").write_text(
+        json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    return run_dir
+
+
+def test_sync_cli_prints_claims(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    _write_sync_bundle_for_cli(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["sync", "run_sync_cli"]) == 0
+    assert "CLI에 표시할 핵심 사실" in capsys.readouterr().out
+
+
+def test_sync_cli_prints_standard_quiz_questions(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    _write_sync_bundle_for_cli(
+        tmp_path, standard_quiz={"questions": ["이 사실의 근거는 무엇인가?"]})
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["sync", "run_sync_cli"]) == 0
+    output = capsys.readouterr().out
+    assert "Standard Quiz" in output
+    assert "이 사실의 근거는 무엇인가?" in output
+
+
+def test_sync_cli_without_bundle_is_soft_success(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    (tmp_path / ".yok3x" / "runs" / "run_without_sync").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["sync", "run_without_sync"]) == 0
+    assert "sync_layer 데이터가 없습니다" in capsys.readouterr().out
+
+
+def test_sync_cli_missing_run_is_error(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["sync", "does-not-exist"]) != 0
+    assert "존재하지 않는 run_id" in capsys.readouterr().err
+
+
 def test_daily_pace_catch_up_cap(tmp_path):
     """유동(catch-up) 하루 상한: 덜 썼으면 상한↑(안전캡 2×q), 많이 썼으면↓, 폴백은 고정 q.
     사용자 시나리오: 2일 지나고 0% 사용 → 오늘 28%p(=이틀치 몰아쓰기, 안전캡)."""
@@ -4093,6 +4326,43 @@ def test_daily_pace_catch_up_cap(tmp_path):
     cfg.yok3x["guard"]["daily_pace"] = {"enabled": True, "pct_of_weekly": 0.14,
                                         "mode": "warn", "strategy": "catch_up"}
     assert round(usage.daily_pace_status(cfg, "claude", 0.0, reset_at=None)["cap"]) == 14
+
+
+def test_daily_pace_grace_band_keeps_cap_within_grace(tmp_path):
+    """grace_band는 작은 초과를 grace 안에서 허용해 기본 상한 q를 유지한다."""
+    from yok3x import usage
+    q = 14.0
+    reset_at = 5 * 86400.0
+    assert usage._grace_band_cap(q, 31.0, reset_at, 2.0, now=0.0) == q
+
+
+def test_daily_pace_grace_band_reduces_cap_after_grace(tmp_path):
+    """grace_band는 grace를 넘긴 초과분에 대해서만 q보다 낮게 완만히 줄인다."""
+    from yok3x import usage
+    q = 14.0
+    reset_at = 5 * 86400.0
+    cap = usage._grace_band_cap(q, 36.0, reset_at, 2.0, now=0.0)
+    assert cap < q
+
+
+def test_daily_pace_debt_amortize_is_gentler_than_catch_up(tmp_path):
+    """debt_amortize는 초과 시 상한을 줄이되 catch_up보다 완만하게 조절한다."""
+    from yok3x import usage
+    q = 14.0
+    reset_at = 5 * 86400.0
+    debt_cap = usage._debt_amortize_cap(q, 36.0, reset_at, 2.0, now=0.0)
+    catch_up_cap = usage._catch_up_cap(q, 36.0, reset_at, 2.0, now=0.0)
+    assert debt_cap < q and debt_cap > catch_up_cap
+
+
+def test_apply_config_accepts_new_daily_pace_strategies(tmp_path):
+    """guiserver가 새 daily_pace 전략 두 값을 실제 설정에 저장한다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    for strat in ("grace_band", "debt_amortize"):
+        r = gs._apply_config(cfg, {"daily_pace": {"strategy": strat}})
+        assert r.get("ok") is True
+        assert cfg.yok3x["guard"]["daily_pace"]["strategy"] == strat
 
 
 def test_daily_pace_codex_day1_anchors_at_reset(tmp_path):
@@ -4139,6 +4409,70 @@ def test_daily_pace_strategy_change_applies_same_day(tmp_path):
     dp["strategy"] = "catch_up"                              # 같은 날 전략만 변경
     s2 = usage.daily_pace_status(cfg, "claude", 0.0, reset_at=reset_at)
     assert round(s2["cap"]) == 28                            # 즉시 유동 반영(안전캡)
+
+
+def test_daily_pace_v2_carry_fast_cut_fast_matches_catch_up():
+    from yok3x import usage
+    for u0 in (0.0, 30.0, 70.0, 84.0):
+        old = usage._catch_up_cap(14.0, u0, 5 * 86400.0, 2.0, now=0.0)
+        new = usage._daily_cap_v2("carry_fast", "cut_fast", 14.0, u0, 5 * 86400.0, 2.0, now=0.0)
+        assert new == old
+
+
+def test_daily_pace_v2_carry_smooth_cut_smooth_matches_spread():
+    from yok3x import usage
+    for u0 in (0.0, 30.0, 70.0, 84.0):
+        assert usage._daily_cap_v2("carry_smooth", "cut_smooth", 14.0, u0,
+                                   5 * 86400.0, 2.0, now=0.0) == usage._spread_cap(
+                                       14.0, u0, 5 * 86400.0, 2.0, now=0.0)
+
+
+def test_daily_pace_v2_grace_and_debt_match_legacy():
+    from yok3x import usage
+    args = (14.0, 36.0, 5 * 86400.0, 2.0)
+    assert usage._daily_cap_v2("flat", "grace_band", *args, now=0.0) == usage._grace_band_cap(*args, now=0.0)
+    assert usage._daily_cap_v2("flat", "debt_amortize", *args, now=0.0) == usage._debt_amortize_cap(*args, now=0.0)
+
+
+def test_daily_pace_v2_supports_mixed_policies():
+    from yok3x import usage
+    cap = usage._daily_cap_v2("carry_fast", "debt_amortize", 14.0, 36.0,
+                              5 * 86400.0, 2.0, now=0.0)
+    assert 0.0 < cap < 14.0
+
+
+def test_apply_config_saves_daily_pace_axes_independently(tmp_path):
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    assert gs._apply_config(cfg, {"daily_pace": {"underuse_policy": "carry_fast"}})["ok"]
+    assert gs._apply_config(cfg, {"daily_pace": {"overuse_policy": "debt_amortize"}})["ok"]
+    dp = cfg.yok3x["guard"]["daily_pace"]
+    assert dp["underuse_policy"] == "carry_fast" and dp["overuse_policy"] == "debt_amortize"
+
+
+def test_daily_pace_new_policy_whitelists_reject_unknown(tmp_path):
+    from yok3x import guiserver as gs
+    cfg = Config.load(tmp_path)
+    gs._apply_config(cfg, {"daily_pace": {"underuse_policy": "carry_fast", "overuse_policy": "flat"}})
+    gs._apply_config(cfg, {"daily_pace": {"underuse_policy": "bogus", "overuse_policy": "bogus"}})
+    dp = cfg.yok3x["guard"]["daily_pace"]
+    assert dp["underuse_policy"] == "carry_fast" and dp["overuse_policy"] == "flat"
+
+
+def test_daily_pace_custom_pair_is_reported_as_custom(tmp_path):
+    from yok3x import usage
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["daily_pace"].update(enabled=True, underuse_policy="carry_fast",
+                                             overuse_policy="debt_amortize")
+    status = usage.daily_pace_status(cfg, "claude", 36.0, today="custom", reset_at=5 * 86400.0)
+    assert status["strategy"] == "custom"
+
+
+def test_gui_has_independent_pace_policy_handlers():
+    html = Path("gui/index.html").read_text(encoding="utf-8")
+    assert "saveUnderusePolicy('carry_fast')" in html
+    assert "saveOverusePolicy('debt_amortize')" in html
+    assert "data-us=" in html and "data-os=" in html
 
 
 # --------------------------------------------------------- v4.1.0 MCP 워커도구(a1)
@@ -4679,3 +5013,166 @@ def test_sync_claim_action_guard_stop_blocks_call(mock_root, monkeypatch):
     r = gs._sync_claim_action(cfg, {"run_id": "run-1", "claim_id": "c1", "action": "quiz"})
     assert not r["ok"] and "요금 가드 정지" in r["error"]
     assert calls == []
+
+
+# --------------------------------------------------------- v4.6.0 S6c light/deep
+
+def test_s6c_light_instruction_is_added_to_critic_prompt(tmp_path):
+    from yok3x.orchestrator import Orchestrator
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["sync_layer"].update({"enabled": True, "mode": "light"})
+    o = Orchestrator(cfg, auto=True)
+    spec = o.prepare_call("codex-critic", "review", task_kind="critic")
+    assert "Cognitive Sync Layer / light" in spec.prompt
+    assert "ACQUIRE" in spec.prompt
+
+
+def test_s6c_light_does_not_create_extra_call(tmp_path, monkeypatch):
+    o, calls, _, bundle = _run_standard_sync_finish(tmp_path, monkeypatch,
+                                                     tier="api", mode="light")
+    assert calls == []
+    assert "standard_quiz" not in bundle
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["sync_layer"]["light_instruction"] is True
+
+
+def test_s6c_deep_api_calls_once_and_saves_forensic(tmp_path, monkeypatch):
+    _, calls, _, bundle = _run_standard_sync_finish(tmp_path, monkeypatch,
+                                                     tier="api", mode="deep")
+    assert len(calls) == 1
+    assert "deep_forensic" in bundle
+
+
+def test_s6c_deep_non_api_does_not_call(tmp_path, monkeypatch):
+    for tier in ("local", "direct"):
+        _, calls, _, bundle = _run_standard_sync_finish(tmp_path / tier, monkeypatch,
+                                                         tier=tier, mode="deep")
+        assert calls == []
+        assert "deep_forensic" not in bundle
+
+
+def test_s6c_deep_budget_zero_skips_call(tmp_path, monkeypatch):
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["sync_layer"].update({"enabled": True, "mode": "deep",
+                                     "deep_call_budget": 0, "standard_backend": "mock"})
+    cfg.yok3x["workers"]["claude-main"]["backend"] = "mock"
+    cfg.backends["mock"] = {"type": "mock"}
+    from yok3x import orchestrator as O
+    o = O.Orchestrator(cfg, auto=True); o.triage = {"tier": "api"}
+    calls = []
+    monkeypatch.setattr(O, "run_backend", lambda *a, **kw: calls.append(1))
+    monkeypatch.setattr(O.knot, "save", lambda *a, **kw: None)
+    o._finish("task", "no file blocks here")
+    assert calls == []
+    assert "예산 상한 도달로 건너뜀" in (o.run_dir / "run.log").read_text(encoding="utf-8")
+
+
+def test_s6c_deep_failure_does_not_break_run(tmp_path, monkeypatch):
+    _, calls, status, _ = _run_standard_sync_finish(tmp_path, monkeypatch,
+                                                     tier="api", mode="deep", raises=True)
+    assert len(calls) == 1
+    assert status["state"] == "done"
+
+
+# --------------------------------------------------------- v4.6.0 S6b standard 자동 퀴즈
+
+def _run_standard_sync_finish(tmp_path, monkeypatch, *, tier="local", mode="standard",
+                              result_text='["질문 1", "질문 2", "질문 3"]', raises=False):
+    from yok3x import orchestrator as O
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["sync_layer"].update({"enabled": True, "mode": mode,
+                                     "standard_backend": "mock"})
+    cfg.yok3x["workers"]["claude-main"]["backend"] = "mock"
+    cfg.backends["mock"] = {"type": "mock"}
+    o = O.Orchestrator(cfg, auto=True)
+    o.triage = {"tier": tier}
+    calls = []
+
+    def fake_backend(name, spec, prompt, **kwargs):
+        calls.append(prompt)
+        if raises:
+            raise RuntimeError("quiz boom")
+        return BackendResult(backend=name, ok=True, text=result_text, total_tokens=3)
+
+    monkeypatch.setattr(O, "run_backend", fake_backend)
+    monkeypatch.setattr(O.knot, "save", lambda *a, **kw: None)
+    o._log("[route] build → mock (mock/mock)")
+    o._finish("task", "no file blocks here")
+    status = json.loads((o.run_dir / "status.json").read_text(encoding="utf-8"))
+    bundle_path = o.run_dir / "understanding_bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8")) if bundle_path.exists() else {}
+    return o, calls, status, bundle
+
+
+def test_s6b_standard_t1_does_not_call_quiz(tmp_path, monkeypatch):
+    """S6b: T1(direct)은 standard여도 자동 퀴즈를 만들지 않는다."""
+    _, calls, _, bundle = _run_standard_sync_finish(tmp_path, monkeypatch, tier="direct")
+    assert calls == []
+    assert "standard_quiz" not in bundle
+
+
+def test_s6b_standard_t2_calls_backend_once(tmp_path, monkeypatch):
+    """S6b: T2 standard의 자동 질문 생성은 한 런에서 정확히 1회다."""
+    _, calls, _, bundle = _run_standard_sync_finish(tmp_path, monkeypatch, tier="local")
+    assert len(calls) == 1
+    assert "standard_quiz" in bundle
+
+
+def test_s6b_nonstandard_modes_do_not_call_quiz(tmp_path, monkeypatch):
+    """S6b: off/light/deep에는 standard 자동 경로가 섞이지 않는다."""
+    for mode in ("off", "light"):
+        _, calls, _, bundle = _run_standard_sync_finish(tmp_path / mode, monkeypatch,
+                                                         tier="api", mode=mode)
+        assert calls == []
+        assert "standard_quiz" not in bundle
+
+
+def test_s6b_quiz_failure_does_not_break_run(tmp_path, monkeypatch):
+    """S6b 부가 호출 실패는 본 런을 실패시키지 않는다."""
+    _, calls, status, _ = _run_standard_sync_finish(tmp_path, monkeypatch, raises=True)
+    assert len(calls) == 1
+    assert status["state"] == "done"
+
+
+def test_s6b_quiz_is_saved_as_questions_in_bundle(tmp_path, monkeypatch):
+    """S6b 응답은 사용자 답변/평가 없이 질문 목록 필드로만 번들에 저장된다."""
+    _, _, _, bundle = _run_standard_sync_finish(
+        tmp_path, monkeypatch, result_text='{"questions": ["Q1", "Q2"]}')
+    assert bundle["standard_quiz"] == {"questions": ["Q1", "Q2"]}
+    assert "answers" not in bundle["standard_quiz"]
+
+
+# Browser-based Claude login replaces the former URL/code submission flow.
+def test_claude_login_start_launches_browser_flow(monkeypatch):
+    from yok3x import guiserver as gs
+    proc = type("Proc", (), {"wait": lambda self: None})()
+    calls = {}
+    monkeypatch.setattr(gs.shutil, "which", lambda name: "C:/bin/claude.exe")
+    monkeypatch.setattr(gs.subprocess, "Popen", lambda *args, **kwargs: calls.update(
+        args=args, kwargs=kwargs) or proc)
+
+    result = gs._claude_login_start()
+
+    assert result == {"ok": True}
+    assert calls["args"][0] == ["C:/bin/claude.exe", "auth", "login", "--claudeai"]
+    assert calls["kwargs"]["stdout"] is gs.subprocess.DEVNULL
+    assert gs._CLAUDE_LOGIN_STARTED_AT is not None
+
+
+def test_claude_login_status_reports_valid_token(monkeypatch):
+    from yok3x import guiserver as gs
+    cfg = type("Cfg", (), {"yok3x": {"limits": {"claude": {"plan": "max"}}}})()
+    monkeypatch.setattr(gs.limits, "claude_token_status",
+                        lambda conf: {"exists": True, "expired": False, "mins_left": 12})
+
+    assert gs._claude_login_status(cfg) == {"exists": True, "expired": False}
+
+
+def test_claude_login_status_reports_missing_token(monkeypatch):
+    from yok3x import guiserver as gs
+    cfg = type("Cfg", (), {"yok3x": {"limits": {"claude": {}}}})()
+    monkeypatch.setattr(gs.limits, "claude_token_status",
+                        lambda conf: {"exists": False, "expired": None})
+
+    assert gs._claude_login_status(cfg) == {"exists": False, "expired": None}
+
