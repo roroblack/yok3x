@@ -24,6 +24,13 @@ from .backends import BackendResult
 from .config import Config
 
 BACKEND_KEYS = ("claude", "codex", "gemini")
+UNDERUSE_POLICIES = ("flat", "carry_fast", "carry_smooth")
+OVERUSE_POLICIES = ("flat", "cut_fast", "cut_smooth", "grace_band", "debt_amortize")
+_STRATEGY_POLICIES = {
+    "fixed": ("flat", "flat"), "catch_up": ("carry_fast", "cut_fast"),
+    "spread": ("carry_smooth", "cut_smooth"),
+    "grace_band": ("flat", "grace_band"), "debt_amortize": ("flat", "debt_amortize"),
+}
 
 
 def record(cfg: Config, worker: str, task_kind: str, res: BackendResult,
@@ -161,8 +168,17 @@ def _pace_cfg(cfg: Config, backend: str) -> dict:
         dp["mode"] = "warn"
     # 하루 상한 산정 전략: fixed(고정 pct_of_weekly) | catch_up(기준선 따라잡기, 초과 시 즉시 조임·안 쓰면 회복)
     # | spread(남은 예산을 남은 일수로 균등 분배 — 초과분도 고르게 펴서 상한이 덜 급격히 떨어짐).
-    if dp.get("strategy") not in ("fixed", "catch_up", "spread"):
+    if dp.get("strategy") not in _STRATEGY_POLICIES:
         dp["strategy"] = "fixed"
+    legacy_under, legacy_over = _STRATEGY_POLICIES[dp["strategy"]]
+    if dp.get("underuse_policy") not in UNDERUSE_POLICIES:
+        dp["underuse_policy"] = legacy_under
+    if dp.get("overuse_policy") not in OVERUSE_POLICIES:
+        dp["overuse_policy"] = legacy_over
+    if "underuse_policy" in dp or "overuse_policy" in dp:
+        pair = (dp["underuse_policy"], dp["overuse_policy"])
+        dp["strategy"] = next((name for name, policies in _STRATEGY_POLICIES.items()
+                                if policies == pair), "custom")
     try:                                          # catch_up 안전 캡 배수(하루 상한 ≤ max_cap_mult×q)
         mm = float(dp.get("max_cap_mult", 2.0))
     except (TypeError, ValueError):
@@ -415,14 +431,102 @@ def _spread_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
     return min(max_mult * q, raw)
 
 
+def _baseline_excess(q: float, u0: float, reset_at: float | None, now: float | None = None) -> float:
+    """'오늘 이전까지 써도 되는 균등 누적량'(baseline)을 넘어선 초과분. grace_band·debt_amortize가
+    공유하는 기준선 계산(catch_up의 k·q에서 오늘 하루치를 뺀 (k-1)·q가 baseline)."""
+    baseline = _baseline(q, reset_at, now)
+    return max(0.0, max(0.0, u0) - baseline)
+
+
+def _baseline(q: float, reset_at: float | None, now: float | None = None) -> float:
+    """오늘 이전까지 균등하게 사용해도 되는 누적량(baseline)을 계산한다."""
+    if not reset_at or not math.isfinite(reset_at):
+        return 0.0
+    now = now if now is not None else time.time()
+    remaining = reset_at - now
+    if not math.isfinite(remaining):
+        return 0.0
+    D = max(1, min(7, math.ceil(remaining / 86400.0)))
+    # 다음 날까지 쓸 수 있는 누적선(k*q)에서 오늘 몫(q)을 뺀 값이다.
+    # 주간 100% 상한을 먼저 적용해야 catch_up의 경계값과도 동치가 된다.
+    return max(0.0, min(100.0, (8 - D) * q) - q)
+
+
+def _daily_cap_v2(underuse_policy: str, overuse_policy: str, q: float,
+                  u0: float, reset_at: float | None, max_mult: float,
+                  now: float | None = None) -> float:
+    """언더유즈와 오버유즈 정책을 독립적으로 적용한 하루 상한."""
+    if not reset_at or not math.isfinite(reset_at):
+        return q
+    now = now if now is not None else time.time()
+    remaining = reset_at - now
+    if not math.isfinite(remaining):
+        return q
+    D = max(1, min(7, math.ceil(remaining / 86400.0)))
+    baseline = _baseline(q, reset_at, now)
+    u0 = max(0.0, u0)
+    if u0 <= baseline:
+        shortfall = max(0.0, baseline - u0)
+        if underuse_policy == "carry_fast":
+            cap = min(100.0, q + shortfall)
+        elif underuse_policy == "carry_smooth":
+            cap = max(0.0, 100.0 - u0) / D
+        else:
+            cap = q
+    elif overuse_policy == "grace_band":
+        cap = _grace_band_cap(q, u0, reset_at, max_mult, now)
+    elif overuse_policy == "debt_amortize":
+        cap = _debt_amortize_cap(q, u0, reset_at, max_mult, now)
+    elif overuse_policy == "cut_smooth":
+        cap = max(0.0, 100.0 - u0) / D
+    elif overuse_policy == "cut_fast":
+        cap = max(0.0, min(100.0, baseline + q) - u0)
+    else:
+        cap = q
+    return min(max_mult * q, max(0.0, cap))
+
+
+def _grace_band_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
+                    now: float | None = None, grace: float = 5.0, alpha: float = 0.5) -> float:
+    """grace_band 전략(codex 설계 상담, 2026-08-11): 작은 초과(±grace %p 이내)는 일시적 변동으로
+    보고 무시하고 정상 페이스(q)를 유지한다. grace를 넘는 초과분만 alpha 비율로 일부 회수한다 —
+    catch_up처럼 0.1%p 초과에도 즉시 반응하지 않는, '초과 오차 흡수'에 가까운 완만한 정책."""
+    if not reset_at or not math.isfinite(reset_at):
+        return q
+    now = now if now is not None else time.time()
+    if not math.isfinite(reset_at - now):
+        return q
+    excess = _baseline_excess(q, u0, reset_at, now)
+    if excess <= grace:
+        cap = q
+    else:
+        cap = max(0.1 * q, q - alpha * (excess - grace))
+    return min(max_mult * q, cap)
+
+
+def _debt_amortize_cap(q: float, u0: float, reset_at: float | None, max_mult: float,
+                       now: float | None = None, alpha: float = 0.25) -> float:
+    """debt_amortize 전략(codex 설계 상담, 2026-08-11): 초과분을 '오늘 즉시 갚아야 할 벌점'이
+    아니라 alpha 비율만큼만 오늘 상한에 반영한다(catch_up은 초과분을 통째로 즉시 빼서 조이지만,
+    이건 그 alpha 배만 뺀다) — 초과가 유지되는 동안 매일 조금씩만 깎이고, 정상 사용이 이어지면
+    baseline이 자연히 따라와 며칠에 걸쳐 서서히 회복된다(급격한 조임/회복 진동 방지)."""
+    if not reset_at or not math.isfinite(reset_at):
+        return q
+    now = now if now is not None else time.time()
+    if not math.isfinite(reset_at - now):
+        return q
+    debt = _baseline_excess(q, u0, reset_at, now)
+    cap = max(0.1 * q, q - alpha * debt)
+    return min(max_mult * q, cap)
+
+
 def _daily_cap(strategy: str, q: float, u0: float, reset_at: float | None,
                max_mult: float, now: float | None = None) -> float:
-    """전략별 하루 상한. fixed=고정 q · catch_up=기준선 따라잡기(즉시 조임) · spread=균등 분배."""
-    if strategy == "catch_up":
-        return _catch_up_cap(q, u0, reset_at, max_mult, now)
-    if strategy == "spread":
-        return _spread_cap(q, u0, reset_at, max_mult, now)
-    return q                                       # fixed
+    """전략별 하루 상한. fixed=고정 q · catch_up=기준선 따라잡기(즉시 조임) · spread=균등 분배 ·
+    grace_band=작은 초과는 무시하고 큰 초과만 완만히 조임 · debt_amortize=초과분을 부채로 보고
+    alpha 비율만큼만 매일 조금씩 조임(codex 설계 상담, 2026-08-11)."""
+    under, over = _STRATEGY_POLICIES.get(strategy, _STRATEGY_POLICIES["fixed"])
+    return _daily_cap_v2(under, over, q, u0, reset_at, max_mult, now)
 
 
 def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
@@ -474,7 +578,7 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         # 하루 시작 기준선(base) = '오늘 이전 이번주 사용'. claude(토큰)는 since-reset에서 오늘분을 빼(오늘
         # 쓸수록 상한이 깎이지 않게), codex(토큰없음)는 첫날 0·이후 하루시작 스냅샷.
         base = max(0.0, current - _tu0) if since_reset_known else (0.0 if is_day1 else current)
-        cap_today = _daily_cap(dp["strategy"], q, base, reset_at, dp["max_cap_mult"])
+        cap_today = _daily_cap_v2(dp["underuse_policy"], dp["overuse_policy"], q, base, reset_at, dp["max_cap_mult"])
         rec = {"date": today, "win": win_gen, "start_pct": base, "last_pct": current,
                "used_today": max(0.0, current - base), "blocked": False,
                "cap_today": cap_today, "strat": dp["strategy"]}
@@ -484,7 +588,7 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
         # 사용량 누적을 보존한다 — current로 재계산하면 몰아쓴 뒤 상한이 준다.
         base = float(rec.get("start_pct", current))
         u0_strat = current if since_reset_known else base
-        rec["cap_today"] = _daily_cap(dp["strategy"], q, u0_strat, reset_at, dp["max_cap_mult"])
+        rec["cap_today"] = _daily_cap_v2(dp["underuse_policy"], dp["overuse_policy"], q, u0_strat, reset_at, dp["max_cap_mult"])
         rec["strat"] = dp["strategy"]
         changed = True
     else:
@@ -506,7 +610,7 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
     # codex(토큰없음)·reset 정보 없음: 하루 시작에 고정한 cap_today(스냅샷 기준, 없으면 고정 q 폴백).
     if since_reset_known and reset_at and math.isfinite(reset_at):
         _u0 = max(0.0, current - _tu0)
-        cap = _daily_cap(dp["strategy"], q, _u0, reset_at, dp["max_cap_mult"])
+        cap = _daily_cap_v2(dp["underuse_policy"], dp["overuse_policy"], q, _u0, reset_at, dp["max_cap_mult"])
     else:
         cap = float(rec.get("cap_today", q))
         _u0 = float(rec.get("start_pct", current))
@@ -549,6 +653,7 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
             "current": current, "level": level, "mode": mode, "approved": approved,
             # 균등 기준선(고정 q)도 함께 노출 — 유동 상한이 원래 하루치 대비 얼마인지 보이게.
             "base_cap": q, "strategy": dp["strategy"],
+            "underuse_policy": dp["underuse_policy"], "overuse_policy": dp["overuse_policy"],
             # even_cap: 엄격 균등선(catch_up) 기준 '오늘 여유' — 오버레이 전용(쓴 만큼 줄어드는 값).
             "even_cap": even_cap,
             "forward_daily": forward_daily}

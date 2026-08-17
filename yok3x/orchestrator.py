@@ -310,6 +310,7 @@ class Orchestrator:
         # G-1: 순차 pipeline 재개에서만 채워지는 성공 prefix 캐시.
         self._replay_cache: dict[str, dict[str, Any]] = {}
         self.resume_from: str | None = None
+        self._sync_deep_calls = 0       # S6c: 한 런 안의 deep 호출 상한 추적
 
     # ------------------------------------------------------------ infra
 
@@ -952,6 +953,11 @@ class Orchestrator:
             parts.append(extra_context)
         if not is_codegen:
             parts.append(f"[작업]\n{task}")
+        sl_cfg = cfg.yok3x.get("sync_layer") or {}
+        if (task_kind == "critic" and sl_cfg.get("enabled")
+                and sl_cfg.get("mode") == "light"):
+            # S6c light: 기존 reviewer/critic 호출에만 근거 연결 지시를 얹는다.
+            parts.append(sync_layer.light_mode_reviewer_instruction())
         prompt = "\n\n".join(parts)
 
         run_cwd = cwd or self.workdir or self._isolated_cwd_path()
@@ -1615,7 +1621,8 @@ class Orchestrator:
             if rnd == 1 and repo:
                 blocks.append(repo)
             if artifact:
-                blocks.append(f"[직전 산출물]\n{knot.clip(artifact, 4000)}")
+                blocks.append(f"[직전 산출물]\n"
+                              f"{knot.clip(artifact, int(self.cfg.yok3x.get('revision_artifact_max_chars', 4000)))}")
             prod = self.call_worker(producer, t, "build" if rnd == 1 else "revise",
                                     "\n\n".join(blocks))
             if not prod.ok:
@@ -1630,7 +1637,8 @@ class Orchestrator:
 
             # Reviewer scoring is deliberately blind to the objective verify gate.  The
             # score remains an independent signal instead of learning the gate's label.
-            rev_blocks = [f"[산출물]\n{knot.clip(artifact, 6000)}"]
+            rev_blocks = [f"[산출물]\n"
+                         f"{knot.clip(artifact, int(self.cfg.yok3x.get('review_artifact_max_chars', 6000)))}"]
             if rubric:
                 rev_blocks.append(rubric)
             review_instr = ADVERSARIAL_REVIEW if self.adversarial else (
@@ -2002,6 +2010,80 @@ class Orchestrator:
                 wd = Path(self.workdir) if self.workdir else None
                 bundle = sync_layer.build_understanding_bundle(self.run_dir, review_root, wd)
                 tier = self.triage.get("tier") if isinstance(self.triage, dict) else None
+                mode = sl_cfg.get("mode", "off")
+                # S6b: standard + T2(local)/T3(api)에서만 자동 comprehension 질문을 한 번 만든다.
+                if mode == "standard" and tier in ("local", "api"):
+                    cache_key = sync_layer.bundle_cache_key(self.run_dir, review_root, mode)
+                    old_bundle = None
+                    try:
+                        old_bundle = json.loads(
+                            (self.run_dir / "understanding_bundle.json").read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                    cached_quiz = (old_bundle or {}).get("standard_quiz")
+                    if ((old_bundle or {}).get("standard_quiz_cache_key") == cache_key
+                            and isinstance(cached_quiz, dict)):
+                        bundle["standard_quiz"] = cached_quiz
+                        bundle["standard_quiz_cache_key"] = cache_key
+                    else:
+                        prompt = sync_layer.standard_mode_quiz_prompt(bundle)
+                        backend_name = sl_cfg.get("standard_backend") or sl_cfg.get("on_demand_backend") or "claude"
+                        worker = next((name for name, spec in (self.cfg.yok3x.get("workers") or {}).items()
+                                       if spec.get("backend") == backend_name), "claude-main")
+                        spec = CallSpec(worker=worker, task="standard comprehension quiz",
+                                        task_kind="sync_standard_quiz", prompt=prompt,
+                                        backend=backend_name,
+                                        run_cwd=self.workdir or self._isolated_cwd_path(),
+                                        read_only=True, batch_approved=True)
+                        # 단일 보조 호출도 기존 reservation/gate 체계를 통과시킨다.
+                        if self.reserve_and_approve([spec]):
+                            try:
+                                quiz_res = self.execute_call(spec)
+                            finally:
+                                reserve.release(self.cfg, self.run_id)
+                            if quiz_res.ok:
+                                try:
+                                    parsed = json.loads(quiz_res.text)
+                                except (TypeError, json.JSONDecodeError):
+                                    parsed = [line.strip() for line in quiz_res.text.splitlines()
+                                              if line.strip() and not line.strip().startswith("[")]
+                                questions = (parsed.get("questions") if isinstance(parsed, dict)
+                                             else parsed)
+                                if isinstance(questions, list):
+                                    bundle["standard_quiz"] = {"questions": questions}
+                                    bundle["standard_quiz_cache_key"] = cache_key
+                if mode == "deep" and tier == "api":
+                    try:
+                        deep_budget = max(0, int(sl_cfg.get("deep_call_budget", 2)))
+                    except (TypeError, ValueError):
+                        deep_budget = 0
+                    if self._sync_deep_calls >= deep_budget:
+                        self._log("[sync] deep 예산 상한 도달로 건너뜀")
+                    else:
+                        prompt = sync_layer.deep_mode_forensic_prompt(bundle)
+                        backend_name = (sl_cfg.get("deep_backend")
+                                         or sl_cfg.get("standard_backend")
+                                         or sl_cfg.get("on_demand_backend") or "claude")
+                        worker = next((name for name, spec in (self.cfg.yok3x.get("workers") or {}).items()
+                                       if spec.get("backend") == backend_name), "claude-main")
+                        spec = CallSpec(worker=worker, task="deep forensic sync",
+                                        task_kind="sync_deep_forensic", prompt=prompt,
+                                        backend=backend_name,
+                                        run_cwd=self.workdir or self._isolated_cwd_path(),
+                                        read_only=True, batch_approved=True)
+                        if self.reserve_and_approve([spec]):
+                            self._sync_deep_calls += 1
+                            try:
+                                forensic_res = self.execute_call(spec)
+                            finally:
+                                reserve.release(self.cfg, self.run_id)
+                            if forensic_res.ok:
+                                try:
+                                    parsed = json.loads(forensic_res.text)
+                                except (TypeError, json.JSONDecodeError):
+                                    parsed = {"text": forensic_res.text}
+                                bundle["deep_forensic"] = (parsed if isinstance(parsed, dict)
+                                                            else {"questions": parsed})
                 md = sync_layer.render_markdown(bundle, tier=tier)
                 _atomic_write_json(self.run_dir / "understanding_bundle.json", bundle)
                 (self.run_dir / "understanding_bundle.md").write_text(md, encoding="utf-8")
@@ -2009,6 +2091,10 @@ class Orchestrator:
                     review_root.mkdir(parents=True, exist_ok=True)
                     _atomic_write_bytes(review_root / "understanding_bundle.md", md.encode("utf-8"))
                 sync_meta = {"enabled": True, "claims": len(bundle["claims"]), "tier": tier}
+                if mode == "light":
+                    sync_meta["light_instruction"] = True
+                if mode == "deep":
+                    sync_meta["deep_calls"] = self._sync_deep_calls
                 self._log(f"[sync] 변경 이해 요약 {len(bundle['claims'])}개 claim 조립"
                           f"(mode={sl_cfg.get('mode', 'off')})")
             except Exception as e:      # Cognitive Sync Layer 실패가 런 완료를 막으면 안 됨

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -106,7 +107,10 @@ class LimitReading:
 # ---------------------------------------------------------------- cache
 
 _CACHE: dict[str, tuple[float, LimitReading]] = {}
-_TTL_SEC = 15.0   # 루프 한 바퀴 내 여러 호출이 app-server를 반복 스폰하지 않도록 캐시
+_TTL_SEC = 60.0   # 루프 한 바퀴 내 여러 호출이 app-server를 반복 스폰하지 않도록 캐시
+# (2026-08-15: 15s→60s — codex app-server 스폰 자체가 ~1.7s 걸려, 시스템 CPU 경합 시(claude/Code
+# 프로세스 다수 동시 실행) 그 비용이 증폭돼 GUI 서버 응답이 간헐적으로 몇 초~몇 분 밀리는 현상 관측.
+# claude는 이미 자체 min_interval_sec=60으로 사실상 이만큼 캐시되므로 체감 신선도 저하는 codex/gemini만.)
 # BUG-43 후속(라이브 관측): 캐시에 락이 없어 **동시 요청이 각자 캐시 미스를 보고 각자 codex
 # app-server를 새로 스폰**했다(캐시 스탬피드) — 한 요청의 build_state()도 내부에서 check_backend
 # ('codex')를 여러 지점(routing preview·coach·메인 게이지)에서 부르는데, 첫 스폰이 끝나기 전에
@@ -1267,10 +1271,28 @@ def _resolve_claude_caps(conf: dict[str, Any]) -> tuple[float, float]:
     return cap5, cap7
 
 
+# 집계 창의 길이(초). 서버 창은 이 길이의 **텀블링**(resets_at에 리셋) 창이다 — 로컬 롤링과 다르다.
+_WINDOW_SPAN_SEC = {"5h": 5 * 3600, "7d": 7 * 24 * 3600}
+
+
 def claude_rolling_tokens(conf: dict[str, Any], window: str) -> int:
-    """calibrate용: 지정 창(5h/7d)의 현재 롤링 토큰 합계."""
-    secs = 5 * 3600 if window == "5h" else 7 * 24 * 3600
+    """지정 창(5h/7d) 길이만큼의 **트레일링 롤링** 토큰 합계(트랜스크립트 폴백 추정용)."""
+    secs = _WINDOW_SPAN_SEC.get(window, 7 * 24 * 3600)
     return _rolling_claude_tokens(_claude_root(conf), time.time(), secs)
+
+
+def claude_window_tokens(conf: dict[str, Any], window: str, resets_at: float,
+                         now: float | None = None) -> int:
+    """**서버 창과 위상을 맞춘** 토큰 합계 — 창 시작(resets_at − 창 길이) 이후 ~ 지금.
+
+    autocalibrate는 `cap = tokens / (live_pct/100)`로 상한을 역산하는데, 분자·분모가 **같은 창**을
+    가리켜야 한다. live_pct는 resets_at에 0으로 리셋되는 텀블링 창의 값인 반면 롤링 합계는 항상
+    직전 N시간을 본다 — 리셋 직후엔 롤링이 '지난 창의 사용'까지 끌고 와 파생 cap을 부풀린다(BUG-47).
+    """
+    now = now if now is not None else time.time()
+    span = _WINDOW_SPAN_SEC.get(window, 7 * 24 * 3600)
+    start = resets_at - span
+    return _rolling_claude_tokens(_claude_root(conf), now, max(0.0, now - start))
 
 
 def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
@@ -1278,8 +1300,12 @@ def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
     """Claude live 사용률로 transcript 추정 상한을 역산해 저장한다.
 
     transcript 집계에는 cache read 토큰도 들어가므로 공개 플랜 프리셋만으로는 크게 과대 추정될
-    수 있다. 같은 시점의 live %(지상진실)와 로컬 롤링 합계를 맞춰 집계 단위 자체를 보정한다.
+    수 있다. 같은 시점의 live %(지상진실)와 로컬 합계를 맞춰 집계 단위 자체를 보정한다.
     정확히 5h/7d 집계 창만 대상으로 하며 ``7d·Fable`` 같은 모델별 창은 의도적으로 제외한다.
+
+    역산은 `cap = tokens / (live_pct/100)`이라 분자·분모가 **같은 창**을 가리켜야 한다. 그래서
+    로컬 합계는 트레일링 롤링이 아니라 `resets_at`에 위상을 맞춘 창 합계를 쓰고(BUG-47),
+    정수 양자화된 live %의 상대 불확실도(0.5/pct)가 ±5% 데드밴드를 넘으면 보정을 건너뛴다.
     """
     out: dict[str, int | str | None] = {"5h": None, "7d": None, "skipped": ""}
     if not conf.get("autocalibrate", True):
@@ -1317,7 +1343,26 @@ def autocalibrate_claude(cfg: Config, conf: dict[str, Any],
             if live_pct <= 0 or live_pct < min_pct:
                 reasons.append(f"{name}:live_pct<{min_pct:g}")
                 continue
-            toks = claude_rolling_tokens(conf, name)
+            # 분자(로컬 토큰)와 분모(live %)의 **창 위상을 맞춘다**. resets_at이 없거나 이미 지난
+            # (stale) 값이면 위상을 알 수 없으므로 보정을 건너뛴다 — 미정렬 롤링 합계로 역산하면
+            # 리셋 직후 cap이 최대 3.7배까지 부풀어 주 단위 톱니 진동이 났다(BUG-47).
+            ra = getattr(win, "resets_at", None)
+            try:
+                ra = float(ra) if ra is not None else None
+            except (TypeError, ValueError):
+                ra = None
+            if ra is None or not math.isfinite(ra) or ra <= now:
+                reasons.append(f"{name}:리셋 위상 없음(정렬 불가)")
+                continue
+            # live %는 정수로 양자화돼 온다(예: 5%). 상대 불확실도는 0.5/pct이고 그게 그대로 파생
+            # cap의 오차가 된다 — 5%면 ±10%로 아래 ±5% 데드밴드보다 커서 폴마다 새 값이 저장되며
+            # 진동한다. 노이즈와 구분되지 않는 관측으로는 보정하지 않는다(BUG-47).
+            if float(live_pct).is_integer():
+                q_err = 0.5 / live_pct
+                if q_err > float(conf.get("calib_max_quant_err", 0.05)):
+                    reasons.append(f"{name}:양자화오차 {q_err:.0%}(관측 부족)")
+                    continue
+            toks = claude_window_tokens(conf, name, ra, now)
             if toks <= 0:
                 reasons.append(f"{name}:tokens<=0")
                 continue

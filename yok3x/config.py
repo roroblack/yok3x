@@ -33,6 +33,12 @@ DEFAULT_YOK3X = {
         "dedup_threshold": 0.6        # lint 중복 후보 감지 유사도 임계(태그·링크·제목 자카드)
     },
     "repo_context_max_chars": 6000, # context_globs 레포 컨텍스트 주입 글자 제한
+    # BUG-48: reviewer가 채점 대상 산출물을 보는 글자 제한. 6000이면 흔한 단일 파일 구현체(자기
+    # 설명 + 코드 + SELF-CHECK 합쳐 7~8천자대)도 잘려 "코드가 생략돼 검증 불가"로 오탈락한다
+    # (실측: BoundedWorkerPool 238줄이 knot.clip으로 잘려 codex-critic이 4/10, verify는 실제로 ok).
+    "review_artifact_max_chars": 20000,
+    # 라운드 재작업 시 producer에게 보여주는 "직전 산출물" 글자 제한. review와 같은 이유로 상향.
+    "revision_artifact_max_chars": 20000,
     # 작업 워크스페이스(기본 workdir). 지정하면 모든 런이 이 디렉터리에서 워커를 실행한다
     # (task의 workdir가 있으면 그것이 우선). 비면 no-workdir → 빈 격리 dir에서 실행.
     "workspace": "",
