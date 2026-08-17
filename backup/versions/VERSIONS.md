@@ -17,6 +17,9 @@
 
 | `yok3x-v4.5.0.zip` | 4.5.0 | 124 | **현재 정본.** v4.4.0 + **R-7 병렬 안전성 2단계**: ① 워커별 **git worktree 격리**(`guard.parallel.worktree_isolation`, opt-in — worktree는 HEAD를 체크아웃해 미커밋 변경이 안 보이는 트레이드오프가 있어 기본 off) ② **auto-commit 래칫**(`changes.apply_mode="auto_commit"`, T-3 결정대로 기본은 review=사람수락): verify 통과 라운드를 전용 브랜치 `yok3x/run_<id>`에만 체크포인트 커밋 — **사용자 작업 트리·현재 브랜치 불변, 자동 병합·push 없음**, `worktree add -b`로 정리 후에도 커밋 생존. **BUG-39** 수정(cp949 콘솔이 로그의 '—'를 못 그려 UnicodeEncodeError → 실제 체크포인트 유실; 로그가 런을 죽이지 않게 폴백). 344 tests. 폴더 스냅샷: `backup/yok3x-v4.5.0-20260726-1749/`. |
 
+| `yok3x-master-20260706.zip` | ~3.1.0(추정) | 166 | 저장소 루트를 통째로 담은 "yok3x-master" 브랜치 전체 스냅샷. 자체 `_version.py`/`pyproject.toml`이 없어 내부 `HISTORY.md` 최상단 항목(`v3.1.0 · 2026-07-05`)과 동봉된 `release/yok3x-v3.1.0.zip`·`backup/versions/`(v3.1.0까지)로 시점을 역산했다 — 위 `yok3x-v3.1.0.zip`(정제된 릴리스 zip, 16파일)과 같은 시점의 저장소 전체 export(166파일, `backup/`·`release/`·`reports/` 등 포함). 2026-07-16 저장소 재구성 때 함께 발견돼 `backup/versions/`로 이관(별도 커밋 없이 파일시스템에만 존재하던 것). |
+| `yok3x-backup-pre-restructure-20260716_144033.tar.gz` | 3.6.0 | 898 | 2026-07-16 문서/구조 재구성 착수 직전 저장소 전체 백업(tar.gz). 최상위 경로가 `yok3x/yok3x/yok3x/...`로 중첩돼 있어(저장소 폴더를 통째로 다른 `yok3x/` 아래 복사한 형태) 재구성으로 뭔가 잘못됐을 때 되돌릴 수 있게 남긴 것으로 보인다. 내부 `yok3x/yok3x/yok3x/_version.py`가 `3.6.0`(당시 정본과 일치), `backup/yok3x-v3.3.0-20260711/`·`backup/yok3x-v3.4.0-20260711/` 폴더 스냅샷도 함께 포함. 2026-08-13 정리 때 `yok3x-master-20260706.zip`과 함께 `backup/versions/`로 이관. |
+
 ## 복원 출처(정직 표기)
 
 - v2.2 → git 커밋 `c6a91af`에서 복원(`git show c6a91af:harness-multiagent-v2.2.zip`).

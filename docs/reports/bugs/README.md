@@ -50,6 +50,9 @@
 | [43](BUG-43-kill-tree-capture-output-hangs-server.md) | **`_kill_tree`의 capture_output이 손자 프로세스 핸들에 걸려 GUI 서버 전체를 무한 대기시킴** | **높음** | — | ✅ |
 | [44](BUG-44-pace-tooltip-null-pace-crashes-render.md) | `paceTip` 계산이 `t.pace===null`을 안 가려 `render()`가 죽고 GUI가 "서버 연결 끊김"으로 오탐 | 중간 | — | ✅ |
 | [45](BUG-45-pace-strategy-and-seg-buttons-never-persist.md) | `.seg` 범용 코드가 `onclick` 속성 핸들러를 덮어써 균등/유동/분산·경고만/정지+승인·plan 버튼이 전부 저장 안 됨 | **높음** | — | ✅ |
+| [46](BUG-46-pace-axis-tooltip-centered-clips-left-edge.md) | 상한 배분 방식 ＋/－ 아이콘 툴팁이 중앙 정렬 때문에 좁은 화면에서 좌측으로 잘림 | 낮음 | — | ✅ |
+| [47](BUG-47-autocalibrate-window-phase-mismatch-sawtooth.md) | **autocalibrate가 롤링 토큰 합계를 텀블링 창의 live %로 나눠 주 단위 톱니(최대 3.68배)로 진동 — 원리적 수렴 불가(BUG-35 클램프는 증상만 완화)** | **높음** | — | ✅ |
+| [48](BUG-48-review-artifact-clip-too-small-false-reject.md) | reviewer 산출물 클립이 6000자로 너무 작아 verify=ok인 완전한 코드도 "생략됨"으로 오탈락(T-2 #11에서 실측) | 중간 | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

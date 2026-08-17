@@ -29,5 +29,9 @@ node_modules/
 _extracted/
 _protorun*/
 *.tmp
+.tmp/
 .pytest-tmp*/
+.pytest_tmp*/
+.pytest-temp*/
+.pytest_temp*/
 .codex-pytest-tmp*/

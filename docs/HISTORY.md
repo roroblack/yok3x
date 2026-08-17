@@ -4,6 +4,35 @@
 
 ---
 
+## v4.6.0 · 2026-08-11 — S8 CLI 노출 및 S1~S9 전체 완료
+
+- `yok3x sync <run_id>`가 run의 `understanding_bundle.json`을 claims 타입별, standard quiz, deep forensic 섹션으로 표시한다.
+- `--drift`로 현재 코드와 이해 자료의 STALE 여부를 확인할 수 있으며, 번들이 없는 런은 안내 후 정상 종료한다.
+- S1~S9 Cognitive Sync Layer 계획을 모두 완료했다. §9의 후속 후보는 후속 검토 항목으로 남긴다.
+
+---
+
+## v4.6.0 · 2026-08-11 — S7 Cognitive Sync Layer calibration 연동
+
+- `yok3x sync-calibration`이 comprehension 적용/미적용 런의 결함감지율을 calibration.jsonl과 대조한다.
+- 각 그룹 5개 이상에서 무상관이면 로그를 남기고 sync_layer를 자동 off하며, 설정 플래그로 비활성화할 수 있다.
+
+---
+
+## v4.6.0 · 2026-08-11 — S6c light/deep Cognitive Sync Layer
+
+- `light`는 신규 LLM 호출 없이 기존 reviewer/critic 응답에 diff·로그·ACQUIRE 근거 연결 지시를 추가한다.
+- `deep`는 T3(api)에서만 `deep_call_budget`을 지키며 forensic 질문을 생성하고 `deep_forensic`으로 저장한다. 실패·예산 초과는 런을 중단하지 않는다.
+
+---
+
+## v4.6.0 · 2026-08-11 — S6b standard 자동 comprehension 퀴즈 생성
+
+- `standard` 모드에서 T2/T3 런에 한해 근거 있는 FACT/RECORDED_DECISION claim으로 질문을 최대 1회 생성하고 understanding bundle에 저장.
+- 동일 diff/근거는 기존 bundle cache key와 worker replay cache를 재사용하며, 질문 생성 실패는 런을 깨뜨리지 않는다. 답변 평가 로직은 후속 단계로 남겼다.
+
+---
+
 ## 미출시(dev) · 2026-08-10 — BUG-45: 균등/유동/분산·경고만/정지+승인·plan 세그먼트 버튼 저장 안 되는 버그(codex 교차검증)
 
 - **발단**: 사용자가 "분산 눌러도 저장 및 적용 안 됨" 신고. 1차 조사에서 `_apply_config`(서버,
