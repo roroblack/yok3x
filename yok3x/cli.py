@@ -7,6 +7,8 @@
   yok3x mat [--watch]                 사용량·코칭·진행 상태 한 화면
   yok3x coach                         사용량 코칭 메시지 출력
   yok3x coach guard on|off            요금 가드 on/off
+  yok3x sync-calibration               Cognitive Sync Layer 효과 측정·자동 off
+  yok3x sync <run_id>                  Cognitive Sync Layer 이해 자료 표시
   yok3x knot save|ingest|query|lint   지식그물
   yok3x flavor [이름]                 flavor 확인/변경
 """
@@ -88,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("calib", help="심판 캘리브레이션 요약(SCORE가 실제 통과를 예측하나)")
     sp.add_argument("--threshold", type=float, default=8.0, help="게이트 임계 SCORE(기본 8.0)")
 
+    sub.add_parser("sync-calibration", help="Cognitive Sync Layer 효과 측정·무상관 시 자동 off")
+
     sp = sub.add_parser("knot", help="지식그물: save/ingest/query/lint")
     ksub = sp.add_subparsers(dest="kcmd", required=True)
     k = ksub.add_parser("save"); k.add_argument("title"); k.add_argument("body", nargs="?")
@@ -141,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="후보 적용(경로 생략 시 unchanged 외 전체)")
     action.add_argument("--reject", action="store_true", help="트리 변경 없이 거절 기록")
 
+    sp = sub.add_parser("sync", help="run Cognitive Sync Layer 이해 자료 표시")
+    sp.add_argument("run_id")
+    sp.add_argument("--drift", action="store_true", help="근거 파일과 현재 코드의 일치 여부 확인")
+
     a = p.parse_args(argv)
 
     if a.cmd == "statusline":
@@ -155,6 +163,57 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = Config.load(".")
+
+    if a.cmd == "sync":
+        from . import sync_layer
+
+        runs_root = cfg.paths.runs.resolve()
+        run_dir = (cfg.paths.runs / a.run_id).resolve()
+        try:
+            run_dir.relative_to(runs_root)
+        except ValueError:
+            print(f"[error] 존재하지 않는 run_id: {a.run_id}", file=sys.stderr)
+            return 2
+        if not run_dir.is_dir():
+            print(f"[error] 존재하지 않는 run_id: {a.run_id}", file=sys.stderr)
+            return 2
+
+        bundle_path = run_dir / "understanding_bundle.json"
+        if not bundle_path.exists():
+            print("이 런에는 sync_layer 데이터가 없습니다. "
+                  "sync_layer.enabled=True로 켜야 생성됩니다")
+            return 0
+        try:
+            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[error] understanding_bundle.json을 읽을 수 없습니다: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(bundle, dict):
+            print("[error] understanding_bundle.json의 값이 번들 객체가 아닙니다.",
+                  file=sys.stderr)
+            return 2
+
+        print(sync_layer.render_markdown(bundle))
+        quiz = bundle.get("standard_quiz")
+        questions = quiz.get("questions") if isinstance(quiz, dict) else None
+        if isinstance(questions, list):
+            print("\n## Standard Quiz")
+            for i, question in enumerate(questions, 1):
+                print(f"{i}. {question}")
+        forensic = bundle.get("deep_forensic")
+        forensic_questions = forensic.get("questions") if isinstance(forensic, dict) else None
+        if isinstance(forensic_questions, list):
+            print("\n## Deep Forensic")
+            for i, question in enumerate(forensic_questions, 1):
+                print(f"{i}. {question}")
+        if a.drift:
+            stale_claims = sync_layer.check_drift(bundle, cfg.paths.root)
+            if stale_claims:
+                print(f"\n[drift] STALE: 현재 코드와 어긋난 claim {len(stale_claims)}개")
+                print("[drift] claim_id: " + ", ".join(stale_claims))
+            else:
+                print("\n[drift] OK: 현재 코드와 어긋난 claim이 없습니다.")
+        return 0
 
     if a.cmd == "review":
         from . import review as review_bundle
@@ -171,6 +230,27 @@ def main(argv: list[str] | None = None) -> int:
         except review_bundle.ReviewError as exc:
             print(f"[error] {exc}", file=sys.stderr)
             return 2
+
+    if a.cmd == "sync-calibration":
+        from . import sync_layer
+        report = sync_layer.apply_correlation_policy(cfg)
+        if not report:
+            print("[sync-calibration] calibration.jsonl에 분석할 유효한 표본이 없습니다.")
+            return 0
+        for key in ("with_comprehension", "without_comprehension"):
+            group = report[key]
+            rate = group["defect_rate"]
+            shown = "-" if rate is None else f"{rate * 100:.1f}%"
+            print(f"[sync-calibration] {key}: n={group['count']}, defect_rate={shown}")
+        print(f"[sync-calibration] sample_size_sufficient={report['sample_size_sufficient']}, "
+              f"correlated={report['correlated']}")
+        if report.get("auto_disabled"):
+            print("[sync-calibration] 무상관이 충분한 표본으로 확인되어 sync_layer.enabled=False로 자동 비활성화했습니다.")
+        elif not report["sample_size_sufficient"]:
+            print("[sync-calibration] 표본 부족으로 자동 비활성화를 보류했습니다.")
+        elif not (cfg.yok3x.get("sync_layer") or {}).get("auto_disable_if_uncorrelated", True):
+            print("[sync-calibration] auto_disable_if_uncorrelated=False라 자동 비활성화를 건너뛰었습니다.")
+        return 0
 
     if a.cmd == "init":
         cfg = scaffold(".", use_mock=a.mock)

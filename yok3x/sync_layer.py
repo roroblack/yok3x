@@ -33,6 +33,107 @@ _SYMBOL_RE = re.compile(r'^\+\s*(?:async\s+)?(?:def|class)\s+(\w+)', re.M)
 _ROUTE_LOG_RE = re.compile(r'^(?:\[[^\]\n]*\]\s*)?\[(route|degrade|failover|gate)\] (.+)$', re.M)
 
 
+def _calibration_defect(row: dict[str, Any]) -> bool | None:
+    """캘리브레이션 한 행을 '결함 감지' 라벨로 변환한다.
+
+    후보 검증이 실패했거나, 검증은 통과했지만 낮은 SCORE 때문에 게이트가 막은
+    경우를 결함 감지로 센다. 라벨을 만들 수 없는 행은 성급한 결론을 피하기 위해
+    제외한다.
+    """
+    verify_ok = row.get("verify_ok")
+    gate_pass = row.get("gate_pass")
+    score = row.get("score")
+    if not isinstance(verify_ok, bool):
+        return None
+    if verify_ok is False:
+        return True
+    if verify_ok is True and gate_pass is False:
+        return True
+    if verify_ok is True and gate_pass is True:
+        return False
+    # 구형 레코드에는 gate_pass가 없을 수 있으므로 score/threshold로 보완하지
+    # 않는다. 서로 다른 게이트 설정을 섞어 임의의 라벨을 만들지 않기 위해서다.
+    return None
+
+
+def correlation_report(cfg: Any) -> dict[str, Any]:
+    """calibration.jsonl과 comprehension 번들을 대조해 S7 효과를 요약한다.
+
+    표본은 calibration 원자료의 행 단위로 세되, 번들 적용 여부는 run_id별로
+    한 번 읽는다. 각 그룹이 5개 미만이면 correlated를 판단하지 않는다(N0).
+    calibration 파일이 없거나 비어 있으면 빈 dict를 반환한다.
+    """
+    calibration_path = cfg.paths.runs.parent / "calibration.jsonl"
+    try:
+        lines = calibration_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and row.get("run_id"):
+            rows.append(row)
+    if not rows:
+        return {}
+
+    applied_by_run: dict[str, bool] = {}
+    for row in rows:
+        run_id = str(row["run_id"])
+        if run_id in applied_by_run:
+            continue
+        try:
+            bundle = json.loads((cfg.paths.runs / run_id / "understanding_bundle.json")
+                                .read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            bundle = {}
+        applied_by_run[run_id] = bool(
+            isinstance(bundle, dict)
+            and ("standard_quiz" in bundle or "deep_forensic" in bundle))
+
+    groups = {True: [], False: []}
+    for row in rows:
+        defect = _calibration_defect(row)
+        if defect is not None:
+            groups[applied_by_run[str(row["run_id"])]].append(defect)
+    with_rows, without_rows = groups[True], groups[False]
+    with_count, without_count = len(with_rows), len(without_rows)
+    sufficient = with_count >= 5 and without_count >= 5
+    if not with_count and not without_count:
+        return {}
+    with_rate = sum(with_rows) / with_count if with_count else None
+    without_rate = sum(without_rows) / without_count if without_count else None
+    correlated = ((with_rate > without_rate)
+                  if sufficient and with_rate is not None and without_rate is not None
+                  else False)
+    return {
+        "with_comprehension": {"count": with_count, "defect_rate": with_rate},
+        "without_comprehension": {"count": without_count, "defect_rate": without_rate},
+        "correlated": correlated,
+        "sample_size_sufficient": sufficient,
+    }
+
+
+def apply_correlation_policy(cfg: Any) -> dict[str, Any]:
+    """S7 리포트를 바탕으로 사용자가 허용한 경우에만 sync_layer를 끈다."""
+    report = correlation_report(cfg)
+    if not report:
+        return {}
+    if (report and report.get("sample_size_sufficient")
+            and not report.get("correlated")
+            and (cfg.yok3x.get("sync_layer") or {}).get("auto_disable_if_uncorrelated", True)):
+        cfg.yok3x.setdefault("sync_layer", {})["enabled"] = False
+        cfg.save_yok3x()
+        report["auto_disabled"] = True
+    else:
+        report["auto_disabled"] = False
+    return report
+
+
 def _claim_id(*parts: str) -> str:
     """ACQUIRE의 `core_claim()`과 같은 패턴 — 시간/난수 없이 결정적 SHA-1으로 재현성 보장."""
     return hashlib.sha1("\0".join(parts).encode("utf-8")).hexdigest()[:16]
@@ -333,4 +434,56 @@ def quiz_claim_prompt(claim: dict[str, Any]) -> str:
         "지어내지 말고 근거 범위 안에서만 답하라.\n\n"
         f"{_claim_context(claim)}\n\n"
         "[출력형식] 각 질문을 'Q: ...' / 'A: ...'로 줄바꿈해 나열하라."
+    )
+
+
+def light_mode_reviewer_instruction() -> str:
+    """S6c light: 기존 reviewer/critic 호출에만 근거 연결 설명을 요청한다."""
+    return (
+        "[Cognitive Sync Layer / light] 이 변경의 핵심 주장들이 어떤 근거(변경 diff, "
+        "실행 로그, ACQUIRE)에 연결되는지도 답변에 짧게 포함해달라. 근거가 없거나 "
+        "확인할 수 없는 주장은 추정하지 말고 근거 부족으로 표시하라."
+    )
+
+
+def standard_mode_quiz_prompt(bundle: dict[str, Any]) -> str:
+    """S6b `standard`: 근거가 있는 핵심 claim 3~5개로 comprehension 질문 프롬프트를 만든다.
+
+    이 함수는 프롬프트만 조립하며 LLM을 호출하지 않는다. FACT/RECORDED_DECISION 중
+    evidence_refs가 있는 claim만 사용해, 근거 없는 내용을 질문에 섞지 않는다.
+    """
+    claims = [c for c in (bundle.get("claims") or [])
+              if isinstance(c, dict)
+              and c.get("type") in (FACT, RECORDED_DECISION)
+              and c.get("evidence_refs")]
+    claims = claims[:5]
+    contexts = [_claim_context(c) for c in claims]
+    joined = "\n\n".join(contexts) if contexts else "[근거 있는 FACT/RECORDED_DECISION claim 없음]"
+    return (
+        "당신은 변경 내용을 사용자가 제대로 이해했는지 확인하는 comprehension 퀴즈를 만든다. "
+        "아래 근거 있는 FACT/RECORDED_DECISION claim만 사용하고, 근거로 알 수 없는 내용을 묻지 말라. "
+        "핵심 claim마다 질문을 하나씩 만들어 총 3~5개를 목표로 하되, 제공된 claim 수가 적으면 있는 만큼만 만든다. "
+        "정답과 해설은 아직 만들지 말고 질문 목록만 출력하라. 각 항목은 JSON 문자열 배열로 출력하라.\n\n"
+        f"[근거 기반 claim]\n{joined}\n\n"
+        "[출력 형식] [\"질문 1\", \"질문 2\", ...]"
+    )
+
+
+def deep_mode_forensic_prompt(bundle: dict[str, Any]) -> str:
+    """S6c deep: 근거 있는 claim에 대한 반사실·불변조건 질문을 만든다."""
+    claims = [c for c in (bundle.get("claims") or [])
+              if isinstance(c, dict)
+              and c.get("type") in (FACT, RECORDED_DECISION)
+              and c.get("evidence_refs")][:5]
+    joined = "\n\n".join(_claim_context(c) for c in claims)
+    if not joined:
+        joined = "[근거 있는 FACT/RECORDED_DECISION claim 없음]"
+    return (
+        "당신은 고위험 변경의 forensic reviewer다. 아래 근거 있는 claim만 사용해 "
+        "각 구현 선택을 왜 했는지 반사실적으로(다른 방식이었다면 어떤 위험·결과가 "
+        "달라지는지) 설명하고, 이 변경이 반드시 지켜야 하는 불변조건과 그 근거를 "
+        "질문/답변 목록으로 만들어라. 근거 없는 주장은 OPEN_QUESTION으로 표시하고 "
+        "새 사실을 추정하지 마라. JSON 객체 {\"questions\": [...]}만 출력하라.\n\n"
+        f"[근거 기반 claim]\n{joined}\n\n"
+        "각 항목은 claim과 연결된 반사실 질문 또는 불변조건 질문이어야 한다."
     )
