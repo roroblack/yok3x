@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import http.server
 import json
+import shutil
 import socketserver
+import subprocess
 import threading
 import webbrowser
 from datetime import datetime
+import time
 from pathlib import Path
 
 from . import backends, limits, sync_layer, usage
@@ -27,6 +30,36 @@ EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
 _RUN_STATE = {"active": False, "task": None, "since": None, "last": None}
 _QUEUE: list[tuple[str, int]] = []   # (task_file, iterations)
 _LOCK = threading.Lock()
+_CLAUDE_LOGIN_STARTED_AT = None
+
+
+def _claude_login_start() -> dict:
+    """Start Claude's browser-based OAuth flow and leave it running."""
+    global _CLAUDE_LOGIN_STARTED_AT
+    resolved = shutil.which("claude")
+    if not resolved:
+        return {"ok": False, "error": "Claude CLI를 찾을 수 없습니다."}
+    try:
+        proc = subprocess.Popen(
+            [resolved, "auth", "login", "--claudeai"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"Claude 로그인 시작 실패: {exc}"}
+
+    # The CLI opens the browser and receives the local callback itself. Reap it
+    # after it exits, but never terminate it while the user is authenticating.
+    threading.Thread(target=proc.wait, daemon=True).start()
+    _CLAUDE_LOGIN_STARTED_AT = time.time()
+    return {"ok": True}
+
+
+def _claude_login_status(cfg: Config) -> dict:
+    conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
+    status = limits.claude_token_status(conf)
+    return {"exists": bool(status.get("exists")), "expired": status.get("expired")}
 
 
 def _routing_preview(cfg: Config) -> list:
@@ -136,7 +169,9 @@ def build_state(cfg: Config) -> dict:
                   "pace": {"enabled": bool((g.get("daily_pace") or {}).get("enabled", False)),
                            "cap_pct": round(float((g.get("daily_pace") or {}).get("pct_of_weekly", 0.14)) * 100),
                            "mode": (g.get("daily_pace") or {}).get("mode", "warn"),
-                           "strategy": (g.get("daily_pace") or {}).get("strategy", "fixed")}},
+                           "strategy": (g.get("daily_pace") or {}).get("strategy", "fixed"),
+                           "underuse_policy": (g.get("daily_pace") or {}).get("underuse_policy", "flat"),
+                           "overuse_policy": (g.get("daily_pace") or {}).get("overuse_policy", "flat")}},
         "coach": usage.coach_messages(cfg),
         "runs": _recent_runs(cfg, int(cfg.yok3x.get("runs_max", 20))),   # 작업별 그룹핑 위해 히스토리↑
         "tools": tools,
@@ -611,8 +646,12 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         # {"ok": true}만 돌아왔다(실측: 클릭해도 서버 값이 안 바뀜, 저장 성공한 것처럼 보임).
         # spread는 usage._pace_cfg가 이미 정식 인식하는 값이라(_daily_cap 분기 존재) 여기 검증만
         # 낡아 있었다 — spread 도입(v3.6.0) 때 이 화이트리스트 갱신을 놓친 것.
-        if dp.get("strategy") in ("fixed", "catch_up", "spread"):
+        if dp.get("strategy") in ("fixed", "catch_up", "spread", "grace_band", "debt_amortize"):
             cur["strategy"] = dp["strategy"]
+        if dp.get("underuse_policy") in usage.UNDERUSE_POLICIES:
+            cur["underuse_policy"] = dp["underuse_policy"]
+        if dp.get("overuse_policy") in usage.OVERUSE_POLICIES:
+            cur["overuse_policy"] = dp["overuse_policy"]
         for k in ("pct_of_weekly", "soft_frac"):
             if k in dp:
                 try:
@@ -671,6 +710,11 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                     self._json(200, build_state(cfg))
                 except Exception as e:
                     self._json(500, {"error": str(e)})
+            elif path == "/api/claude/login/status":
+                try:
+                    self._json(200, _claude_login_status(cfg))
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
             elif path == "/api/task":                 # 저장된 작업 열기(?name=task-x.json)
                 import urllib.parse as _up
                 q = _up.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
@@ -690,6 +734,11 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
             if path == "/api/pickdir":
                 p = pick_directory()   # 로컬 네이티브 폴더 대화상자
                 self._json(200, {"path": p or ""})
+                return
+
+            if path == "/api/claude/login/start":
+                r = _claude_login_start()
+                self._json(200 if r.get("ok") else 500, r)
                 return
 
             if path == "/api/run":
