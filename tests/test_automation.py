@@ -8,6 +8,7 @@ from yok3x.automation import (
     EXPLICIT_TASK_FIELDS,
     calculate_task_features,
     effective_automation_decision,
+    plan_quota_aware_effort_rounds,
     recommend_effort_rounds,
     resolve_effective_mode,
     validate_automation_config,
@@ -286,3 +287,85 @@ def test_s3_is_reproducible_and_does_not_return_task_text(tmp_path):
     second = load_calibration_statistics(path)
     assert first == second
     assert secret not in repr(first)
+
+
+def _pace(level, *, used=10.0, cap=20.0):
+    return {"used": used, "cap": cap, "soft": 16.0, "base_cap": 20.0,
+            "strategy": "fixed", "start": 0.0, "forward_daily": None,
+            "even_cap": None, "level": level, "blocked": level == "stop",
+            "approved": False}
+
+
+def _quota_recommendation(*, rounds=4, effort="high"):
+    return {"bucket": "large", "effort": effort, "rounds": rounds,
+            "effort_candidates": ("medium", "high"),
+            "round_candidates": (2, 4), "confidence": 0.8, "reason": "s2"}
+
+
+def test_s4_none_and_ok_pass_s2_through_with_observability():
+    source = _quota_recommendation()
+    for pace in (None, _pace("ok")):
+        result = plan_quota_aware_effort_rounds(source, pace)
+        assert result["rounds"] == 4 and result["effort"] == "high"
+        assert result["quota_adjustment"] == "none"
+        assert result["original_rounds"] == 4
+        assert result["original_effort"] == "high"
+    assert plan_quota_aware_effort_rounds(source, {})["quota_reason"] == "daily_pace 비활성 또는 측정 없음"
+
+
+def test_s4_warn_reduces_rounds_to_candidate_floor_and_honors_min_rounds():
+    result = plan_quota_aware_effort_rounds(
+        _quota_recommendation(), _pace("warn"),
+        {"automation": {"min_rounds": 3}},
+    )
+    assert result["rounds"] == 3
+    assert result["effort"] == "high"
+    assert result["quota_adjustment"] == "rounds"
+    assert result["budget_warning"] is False
+
+
+def test_s4_warn_at_round_floor_can_lower_effort_only_when_enabled():
+    source = _quota_recommendation(rounds=2)
+    result = plan_quota_aware_effort_rounds(
+        source, _pace("warn"),
+        {"automation": {"allow_effort_adjustment": True}},
+    )
+    assert result["rounds"] == 2 and result["effort"] == "medium"
+    assert result["quota_adjustment"] == "effort"
+    assert result["budget_warning"] is False
+
+
+def test_s4_overuse_can_reduce_rounds_and_effort_and_warn():
+    result = plan_quota_aware_effort_rounds(
+        _quota_recommendation(), _pace("warn", used=21.0, cap=20.0),
+        {"automation": {"allow_effort_adjustment": True}},
+    )
+    assert result["rounds"] == 2 and result["effort"] == "medium"
+    assert result["quota_adjustment"] == "rounds_and_effort"
+    assert result["budget_warning"] is True
+    assert result["original_rounds"] == 4 and result["original_effort"] == "high"
+
+
+def test_s4_lowest_effort_is_never_lowered_outside_candidates():
+    result = plan_quota_aware_effort_rounds(
+        _quota_recommendation(rounds=2, effort="medium"), _pace("warn", used=21, cap=20),
+        {"automation": {"allow_effort_adjustment": True}},
+    )
+    assert result["effort"] == "medium"
+    assert result["budget_warning"] is True
+    assert result["quota_reason"] == "예산 초과 예상"
+
+
+@pytest.mark.parametrize("allow, expected, signal", [
+    (False, False, "backend 정지, 재배정 비허용"),
+    (True, True, "backend 정지, 대체 backend 필요"),
+])
+def test_s4_stop_only_emits_optional_backend_reallocation_signal(allow, expected, signal):
+    result = plan_quota_aware_effort_rounds(
+        _quota_recommendation(), _pace("stop"),
+        {"automation": {"allow_backend_reallocation": allow}},
+    )
+    assert result["quota_adjustment"] == "backend_stop"
+    assert result["backend_reallocation_required"] is expected
+    assert result["quota_reason"] == signal
+    assert result["rounds"] == 4 and result["effort"] == "high"
