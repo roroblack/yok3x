@@ -16,6 +16,7 @@ from yok3x.automation import (
 )
 from yok3x.config import Config, scaffold
 from yok3x.orchestrator import run_task_file
+from yok3x.calibration import load_calibration_statistics
 
 
 @pytest.fixture
@@ -207,3 +208,81 @@ def test_s2_does_not_lower_or_invent_pass_score():
     result = recommend_effort_rounds({"task": "security review"})
     assert "pass_score" not in result
     assert "pass_score" not in result["features"]
+
+
+def _calibration_row(score, verify_ok, *, backend="claude", effort="medium", reviewer="r",
+                     pattern="producer-reviewer", rounds=2, **extra):
+    return {"score": score, "verify_ok": verify_ok, "backend": backend,
+            "effort": effort, "reviewer": reviewer, "pattern": pattern,
+            "rounds": rounds, **extra}
+
+
+def _write_calibration(path, rows, malformed=()):
+    import json
+
+    lines = [json.dumps(row) for row in rows]
+    for index, value in malformed:
+        lines.insert(index, value)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_s3_confidence_distinguishes_insufficient_and_sufficient_samples(tmp_path):
+    path = tmp_path / "calibration.jsonl"
+    _write_calibration(path, [_calibration_row(8 + i / 10, True) for i in range(10)])
+    result = load_calibration_statistics(path)
+    assert result["groups"][0]["confidence"] == 1.0
+    assert result["groups"][0]["confidence_reason"] == "표본 충분"
+
+    _write_calibration(path, [_calibration_row(8, True), _calibration_row(7, None)])
+    result = load_calibration_statistics(path)
+    assert result["groups"][0]["confidence"] < 1.0
+    assert result["groups"][0]["confidence_reason"] == "표본 부족"
+
+
+def test_s3_uses_only_recent_calibration_window(tmp_path):
+    path = tmp_path / "calibration.jsonl"
+    _write_calibration(path, [_calibration_row(1, False)] * 3 + [_calibration_row(9, True)] * 2)
+    group = load_calibration_statistics(path, window=2)["groups"][0]
+    assert group["sample_count"] == 2
+    assert group["moving_average_score"] == 9.0
+    assert group["success_rate"] == 1.0
+
+
+def test_s3_skips_malformed_and_missing_schema_rows(tmp_path):
+    path = tmp_path / "calibration.jsonl"
+    rows = [_calibration_row(8, True), {"verify_ok": True}, {"score": 8},
+            _calibration_row("bad", True)]
+    _write_calibration(path, rows, malformed=[(1, "{not-json")])
+    result = load_calibration_statistics(path)
+    assert result["groups"][0]["sample_count"] == 1
+    assert result["reasons"]["malformed_json"] == 1
+    assert result["reasons"]["missing_score"] == 1
+    assert result["reasons"]["missing_verify_ok"] == 1
+    assert result["reasons"]["schema_mismatch"] == 1
+
+
+def test_s3_separates_backends_and_reports_missing_bucket(tmp_path):
+    path = tmp_path / "calibration.jsonl"
+    _write_calibration(path, [_calibration_row(8, True, backend="claude"),
+                              _calibration_row(6, False, backend="codex")])
+    result = load_calibration_statistics(path)
+    assert {group["backend"] for group in result["groups"]} == {"claude", "codex"}
+    assert result["bucket_info"] == "bucket 정보 없음"
+    assert result["model_info"] == "model 정보 없음"
+
+
+def test_s3_missing_file_returns_empty_result(tmp_path):
+    result = load_calibration_statistics(tmp_path / "missing.jsonl")
+    assert result["groups"] == []
+    assert result["records"] == []
+    assert result["reasons"]["file_not_found"] == 1
+
+
+def test_s3_is_reproducible_and_does_not_return_task_text(tmp_path):
+    path = tmp_path / "calibration.jsonl"
+    secret = "PRIVATE TASK PROMPT SHOULD NOT ESCAPE"
+    _write_calibration(path, [_calibration_row(8, True, task=secret)])
+    first = load_calibration_statistics(path)
+    second = load_calibration_statistics(path)
+    assert first == second
+    assert secret not in repr(first)

@@ -10,11 +10,139 @@
 from __future__ import annotations
 
 import math
+import json
+from collections import Counter
+from pathlib import Path
+from statistics import mean, median
 
 # 라운드별 캘리브레이션 레코드 스키마. 후보를 검증한 verify_ok만 지상진실로 쓴다.
 FIELDS = ("run_id", "ts", "pattern", "backend", "effort", "rounds",
           "score", "verify_ok", "verify_scope", "tokens", "cost_usd", "duration_ms", "issues",
           "reviewer", "threshold", "gate_pass", "gate_mode", "round")
+
+
+_MIN_CALIBRATION_SAMPLE = 3
+
+
+def _valid_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def read_calibration_jsonl(path: str | Path, window: int = 20) -> dict:
+    """Read usable calibration summaries without exposing or persisting task text.
+
+    Invalid lines are isolated and reported in ``reasons``.  The window is
+    applied to usable records in file order, so malformed lines do not consume
+    the caller's calibration sample budget.
+    """
+    reasons = Counter()
+    file_path = Path(path)
+    if not file_path.is_file():
+        reasons["file_not_found"] += 1
+        return {
+            "records": [], "reasons": dict(reasons), "window": max(0, window),
+            "bucket_info": "bucket 정보 없음", "model_info": "model 정보 없음",
+        }
+
+    usable = []
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        reasons["file_unreadable"] += 1
+        return {
+            "records": [], "reasons": dict(reasons), "window": max(0, window),
+            "bucket_info": "bucket 정보 없음", "model_info": "model 정보 없음",
+        }
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            reasons["malformed_json"] += 1
+            continue
+        if not isinstance(record, dict):
+            reasons["schema_mismatch"] += 1
+            continue
+        if "score" not in record:
+            reasons["missing_score"] += 1
+            continue
+        if "verify_ok" not in record:
+            reasons["missing_verify_ok"] += 1
+            continue
+        if not _valid_number(record["score"]):
+            reasons["schema_mismatch"] += 1
+            continue
+        if record["verify_ok"] is not None and not isinstance(record["verify_ok"], bool):
+            reasons["schema_mismatch"] += 1
+            continue
+        for field in ("pattern", "backend", "effort", "reviewer", "bucket"):
+            if field in record and record[field] is not None and not isinstance(record[field], str):
+                reasons["schema_mismatch"] += 1
+                break
+        else:
+            if "rounds" in record and record["rounds"] is not None and not _valid_number(record["rounds"]):
+                reasons["schema_mismatch"] += 1
+            else:
+                # Keep only aggregate inputs.  In particular, never return
+                # arbitrary/unknown fields that might contain task or prompt text.
+                usable.append({field: record[field] for field in
+                               ("pattern", "backend", "effort", "reviewer", "bucket",
+                                "score", "verify_ok", "rounds") if field in record})
+
+    limit = max(0, int(window)) if isinstance(window, int) and not isinstance(window, bool) else 20
+    records = usable[-limit:] if limit else []
+    if len(usable) > len(records):
+        reasons["outside_window"] += len(usable) - len(records)
+    if records and any("bucket" not in record or record.get("bucket") is None for record in records):
+        reasons["bucket_info_missing"] += 1
+    bucket_info = "bucket 정보 없음" if any("bucket" not in r or r.get("bucket") is None for r in records) else "bucket 정보 있음"
+    model_info = "model 정보 없음" if any("model" not in r or r.get("model") is None for r in records) else "model 정보 있음"
+    return {"records": records, "reasons": dict(reasons), "window": limit,
+            "bucket_info": bucket_info, "model_info": model_info}
+
+
+def aggregate_calibration_statistics(records: list[dict], reasons: dict | None = None) -> dict:
+    """Aggregate calibration records by the fields actually available in S3."""
+    groups = {}
+    result_reasons = Counter(reasons or {})
+    for record in records:
+        key = tuple(record.get(field) for field in ("pattern", "backend", "effort", "reviewer"))
+        groups.setdefault(key, []).append(record)
+    output = []
+    for key, rows in sorted(groups.items(), key=lambda item: tuple(str(v or "") for v in item[0])):
+        scores = [float(row["score"]) for row in rows]
+        verified = [row["verify_ok"] for row in rows if isinstance(row.get("verify_ok"), bool)]
+        rounds = [float(row["rounds"]) for row in rows if _valid_number(row.get("rounds"))]
+        n = len(rows)
+        confidence = min(1.0, n / _MIN_CALIBRATION_SAMPLE)
+        group = {
+            "pattern": key[0], "backend": key[1], "effort": key[2], "reviewer": key[3],
+            "bucket": next((row.get("bucket") for row in rows if row.get("bucket") is not None), None),
+            "sample_count": n, "moving_average_score": mean(scores), "median_score": median(scores),
+            "success_rate": (sum(verified) / len(verified)) if verified else None,
+            "average_rounds": mean(rounds) if rounds else None,
+            "confidence": confidence,
+            "confidence_reason": "표본 부족" if n < _MIN_CALIBRATION_SAMPLE else "표본 충분",
+        }
+        output.append(group)
+    has_missing_bucket = any(group["bucket"] is None for group in output)
+    if has_missing_bucket:
+        result_reasons["bucket_info_missing"] += 1 if "bucket_info_missing" not in result_reasons else 0
+    return {"groups": output, "reasons": dict(result_reasons),
+            "bucket_info": "bucket 정보 없음" if has_missing_bucket else "bucket 정보 있음",
+            "model_info": "model 정보 없음"}
+
+
+def load_calibration_statistics(path: str | Path, window: int = 20) -> dict:
+    """Read a calibration JSONL file and return deterministic S3 statistics."""
+    loaded = read_calibration_jsonl(path, window=window)
+    aggregated = aggregate_calibration_statistics(loaded["records"], loaded["reasons"])
+    return {**loaded, **aggregated}
+
+
+# Alternate descriptive names for callers integrating the S3 seam.
+read_calibration_stats = load_calibration_statistics
 
 
 def make_record(**kw) -> dict:
