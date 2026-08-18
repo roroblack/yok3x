@@ -68,7 +68,15 @@ def _routing_preview(cfg: Config) -> list:
     if not (cfg.yok3x.get("active_profile") or "").strip():
         return []
     from .orchestrator import resolve_model
-    avail = lambda b: usage.backend_available(cfg, b)
+    # resolve_model() may ask about the same backend for several route kinds.
+    # Keep that check local to one state build: backend_available() can itself
+    # run check_backend(), so repeating it here needlessly extends /api/state.
+    availability: dict[str, bool] = {}
+
+    def avail(b: str) -> bool:
+        if b not in availability:
+            availability[b] = usage.backend_available(cfg, b)
+        return availability[b]
     out = []
     for kind, label in (("build", "구현"), ("review", "검수"), ("design_review", "설계검토")):
         b, m, why = resolve_model(cfg, kind, available=avail)
@@ -694,6 +702,15 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
         return
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        # This bounds idle client connections (including a client that sends
+        # only part of a request). It does not interrupt build_state(); that
+        # work must remain cancellable at its subprocess/network boundaries.
+        request_timeout = 15.0
+
+        def setup(self) -> None:
+            super().setup()
+            self.connection.settimeout(self.request_timeout)
+
         def _send(self, code: int, body, ctype: str) -> None:
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
