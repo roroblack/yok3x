@@ -22,6 +22,7 @@ from pathlib import Path
 from . import backends, limits, sync_layer, usage
 from ._version import __version__
 from .config import Config
+from .automation import validate_task_automation_mode
 
 EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -337,6 +338,10 @@ def _validate_task_spec(spec: dict, cfg: Config | None = None,
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
+    try:
+        validate_task_automation_mode(spec)
+    except ValueError as exc:
+        return str(exc)
     gate_mode = spec.get("score_gate_mode", "strict")
     if gate_mode not in _VALID_SCORE_GATE_MODES:
         return "score_gate_mode가 잘못됨(strict/advisory)"

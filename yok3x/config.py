@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ._version import __version__
+from .automation import validate_automation_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,15 @@ DEFAULT_YOK3X = {
     "version": __version__,          # 단일 출처(_version.py) — 하드코딩 금지
     "flavor": "claude-orchestrator",
     "auto_approve": False,          # 승인 게이트 기본값: 사람이 y/n
+    "automation_mode": "off",
+    "automation": {
+        "max_rounds_cap": 4,
+        "min_rounds": 1,
+        "allow_backend_reallocation": False,
+        "allow_effort_adjustment": False,
+        "calibration_window": 20,
+        "low_confidence_action": "assist",
+    },
     "default_effort": "",           # 추론 강도 전역 기본(low/medium/high). 워커별 effort가 우선. ""=미지정
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
     "context_max_chars": 8000,      # context.md 글자 제한
@@ -434,6 +444,7 @@ class Config:
         # BOM이 있든 없든 정상 파싱된다(쓰기는 BOM 없는 utf-8 유지).
         yok3x = _deep_merge(yok3x, _load_json_or_empty(p.yok3x_json, logger))
         backends = _deep_merge(backends, _load_json_or_empty(p.backends_json, logger))
+        validate_automation_config(yok3x)
         return cls(paths=p, yok3x=yok3x, backends=backends)
 
     def save_yok3x(self) -> None:
