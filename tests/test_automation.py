@@ -1,3 +1,4 @@
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -6,6 +7,7 @@ import pytest
 
 from yok3x.automation import (
     EXPLICIT_TASK_FIELDS,
+    build_automation_decision_snapshot,
     calculate_task_features,
     effective_automation_decision,
     plan_quota_aware_effort_rounds,
@@ -95,6 +97,40 @@ def test_effective_automation_decision_marks_only_explicit_fields_protected():
         assert decision["fields"][field]["protected"] is False
 
 
+def test_snapshot_off_does_not_calculate_recommendation(monkeypatch):
+    called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("recommendation must not be calculated in off mode")
+
+    monkeypatch.setattr("yok3x.automation.recommend_effort_rounds", fail_if_called)
+    assert build_automation_decision_snapshot({"task": "x"}, {}) == {
+        "mode": "off", "computed": False}
+    assert called is False
+
+
+def test_snapshot_assist_is_json_safe_and_preserves_skip_reasons(monkeypatch):
+    monkeypatch.setattr(
+        "yok3x.automation.recommend_effort_rounds",
+        lambda spec, config: {
+            "bucket": "tiny", "effort": "low", "rounds": 1,
+            "round_candidates": (1, 2), "reason": "sample unavailable",
+        },
+    )
+    snapshot = build_automation_decision_snapshot(
+        {"task": "x", "producer": "explicit-worker"},
+        {"automation_mode": "assist"},
+    )
+    assert snapshot["mode"] == "assist"
+    assert snapshot["computed"] is True
+    assert snapshot["explicit_fields"] == ["producer"]
+    assert snapshot["fields"]["producer"]["protected"] is True
+    assert snapshot["recommendation"]["round_candidates"] == [1, 2]
+    assert snapshot["recommendation"]["reason"] == "sample unavailable"
+
+
 @pytest.mark.parametrize(
     "task_spec,config",
     [
@@ -143,6 +179,38 @@ def test_off_mode_preserves_existing_task_defaults(mock_root, monkeypatch):
         "max_rounds": 2,
         "pass_score": 8.0,
     }
+
+
+def test_assist_mode_only_adds_snapshot_to_status(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = "assist"
+    captured = {}
+
+    def fake_run(self, task, producer, reviewer, max_rounds=2, pass_score=8.0, **kwargs):
+        captured.update(producer=producer, reviewer=reviewer,
+                        max_rounds=max_rounds, pass_score=pass_score)
+        self._save_status("done")
+
+    monkeypatch.setattr("yok3x.orchestrator.Orchestrator.run_producer_reviewer", fake_run)
+    task_file = mock_root / "task.json"
+    task_file.write_text(json.dumps({
+        "pattern": "producer-reviewer", "task": "assist display",
+        "producer": "codex-main", "max_rounds": 3,
+    }), encoding="utf-8")
+
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert captured == {
+        "producer": "codex-main", "reviewer": "codex-critic",
+        "max_rounds": 3, "pass_score": 8.0,
+    }
+    status_files = list(cfg.paths.runs.glob("run_*/status.json"))
+    assert len(status_files) == 1
+    status = json.loads(status_files[0].read_text(encoding="utf-8"))
+    snapshot = status["automation_decision"]
+    assert snapshot["mode"] == "assist"
+    assert snapshot["computed"] is True
+    assert snapshot["fields"]["producer"]["protected"] is True
+    assert isinstance(snapshot["recommendation"]["round_candidates"], list)
 
 
 def test_guiserver_task_spec_validation_rejects_bad_automation_mode(mock_root):

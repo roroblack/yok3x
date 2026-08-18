@@ -72,6 +72,43 @@ def resolve_effective_mode(task_spec: Mapping[str, Any] | None = None,
     return effective_automation_decision(task_spec, config)["effective_mode"]
 
 
+def _json_safe(value: Any) -> Any:
+    """Return a stable JSON-compatible copy of an automation result."""
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def build_automation_decision_snapshot(
+    spec: Mapping[str, Any] | None = None,
+    config: Any = None,
+    *,
+    pace: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the explainable, display-only automation decision snapshot."""
+    decision = effective_automation_decision(spec, config)
+    mode = decision["effective_mode"]
+    if mode == "off":
+        return {"mode": "off", "computed": False}
+
+    recommendation = recommend_effort_rounds(spec, config)
+    if pace is not None:
+        recommendation = plan_quota_aware_effort_rounds(
+            recommendation, pace, config)
+    return {
+        "mode": mode,
+        "computed": True,
+        "mode_source": decision["mode_source"],
+        "explicit_fields": _json_safe(decision["explicit_fields"]),
+        "fields": _json_safe(decision["fields"]),
+        "recommendation": _json_safe(recommendation),
+    }
+
+
 def validate_task_automation_mode(task_spec: Mapping[str, Any]) -> None:
     if "automation_mode" in task_spec:
         validate_automation_mode(task_spec["automation_mode"], source="task automation_mode")

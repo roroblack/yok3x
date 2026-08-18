@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, calibration, knot, mcp_policy, reserve, sync_layer, triage, usage, worktree
+from . import acquire, artifacts, automation, calibration, knot, mcp_policy, reserve, sync_layer, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -299,6 +299,7 @@ class Orchestrator:
         # =general)엔 주입 안 함(조기가설 방지). 사용자 입력이라 프롬프트에 '[예시]' 데이터로만 넣는다.
         self.examples: str = ""
         self.triage: dict | None = None   # T1 트리아지 추천(관측용, 자동 적용 안 함)
+        self.automation_decision: dict[str, Any] | None = None
         # 산출물 게시(opt-in). 워커는 파일을 못 쓰므로(텍스트 생산자) 오케스트레이터가 대신 쓴다.
         # {"enabled":bool, "root":str|None, "overwrite":bool} — root 없으면 workdir/yok3x-out/<run_id>
         self.materialize: dict = {}
@@ -367,6 +368,8 @@ class Orchestrator:
                 data["resume_from"] = self.resume_from
             if self.triage:                         # T1 추천(관측용) — GUI 배지·override 데이터 수집
                 data["triage"] = self.triage
+            if self.automation_decision is not None:
+                data["automation_decision"] = self.automation_decision
             if extra:
                 data.update(extra)
             _atomic_write_json(self.run_dir / "status.json", data)
@@ -2369,6 +2372,15 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     spec_bytes = task_path.read_bytes()
     spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
+    orch.automation_decision = automation.build_automation_decision_snapshot(spec, cfg)
+    if orch.automation_decision["mode"] != "off":
+        recommendation = orch.automation_decision["recommendation"]
+        orch._log(
+            f"[automation] mode={orch.automation_decision['mode']} "
+            f"bucket={recommendation.get('bucket')} "
+            f"effort={recommendation.get('effort')} "
+            f"rounds={recommendation.get('rounds')}"
+        )
     orch.agents_override = spec.get("agents") or {}
     # 산출물 게시(opt-in). "이 폴더에 X 만들어줘"는 그 폴더 하위 신규 파일 생성에 대한 작업단위
     # 승인으로 본다(codex 권고) — 파일마다 다시 묻지 않는다. 단 덮어쓰기는 명시해야 한다.
