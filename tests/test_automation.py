@@ -6,7 +6,9 @@ import pytest
 
 from yok3x.automation import (
     EXPLICIT_TASK_FIELDS,
+    calculate_task_features,
     effective_automation_decision,
+    recommend_effort_rounds,
     resolve_effective_mode,
     validate_automation_config,
     validate_automation_mode,
@@ -150,3 +152,58 @@ def test_guiserver_task_spec_validation_rejects_bad_automation_mode(mock_root):
     )
     assert "automation_mode" in error
     assert "off|assist|full" in error
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ({}, "tiny"),
+        ({"task": "x" * 300}, "small"),
+        ({"task": "x" * 1500, "pattern": "pipeline", "stages": ["a", "b"]}, "medium"),
+        ({"task": "x" * 5000}, "large"),
+        ({"task": "security review of concurrent migration"}, "risk"),
+    ],
+)
+def test_s2_recommendation_buckets(spec, expected):
+    assert recommend_effort_rounds(spec)["bucket"] == expected
+
+
+def test_s2_features_include_structural_signals_and_unknown_pattern_is_safe():
+    spec = {
+        "task": "verify this",
+        "pattern": "future-pattern",
+        "workers": ["a", "b"],
+        "join_worker": "a",
+        "acquire": {"qa": ["q1", "q2"]},
+        "verify_cmd": "pytest -q",
+        "materialize": {"enabled": True},
+        "context_globs": ["src/*.py", "tests/*.py"],
+    }
+    features = calculate_task_features(spec)
+    assert features["pattern_score"] == 0
+    assert features["workers"] == 2
+    assert features["join_worker"] == 1
+    assert features["acquire_qa"] == 2
+    assert features["has_verify_cmd"] is True
+    assert features["has_materialize"] is True
+    assert features["context_file_count"] == 2
+
+
+def test_s2_recommendation_is_deterministic_and_ignores_calibration():
+    spec = {"task": "pipeline task", "pattern": "pipeline", "verify_cmd": "pytest"}
+    first = recommend_effort_rounds(spec, calibration={"should": "be ignored"})
+    second = recommend_effort_rounds(spec, calibration=["also ignored"])
+    assert first == second
+
+
+@pytest.mark.parametrize("bucket_spec", [{}, {"task": "x" * 5000}, {"task": "security migration"}])
+@pytest.mark.parametrize("cap", [0, 1, 2, 3, 4])
+def test_s2_rounds_never_exceed_max_rounds_cap(bucket_spec, cap):
+    result = recommend_effort_rounds(bucket_spec, {"automation": {"max_rounds_cap": cap}})
+    assert result["rounds"] <= cap
+
+
+def test_s2_does_not_lower_or_invent_pass_score():
+    result = recommend_effort_rounds({"task": "security review"})
+    assert "pass_score" not in result
+    assert "pass_score" not in result["features"]
