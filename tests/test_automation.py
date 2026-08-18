@@ -18,7 +18,7 @@ from yok3x.automation import (
     validate_task_automation_mode,
 )
 from yok3x.config import Config, scaffold
-from yok3x.orchestrator import run_task_file
+from yok3x.orchestrator import _resume_supported, run_task_file
 from yok3x.calibration import load_calibration_statistics
 
 
@@ -211,6 +211,73 @@ def test_assist_mode_only_adds_snapshot_to_status(mock_root, monkeypatch):
     assert snapshot["computed"] is True
     assert snapshot["fields"]["producer"]["protected"] is True
     assert isinstance(snapshot["recommendation"]["round_candidates"], list)
+
+
+def test_full_mode_fills_only_absent_round_fields_and_preserves_source(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = "full"
+    captured = {}
+
+    def fake_run(self, task, producer, reviewer, max_rounds=2, pass_score=8.0, **kwargs):
+        captured.update(max_rounds=max_rounds, pass_score=pass_score)
+        self._save_status("done")
+
+    monkeypatch.setattr("yok3x.orchestrator.Orchestrator.run_producer_reviewer", fake_run)
+    source = {"pattern": "producer-reviewer", "task": "full", "max_rounds": 0,
+              "pass_score": 0}
+    task_file = mock_root / "task.json"
+    task_file.write_text(json.dumps(source), encoding="utf-8")
+
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert captured == {"max_rounds": 0, "pass_score": 0.0}
+    assert json.loads(task_file.read_text(encoding="utf-8")) == source
+    status = json.loads(next(cfg.paths.runs.glob("run_*/status.json")).read_text(encoding="utf-8"))
+    decision = status["automation_decision"]
+    assert decision["applied"] == {}
+    assert decision["effective"]["max_rounds"] == 0
+    assert decision["effective"]["pass_score"] == 0
+
+
+def test_full_mode_applies_missing_round_fields_once_and_is_sticky(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = "full"
+    calls = []
+
+    def fake_run(self, task, producer, reviewer, max_rounds=2, pass_score=8.0, **kwargs):
+        calls.append((max_rounds, pass_score))
+        self._save_status("done")
+
+    monkeypatch.setattr("yok3x.orchestrator.Orchestrator.run_producer_reviewer", fake_run)
+    task_file = mock_root / "task.json"
+    task_file.write_text(json.dumps({"pattern": "producer-reviewer", "task": "x"}), encoding="utf-8")
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert calls == [(1, 8.0)]
+
+
+@pytest.mark.parametrize("allow_effort, expected", [(False, None), (True, "low")])
+def test_full_mode_effort_requires_explicit_opt_in(mock_root, monkeypatch, allow_effort, expected):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = "full"
+    cfg.yok3x["automation"]["allow_effort_adjustment"] = allow_effort
+    captured = {}
+
+    def fake_run(self, task, producer, reviewer, max_rounds=2, pass_score=8.0, **kwargs):
+        captured["effort"] = self._worker(producer).get("effort")
+        self._save_status("done")
+
+    monkeypatch.setattr("yok3x.orchestrator.Orchestrator.run_producer_reviewer", fake_run)
+    task_file = mock_root / "task.json"
+    task_file.write_text(json.dumps({"pattern": "producer-reviewer", "task": "x"}), encoding="utf-8")
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert captured["effort"] == expected
+
+
+def test_full_mode_resume_is_rejected_with_reason(mock_root):
+    cfg = Config.load(mock_root)
+    ok, reason = _resume_supported(
+        {"pattern": "producer-reviewer", "task": "x", "automation_mode": "full"}, cfg)
+    assert ok is False
+    assert "automation_mode=full" in reason
 
 
 def test_guiserver_task_spec_validation_rejects_bad_automation_mode(mock_root):

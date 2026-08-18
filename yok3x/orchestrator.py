@@ -2228,6 +2228,8 @@ def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
     if spec.get("pattern", "producer-reviewer") not in (
             "pipeline", "producer-reviewer", "fanout", "fanout-fanin"):
         return False, "재개는 pattern=pipeline·producer-reviewer·fanout에서만 지원합니다"
+    if automation.resolve_effective_mode(spec, cfg) == "full":
+        return False, "재개는 automation_mode=full이 아닐 때만 지원합니다"
     if "acquire" in spec:
         return False, "재개는 acquire가 없을 때만 지원합니다(preflight 호출은 재생 대상 아님)"
     return True, ""
@@ -2373,6 +2375,29 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
     orch.automation_decision = automation.build_automation_decision_snapshot(spec, cfg)
+    effective_spec = spec
+    if orch.automation_decision["mode"] == "full":
+        # Apply once to an execution copy; never mutate the source task dict.
+        effective_spec = dict(spec)
+        recommendation = orch.automation_decision["recommendation"]
+        options = cfg.yok3x.get("automation", {})
+        if not isinstance(options, dict):
+            options = {}
+        applied = {}
+        for field, value in (("max_rounds", recommendation.get("rounds")),
+                             ("pass_score", 8.0)):
+            if field not in spec:
+                effective_spec[field] = value
+                applied[field] = {"from": None, "to": value}
+        if ("effort" not in spec and
+                options.get("allow_effort_adjustment", False) is True):
+            effective_spec["effort"] = recommendation.get("effort")
+            applied["effort"] = {"from": None, "to": recommendation.get("effort")}
+        orch.automation_decision["applied"] = applied
+        orch.automation_decision["effective"] = {
+            field: effective_spec.get(field)
+            for field in automation.EXPLICIT_TASK_FIELDS
+        }
     if orch.automation_decision["mode"] != "off":
         recommendation = orch.automation_decision["recommendation"]
         orch._log(
@@ -2381,11 +2406,27 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
             f"effort={recommendation.get('effort')} "
             f"rounds={recommendation.get('rounds')}"
         )
-    orch.agents_override = spec.get("agents") or {}
+    if orch.automation_decision["mode"] == "full":
+        orch.agents_override = {
+            name: dict(value) for name, value in
+            (effective_spec.get("agents") or {}).items()
+            if isinstance(value, dict)
+        }
+    else:
+        orch.agents_override = spec.get("agents") or {}
+    if (orch.automation_decision["mode"] == "full" and
+            "effort" in effective_spec and "effort" not in spec):
+        for worker_name in {
+            effective_spec.get("producer", "claude-main"),
+            effective_spec.get("reviewer", "codex-critic"),
+        }:
+            override = dict(orch.agents_override.get(worker_name) or {})
+            override["effort"] = effective_spec["effort"]
+            orch.agents_override[worker_name] = override
     # 산출물 게시(opt-in). "이 폴더에 X 만들어줘"는 그 폴더 하위 신규 파일 생성에 대한 작업단위
     # 승인으로 본다(codex 권고) — 파일마다 다시 묻지 않는다. 단 덮어쓰기는 명시해야 한다.
-    orch.materialize = spec.get("materialize") or {}
-    raw_changes = spec.get("changes")
+    orch.materialize = effective_spec.get("materialize") or {}
+    raw_changes = effective_spec.get("changes")
     changes_error = ""
     if raw_changes is not None and not isinstance(raw_changes, dict):
         changes_error = "changes가 객체가 아님"
@@ -2394,12 +2435,12 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     orch.changes = raw_changes if isinstance(raw_changes, dict) else {}
     # 작업 그룹 라벨(콘솔 작업별 뷰용): label 키가 있으면 그 값(빈값 허용=무제목),
     # 키 자체가 없으면(등록된 task 파일) 파일명으로 폴백.
-    _lbl = spec.get("label")
+    _lbl = effective_spec.get("label")
     orch.label = (str(_lbl).strip() if _lbl is not None else Path(task_file).stem.strip())
     # 코딩 태스크 옵션. task가 workdir를 지정하면 우선, 없으면 전역 workspace를 상속.
-    orch.workdir = spec.get("workdir") or cfg.yok3x.get("workspace") or None
-    pattern = spec.get("pattern", "producer-reviewer")
-    task = spec["task"]
+    orch.workdir = effective_spec.get("workdir") or cfg.yok3x.get("workspace") or None
+    pattern = effective_spec.get("pattern", "producer-reviewer")
+    task = effective_spec["task"]
     orch.pattern = pattern
     orch.task_desc = task
     if changes_error:
@@ -2417,30 +2458,30 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
             "reason": msg, "cause": "config_error", "resumable": False})
         return f"aborted: {msg}"
     # task가 지정하면 우선, 없으면 yok3x.json 전역 기본값을 상속(프로젝트 전체 게이트).
-    orch.verify_cmd = spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
+    orch.verify_cmd = effective_spec.get("verify_cmd") or cfg.yok3x.get("verify_cmd", "") or ""
     # verify_cmd만 있고 workdir가 없으면 후보 스테이징이 불가해 검증이 매 라운드 거짓 실패한다.
     # 시작 시점에 한 번 알린다(라운드별 로그보다 발견하기 쉬움). 실측으로 확인된 함정.
     if orch.verify_cmd.strip() and not orch.workdir:
         print("[warn] verify_cmd가 설정됐지만 workdir가 없습니다 → 산출물 후보를 적용해 검증할 수 "
               "없어 검증이 계속 실패할 수 있습니다. task.json에 \"workdir\"(또는 전역 workspace)를 지정하세요.")
-    orch.score_gate_mode = spec.get("score_gate_mode", "strict")
-    orch.verify_timeout = int(spec.get("verify_timeout_sec")
+    orch.score_gate_mode = effective_spec.get("score_gate_mode", "strict")
+    orch.verify_timeout = int(effective_spec.get("verify_timeout_sec")
                               or cfg.yok3x.get("verify_timeout_sec", 300))
-    orch.context_globs = spec.get("context_globs", []) or []
-    orch.rubric = spec.get("rubric", "") or ""
+    orch.context_globs = effective_spec.get("context_globs", []) or []
+    orch.rubric = effective_spec.get("rubric", "") or ""
     # few-shot 예시(E): 문자열 또는 문자열 리스트 허용. 리스트는 빈 줄로 이어붙인다.
-    _ex = spec.get("examples")
+    _ex = effective_spec.get("examples")
     if isinstance(_ex, (list, tuple)):
         orch.examples = "\n\n".join(str(item) for item in _ex if str(item).strip())
     else:
         orch.examples = str(_ex).strip() if _ex else ""
     if "adversarial" in spec:                       # task가 명시하면 우선, 없으면 config 기본
-        orch.adversarial = bool(spec.get("adversarial"))
-    orch.escalate = spec.get("escalate") or {}      # 조건부 라우팅(에스컬레이션) 규칙
+        orch.adversarial = bool(effective_spec.get("adversarial"))
+    orch.escalate = effective_spec.get("escalate") or {}      # 조건부 라우팅(에스컬레이션) 규칙
     # T1 자동 트리아지: 착수 전 실행 형태를 **추천만** 한다(자동 적용 X). 로그·status로 관측만 남기고
     # 실제 실행은 spec 그대로. F0처럼 미검증 판단기라 override·실제결과와 함께 나중에 보정.
     try:
-        orch.triage = triage.estimate_execution(spec)
+        orch.triage = triage.estimate_execution(effective_spec)
         _t = orch.triage
         orch._log(f"[triage] 추천(적용 안 함): pattern={_t['pattern']} tier={_t['tier']} "
                   f"max_rounds={_t['max_rounds']} skip_review={_t['skip_review']} "
@@ -2448,9 +2489,9 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     except Exception as exc:                          # 추천 실패가 실행을 막지 않게
         orch.triage = None
         orch._log(f"[triage] 추천 생성 실패(무시): {type(exc).__name__}: {exc}")
-    manifest = _make_manifest(orch, spec, spec_bytes)
+    manifest = _make_manifest(orch, effective_spec, spec_bytes)
     if resume_dir is not None:
-        supported, reason = _resume_supported(spec, cfg)
+        supported, reason = _resume_supported(effective_spec, cfg)
         if not supported:
             orch._save_status("aborted", {
                 "reason": reason, "cause": "config_error", "resumable": False})
@@ -2484,11 +2525,11 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                 orch.score_gate_mode,
                 has_verify_cmd=bool(str(orch.verify_cmd).strip()),
                 verify_ok=None, score=None,
-                threshold=float(spec.get("pass_score", 8.0)))
-        orch.preflight_budget(spec)      # R-3: 잔여예산으로 못 끝낼 런은 시작 전에 거부
+                threshold=float(effective_spec.get("pass_score", 8.0)))
+        orch.preflight_budget(effective_spec)      # R-3: 잔여예산으로 못 끝낼 런은 시작 전에 거부
         acquire_context = ""
-        acquire_spec = spec.get("acquire")
-        if "acquire" in spec:
+        acquire_spec = effective_spec.get("acquire")
+        if "acquire" in effective_spec:
             if not isinstance(acquire_spec, dict):
                 orch._log("[acquire] task spec 형식 오류 — preflight 생략")
             else:
@@ -2497,15 +2538,15 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                     acquire_spec.get("answerers", []) or [],
                     acquire_spec.get("qa_count", 2), orch.workdir)
         if pattern == "pipeline":
-            orch.run_pipeline(task, spec["stages"], initial_context=acquire_context)
+            orch.run_pipeline(task, effective_spec["stages"], initial_context=acquire_context)
         elif pattern in ("fanout", "fanout-fanin"):
-            orch.run_fanout(task, spec["workers"], spec.get("join_worker"),
+            orch.run_fanout(task, effective_spec["workers"], effective_spec.get("join_worker"),
                             initial_context=acquire_context)
         elif pattern == "producer-reviewer":
-            orch.run_producer_reviewer(task, spec.get("producer", "claude-main"),
-                                       spec.get("reviewer", "codex-critic"),
-                                       int(spec.get("max_rounds", 2)),
-                                       float(spec.get("pass_score", 8.0)),
+            orch.run_producer_reviewer(task, effective_spec.get("producer", "claude-main"),
+                                       effective_spec.get("reviewer", "codex-critic"),
+                                       int(effective_spec.get("max_rounds", 2)),
+                                       float(effective_spec.get("pass_score", 8.0)),
                                        initial_context=acquire_context)
         else:
             raise ValueError(f"unknown pattern: {pattern}")
@@ -2516,7 +2557,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         return "done"
     except RunAborted as e:
         orch._log(f"[stop] {e}")
-        supported, _ = _resume_supported(spec, cfg)
+        supported, _ = _resume_supported(effective_spec, cfg)
         cause = getattr(e, "cause", "unknown")
         resumable = bool(supported and cause in ("guard_stop", "user_abort"))
         orch._save_status("aborted", {
