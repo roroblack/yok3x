@@ -1667,7 +1667,10 @@ class Orchestrator:
             rev = self.call_worker(reviewer, review_instr, "critic",
                                    extra_context="\n\n".join(rev_blocks))
             score = self.steps[-1].score
-            issues_sig = self._defect_sig(rev.text)
+            parsed_review = review_protocol.parse_review_response(rev.text)
+            issues_sig_source = parsed_review["source"]
+            issues_sig = (review_protocol.canonical_defect_signature(parsed_review["defects"])
+                          if issues_sig_source == "structured" else self._defect_sig(rev.text))
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
             self.gate = evaluate_score_gate(
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,
@@ -1687,6 +1690,7 @@ class Orchestrator:
                 "reviewer": rev.backend,
                 "threshold": pass_score, "gate_pass": bool(passed),
                 "gate_mode": self.score_gate_mode,
+                "issues_sig_source": issues_sig_source,
             })
             if passed:
                 suffix = " · 검토 필요" if self.gate["review_required"] else ""

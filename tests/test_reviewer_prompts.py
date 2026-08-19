@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from yok3x import review_protocol
@@ -67,3 +69,65 @@ def test_revise_prompt_still_receives_legacy_round_feedback(tmp_path, monkeypatc
     revise = next(call for call in calls if call[0] == "revise")
     assert revise[1].startswith("review this\n\n")
     assert "SCORE: 5\nlegacy defect" in revise[2]
+
+
+def _run_review_for_issues_sig(tmp_path, monkeypatch, review_text):
+    scaffold(tmp_path, use_mock=True)
+    orch = Orchestrator(Config.load(tmp_path), auto=True)
+    observed = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        orch._step_i += 1
+        text = review_text if task_kind == "critic" else "artifact"
+        score = 5.0 if task_kind == "critic" else None
+        orch.steps.append(StepLog(orch._step_i, worker, task_kind, "done",
+                                  summary=text, score=score))
+        return BackendResult(backend="mock", ok=True, text=text)
+
+    def fake_new_evidence(previous, current):
+        observed.append(current)
+        return False, "test_stop"
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    monkeypatch.setattr(orch, "_new_evidence", fake_new_evidence)
+    orch.run_producer_reviewer("review this", "claude-main", "codex-critic", max_rounds=1)
+    return orch, observed[0]
+
+
+def test_structured_review_uses_canonical_issues_signature_and_records_source(tmp_path, monkeypatch):
+    response = ('{"protocol_version":"review-v1","score":5,"defects":['
+                '{"severity":"high","description":"A bug","evidence":"x","fix":"y"},'
+                '{"severity":"low","description":"B bug"}]}')
+    orch, evidence = _run_review_for_issues_sig(tmp_path, monkeypatch, response)
+
+    assert evidence["issues_sig"] == ("high:a bug", "low:b bug")
+    assert orch._calib_rounds[0]["issues_sig_source"] == "structured"
+    record = json.loads((orch.cfg.paths.runs.parent / "calibration.jsonl").read_text(
+        encoding="utf-8").splitlines()[0])
+    assert "issues_sig_source" not in record
+
+
+def test_structured_review_signature_is_order_independent_but_content_sensitive(tmp_path, monkeypatch):
+    first = ('{"protocol_version":"review-v1","score":5,"defects":['
+             '{"severity":"high","description":"A bug"},'
+             '{"severity":"low","description":"B bug"}]}')
+    second = ('{"defects":[{"description":" b bug ","severity":"low"},'
+              '{"description":" a bug ","severity":"high"}],'
+              '"score":5,"protocol_version":"review-v1"}')
+    changed = ('{"protocol_version":"review-v1","score":5,"defects":['
+               '{"severity":"critical","description":"A bug"},'
+               '{"severity":"low","description":"B bug"}]}')
+
+    _, first_evidence = _run_review_for_issues_sig(tmp_path / "first", monkeypatch, first)
+    _, second_evidence = _run_review_for_issues_sig(tmp_path / "second", monkeypatch, second)
+    _, changed_evidence = _run_review_for_issues_sig(tmp_path / "changed", monkeypatch, changed)
+    assert first_evidence["issues_sig"] == second_evidence["issues_sig"]
+    assert first_evidence["issues_sig"] != changed_evidence["issues_sig"]
+
+
+def test_malformed_structured_review_falls_back_to_legacy_issues_signature(tmp_path, monkeypatch):
+    text = 'SCORE: 5\n- legacy defect'
+    orch, evidence = _run_review_for_issues_sig(tmp_path, monkeypatch, text + ' {"protocol_version":"review-v1"')
+
+    assert evidence["issues_sig"] == orch._defect_sig(text + ' {"protocol_version":"review-v1"')
+    assert orch._calib_rounds[0]["issues_sig_source"] == "legacy_text"
