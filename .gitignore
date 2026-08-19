@@ -35,3 +35,8 @@ _protorun*/
 .pytest-temp*/
 .pytest_temp*/
 .codex-pytest-tmp*/
+# 이름 변형이 계속 늘어나서(.pytest-tmp, .s9-pytest-temp, .codex-pytest-tmp...) 개별 접두사
+# 추가를 그만두고 포괄 패턴으로 전환(RULE.md §5.7 — 외부 도구가 저장소 루트에 basetemp를 만드는
+# 문제, 매번 새 이름으로 뚫림). "pytest"와 "tmp"/"temp"를 모두 포함하는 디렉터리는 이름이 뭐든 무시.
+*pytest*tmp*/
+*pytest*temp*/
