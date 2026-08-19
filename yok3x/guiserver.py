@@ -9,6 +9,7 @@ GUI(gui/index.html)를 브라우저에 띄우고,
 from __future__ import annotations
 
 import http.server
+import copy
 import json
 import shutil
 import socketserver
@@ -22,7 +23,7 @@ from pathlib import Path
 from . import backends, limits, sync_layer, usage
 from ._version import __version__
 from .config import Config
-from .automation import validate_task_automation_mode
+from .automation import validate_automation_config, validate_automation_mode, validate_task_automation_mode
 
 EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -165,6 +166,8 @@ def build_state(cfg: Config) -> dict:
                                       .get("autocalibrate", True)),
         "claude_autocalibrate_reason": ((usage._load_pace(cfg).get("claude") or {})
                                          .get("calib_stop_reason", "")),
+        "automation_mode": cfg.yok3x.get("automation_mode", "off"),
+        "automation_options": cfg.yok3x.get("automation", {}),
         "claude_token": limits.claude_token_status(
             (cfg.yok3x.get("limits") or {}).get("claude") or {}),
         "profiles": list(cfg.yok3x.get("profiles", {})),
@@ -262,6 +265,7 @@ def _recent_runs(cfg: Config, n: int = 6) -> list:
                             "tokens": s.get("tokens"), "cost_usd": s.get("cost_usd"),
                             "duration_ms": s.get("duration_ms")} for s in steps[-8:]],
             "understanding": understanding,
+            "automation_decision": data.get("automation_decision"),
         })
     return runs
 
@@ -602,6 +606,23 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
     auto_refresh = body.get("auto_refresh")           # claude 토큰 자체갱신 on/off
     autocalibrate = body.get("autocalibrate")
+    automation_mode = body.get("automation_mode")
+    automation_options = body.get("automation")
+    if automation_mode is not None or "automation" in body:
+        candidate = copy.deepcopy(cfg.yok3x)
+        if automation_mode is not None:
+            try:
+                candidate["automation_mode"] = validate_automation_mode(automation_mode)
+            except ValueError as exc:
+                return {"error": str(exc)}
+        if "automation" in body:
+            if not isinstance(automation_options, dict):
+                return {"error": "automation must be an object"}
+            candidate.setdefault("automation", {}).update(automation_options)
+        try:
+            validate_automation_config(candidate)
+        except (TypeError, ValueError) as exc:
+            return {"error": str(exc)}
     soft = body.get("soft_ratio")
     hard = body.get("hard_ratio")
     for nm, v in (("soft_ratio", soft), ("hard_ratio", hard)):
@@ -655,6 +676,10 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             if isinstance(claude_pace, dict):
                 claude_pace.pop("calib_stop_reason", None)
                 usage._save_pace(cfg, pace)
+    if automation_mode is not None:
+        cfg.yok3x["automation_mode"] = automation_mode
+    if "automation" in body:
+        cfg.yok3x.setdefault("automation", {}).update(automation_options)
     if soft is not None:
         cfg.yok3x["guard"]["soft_ratio"] = float(soft)
     if hard is not None:

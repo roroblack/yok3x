@@ -196,3 +196,5 @@ knowledge/            # knot 지식그물(md)
   usage.jsonl         # 사용량 원장
   runs/<run_id>/      # status.json, step_NN_<worker>.json, final_output.md, run.log
 ```
+
+자동화 전역 설정은 `automation_mode`(`off|assist|full`)와 `automation.allow_backend_reallocation`, `automation.allow_effort_adjustment`, `automation.calibration_window` 키를 사용합니다.

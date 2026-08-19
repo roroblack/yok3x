@@ -425,6 +425,13 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       </div>
     </div>
     <div class="panel">
+      <h2><span class="ic"></span> 자동화 모드</h2>
+      <div class="seg" id="automationmodeseg"><button data-am="off" onclick="saveAutomationMode('off')">off</button><button data-am="assist" onclick="saveAutomationMode('assist')">assist</button><button data-am="full" onclick="saveAutomationMode('full')">full</button></div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div id="sarb" class="switch off" onclick="toggleAutomationOption('allow_backend_reallocation','sarb','arbtext')"></div><b id="arbtext" style="font-size:12px">OFF</b><span class="sub" style="margin:0">backend 재할당 허용</span></div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div id="sara" class="switch off" onclick="toggleAutomationOption('allow_effort_adjustment','sara','aratext')"></div><b id="aratext" style="font-size:12px">OFF</b><span class="sub" style="margin:0">effort 조정 허용</span></div>
+      <div style="margin-top:10px"><label class="f">calibration window <b id="calibrationwindowval">20</b></label><input type="number" id="calibrationwindow" min="0" step="1" value="20" style="width:100%" onchange="saveAutomationWindow()"></div>
+    </div>
+    <div class="panel">
       <h2><span class="ic"></span> 하루 페이싱 <span class="sub" style="font-weight:400">— 주간쿼터를 하루 단위로</span> <b id="pace-saved" style="font-size:11px;color:var(--green);margin-left:auto"></b></h2>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <div id="swpace" class="switch off" onclick="togglePace()" title="on: 하루에 주간(7d)쿼터의 상한%만큼 쓰면 경고/정지. 롤링 7d 실측 기준(claude·codex)."></div>
@@ -674,6 +681,10 @@ function render(s){
     const reason=document.getElementById("acreason");
     if(reason) reason.textContent=(!ac&&s.claude_autocalibrate_reason)?"⚠ 자동 정지: "+s.claude_autocalibrate_reason:"";
   }
+  const am=s.automation_mode||"off", ao=s.automation_options||{};
+  document.querySelectorAll('#automationmodeseg button').forEach(b=>b.classList.toggle('on',b.dataset.am===am));
+  [['sarb','arbtext','allow_backend_reallocation'],['sara','aratext','allow_effort_adjustment']].forEach(([sid,tid,key])=>{const on=!!ao[key],el=document.getElementById(sid);if(el)el.classList.toggle('off',!on);const tx=document.getElementById(tid);if(tx)tx.textContent=on?'ON':'OFF';});
+  const aw=document.getElementById('calibrationwindow'); if(aw&&document.activeElement!==aw&&ao.calibration_window!=null){aw.value=ao.calibration_window;document.getElementById('calibrationwindowval').textContent=ao.calibration_window;}
   // 하루 페이싱 동기화
   const pc=(s.guard&&s.guard.pace)||{};
   const swp=document.getElementById("swpace");
@@ -747,6 +758,7 @@ function render(s){
       <span class="chip pat">${esc(r.pattern||"-")}</span><span class="chip ${esc(r.state)}">${esc(r.state)}</span>
       <span class="mono" style="font-size:11px">step ${esc(r.done)}/${esc(r.steps)}</span>
       ${r.score!=null?`<span class="score">SCORE ${esc(r.score)}</span>`:""}</div>
+      ${r.automation_decision&&r.automation_decision.mode&&r.automation_decision.mode!=="off"?`<div class="step"><span class="chip pat">AUTO ${esc(r.automation_decision.mode)}</span>${r.automation_decision.recommendation?`<span class="sub">추천 ${esc(r.automation_decision.recommendation.effort||"")} / ${esc(r.automation_decision.recommendation.max_rounds||"")}</span>`:""}</div>`:""}
       ${(r.stepdetail||[]).map(st=>`<div class="step"><span class="n">#${esc(st.index)}</span><span class="wk">${esc(st.worker)}</span>
         <span class="chip ${esc(st.status)}">${esc(st.status)}</span>
         ${st.score!=null?`<span class="score">${esc(st.score)}</span>`:""}
@@ -909,6 +921,22 @@ async function toggleAutoCalibrate(){
   }catch(e){console.warn(e);toast("서버 연결 실패 — 반영하지 않음");}
 }
 // Claude CLI가 브라우저를 열고 로컬 callback까지 처리하므로 URL/코드 입력은 필요 없다.
+async function saveAutomationMode(mode){
+  document.querySelectorAll('#automationmodeseg button').forEach(b=>b.classList.toggle('on',b.dataset.am===mode));
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automation_mode:mode})});
+  if(!r.ok) toast('자동화 모드 저장 실패'); else load();
+}
+async function toggleAutomationOption(key,sid,tid){
+  const on=document.getElementById(sid).classList.contains('off');
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automation:{[key]:on}})});
+  if(r.ok){document.getElementById(sid).classList.toggle('off',!on);document.getElementById(tid).textContent=on?'ON':'OFF';load();} else toast('자동화 옵션 저장 실패');
+}
+async function saveAutomationWindow(){
+  const el=document.getElementById('calibrationwindow'), value=Number(el.value);
+  document.getElementById('calibrationwindowval').textContent=el.value;
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({automation:{calibration_window:value}})});
+  if(!r.ok) toast('calibration window 저장 실패'); else load();
+}
 async function startClaudeLogin(){
   const flow=document.getElementById("claude-login-flow");
   const btn=document.getElementById("claude-login-btn");
