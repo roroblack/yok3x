@@ -1669,6 +1669,9 @@ class Orchestrator:
             score = self.steps[-1].score
             parsed_review = review_protocol.parse_review_response(rev.text)
             issues_sig_source = parsed_review["source"]
+            review_protocol.log_observation(
+                self.cfg, run_id=self.run_id, reviewer=rev.backend,
+                source=issues_sig_source, parse_error=parsed_review.get("parse_error"))
             issues_sig = (review_protocol.canonical_defect_signature(parsed_review["defects"])
                           if issues_sig_source == "structured" else self._defect_sig(rev.text))
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")

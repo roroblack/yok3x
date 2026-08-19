@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from yok3x.review_protocol import (
     PROTOCOL_VERSION,
@@ -6,6 +7,8 @@ from yok3x.review_protocol import (
     canonical_defect_signature,
     extract_json_candidate,
     parse_review_response,
+    log_observation,
+    summarize_review_protocol_observations,
 )
 
 
@@ -87,3 +90,55 @@ def test_non_object_top_level_falls_back():
 
 def test_extract_returns_none_without_an_object():
     assert extract_json_candidate("plain text without braces") is None
+
+
+def observation_cfg(tmp_path):
+    return SimpleNamespace(paths=SimpleNamespace(runs=tmp_path / "runs"))
+
+
+def test_observation_log_is_minimal_and_append_only(tmp_path):
+    cfg = observation_cfg(tmp_path)
+    log_observation(cfg, run_id="run-1", reviewer="codex", source="structured",
+                    parse_error=None)
+    log_observation(cfg, run_id="run-2", reviewer="claude", source="legacy_text",
+                    parse_error="invalid JSON; defect description must not leak")
+    path = tmp_path / "review_protocol_observations.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["run_id"] == "run-1"
+    assert rows[1]["source"] == "legacy_text"
+    assert set(rows[0]) == {"ts", "run_id", "reviewer", "source", "parse_error"}
+    assert "raw_text" not in rows[1]
+    assert "defect description" in rows[1]["parse_error"]
+
+
+def test_observation_summary_insufficient_and_empty_file_safe(tmp_path):
+    cfg = observation_cfg(tmp_path)
+    assert summarize_review_protocol_observations(cfg)["status"] == "insufficient_data"
+    log_observation(cfg, run_id="r", reviewer="codex", source="structured")
+    summary = summarize_review_protocol_observations(cfg)
+    assert summary["total"] == 1
+    assert summary["structured_ratio"] == 1.0
+    assert summary["reviewers"]["codex"]["structured"] == 1
+
+
+def test_observation_summary_status_window_errors_and_reviewer_split(tmp_path):
+    cfg = observation_cfg(tmp_path)
+    for index in range(6):
+        log_observation(
+            cfg, run_id=f"r-{index}", reviewer="codex" if index < 4 else "claude",
+            source="structured" if index < 5 else "legacy_text",
+            parse_error="missing JSON" if index == 4 else None,
+        )
+    path = tmp_path / "review_protocol_observations.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("not json\n[]\n")
+    summary = summarize_review_protocol_observations(cfg, window=50)
+    assert summary["status"] == "ok"
+    assert summary["total"] == 6
+    assert summary["structured"] == 5
+    assert summary["legacy_text"] == 1
+    assert summary["parse_errors"] == {"missing JSON": 1}
+    assert summary["reviewers"]["codex"]["total"] == 4
+    assert summary["reviewers"]["claude"]["legacy_text"] == 1
+    assert summarize_review_protocol_observations(cfg, window=3)["total"] == 3

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -11,6 +15,104 @@ PROTOCOL_VERSION = "review-v1"
 SEVERITIES = frozenset({"critical", "high", "medium", "low"})
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.IGNORECASE | re.DOTALL)
+_OBSERVATION_FILENAME = "review_protocol_observations.jsonl"
+_OBSERVATION_SOURCES = frozenset({"structured", "legacy_text"})
+
+
+def _observation_path(cfg) -> Path:
+    return cfg.paths.runs.parent / _OBSERVATION_FILENAME
+
+
+def log_observation(cfg, *, run_id, reviewer, source, parse_error=None) -> None:
+    """Append minimal structured-review telemetry without retaining review text."""
+    try:
+        if source not in _OBSERVATION_SOURCES:
+            raise ValueError(f"unknown review protocol source: {source!r}")
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "run_id": run_id,
+            "reviewer": reviewer,
+            "source": source,
+            "parse_error": (str(parse_error) if parse_error is not None else None),
+        }
+        path = _observation_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "review protocol observation logging failed: %s: %s", type(exc).__name__, exc
+        )
+
+
+def summarize_review_protocol_observations(cfg, *, window: int = 50) -> dict:
+    """Summarize the most recent valid review-protocol observations."""
+    records: list[dict[str, Any]] = []
+    try:
+        path = _observation_path(cfg)
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        record = json.loads(line)
+                        if (
+                            isinstance(record, dict)
+                            and record.get("source") in _OBSERVATION_SOURCES
+                            and "reviewer" in record
+                        ):
+                            records.append(record)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+    except (OSError, UnicodeError):
+        records = []
+
+    try:
+        limit = max(0, int(window))
+    except (TypeError, ValueError):
+        limit = 50
+    records = records[-limit:] if limit else []
+    total = len(records)
+    source_counts = Counter(record["source"] for record in records)
+    parse_errors = Counter(
+        str(record["parse_error"])
+        for record in records
+        if record.get("parse_error") is not None
+    )
+
+    def ratios(counts: Counter, count: int) -> dict[str, Any]:
+        return {
+            "total": count,
+            "structured": counts.get("structured", 0),
+            "legacy_text": counts.get("legacy_text", 0),
+            "structured_ratio": counts.get("structured", 0) / count if count else 0.0,
+            "legacy_text_ratio": counts.get("legacy_text", 0) / count if count else 0.0,
+        }
+
+    reviewer_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        reviewer_records[str(record.get("reviewer"))].append(record)
+    reviewers = {}
+    for reviewer, items in reviewer_records.items():
+        counts = Counter(item["source"] for item in items)
+        reviewers[reviewer] = ratios(counts, len(items))
+        reviewers[reviewer]["parse_errors"] = dict(Counter(
+            str(item["parse_error"])
+            for item in items
+            if item.get("parse_error") is not None
+        ))
+
+    return {
+        "status": "ok" if total >= 5 else "insufficient_data",
+        "total": total,
+        "sample_count": total,
+        "structured": source_counts.get("structured", 0),
+        "legacy_text": source_counts.get("legacy_text", 0),
+        "structured_ratio": source_counts.get("structured", 0) / total if total else 0.0,
+        "legacy_text_ratio": source_counts.get("legacy_text", 0) / total if total else 0.0,
+        "source_counts": dict(source_counts),
+        "parse_errors": dict(parse_errors),
+        "reviewers": reviewers,
+    }
 
 
 def _is_json_object(candidate: str) -> bool:

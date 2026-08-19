@@ -1,5 +1,10 @@
 # HISTORY.md — 변경 이력
 
+## v4.8.0 · 2026-08-19 · S5 구조화 리뷰 프로토콜 관측·점진적 기본값 전환 준비 완료
+
+- `review_protocol_observations.jsonl` append-only 관측 로그와 최근 표본·backend별 요약을 추가하고, producer-reviewer 라운드마다 source/parse error를 원문 없이 기록한다.
+- S1~S5 구현 완료. 구조화 서명 기본 전환 및 score 게이트 독립 입력 승격은 T-6 데이터 검토 이후 별도 결정으로 남긴다.
+
 ## v4.9.0 · 2026-08-19 — 자동화 모드 전체 구현 완료
 
 - S1~S9 자동화 모드 구현과 mock backend 기반 통합·운영 안전성 검증을 완료했다.
