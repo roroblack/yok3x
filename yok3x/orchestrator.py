@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, automation, calibration, knot, mcp_policy, reserve, sync_layer, triage, usage, worktree
+from . import acquire, artifacts, automation, calibration, knot, mcp_policy, reserve, review_protocol, sync_layer, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -108,6 +108,15 @@ REVIEW_GUARD = (
 
 # 적대적 검수(ARIS AD1) — 리뷰어를 '채점'이 아니라 '반증/파괴'에 맞춘다.
 ADVERSARIAL_REVIEW = (
+    f"필수 첫 줄 `SCORE: <0-10>` 다음, 가능하면 {review_protocol.PROTOCOL_VERSION} 형식의 짧은 "
+    f'fenced ```json 블록을 하나만 반환하라: '
+    f'{{"protocol_version": "{review_protocol.PROTOCOL_VERSION}", "score": <SCORE와 동일 값>, '
+    '"defects": [{"severity": "critical|high|medium|low", "description": "결함 하나, 한 줄"}], "summary": "선택"}}. '
+    "severity는 critical/high/medium/low만 쓰고, 결함 객체 하나는 하나의 의미 단위이며 description은 한 줄이어야 한다. "
+    "evidence(파일·심볼·재현 조건)와 fix(수정 방향)는 선택 필드다. "
+    "defects: []는 결함이 없다는 유효한 응답이다 — 억지로 결함을 지어내지 마라. "
+    "반례·미검증 가정·보안 결함을 defects의 구체적 항목으로 넣어라. "
+    "JSON 형식을 못 지키면 기존처럼 자유 텍스트로 결함을 나열해도 된다. "
     "다음 산출물을 적대적으로 검수하라. 너의 목표는 통과시키는 것이 아니라 '무너뜨리는 것'이다. "
     "가장 강한 반례·미검증 가정·엣지케이스 실패·보안/정확성 결함을 적극적으로 찾아라. 근거 없이 "
     "'동작한다'고 주장된 부분을 지목하고 반증 가능한 구체적 시나리오를 제시하라. "
@@ -1646,7 +1655,15 @@ class Orchestrator:
                 rev_blocks.append(rubric)
             review_instr = ADVERSARIAL_REVIEW if self.adversarial else (
                 "다음 산출물을 채점하라. 첫 줄 'SCORE: <0-10>', 이후 결함과 수정 지시. "
-                "산출물과 rubric만 근거로 독립적으로 평가하라.")
+                "산출물과 rubric만 근거로 독립적으로 평가하라. "
+                f"가능하면 그 다음에 {review_protocol.PROTOCOL_VERSION} 형식의 짧은 fenced ```json 블록을 "
+                f'하나만 반환하라: {{"protocol_version": "{review_protocol.PROTOCOL_VERSION}", '
+                '"score": <SCORE와 동일 값>, "defects": [{"severity": "critical|high|medium|low", '
+                '"description": "결함 하나, 한 줄"}], "summary": "선택"}}. '
+                "severity는 critical/high/medium/low만 쓰고, description은 한 줄이어야 한다. "
+                "evidence(파일·심볼·재현 조건)와 fix(수정 방향)는 선택 필드다. "
+                "defects: []는 결함이 없다는 유효한 응답이다 — 억지로 결함을 지어내지 마라. "
+                "JSON 형식을 못 지키면 기존처럼 자유 텍스트로 결함을 나열해도 된다.")
             rev = self.call_worker(reviewer, review_instr, "critic",
                                    extra_context="\n\n".join(rev_blocks))
             score = self.steps[-1].score
