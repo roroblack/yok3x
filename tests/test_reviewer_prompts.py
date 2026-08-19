@@ -7,7 +7,7 @@ import pytest
 from yok3x import review_protocol
 from yok3x.backends import BackendResult
 from yok3x.config import Config, scaffold
-from yok3x.orchestrator import Orchestrator, StepLog
+from yok3x.orchestrator import Orchestrator, StepLog, _load_replay_steps
 
 
 @pytest.mark.parametrize("adversarial", [False, True])
@@ -131,3 +131,128 @@ def test_malformed_structured_review_falls_back_to_legacy_issues_signature(tmp_p
 
     assert evidence["issues_sig"] == orch._defect_sig(text + ' {"protocol_version":"review-v1"')
     assert orch._calib_rounds[0]["issues_sig_source"] == "legacy_text"
+
+
+def _round_response(defects, score=5):
+    return json.dumps({
+        "protocol_version": review_protocol.PROTOCOL_VERSION,
+        "score": score,
+        "defects": defects,
+    })
+
+
+def _run_rounds(tmp_path, monkeypatch, reviews, *, artifacts=None,
+                verify_results=None, escalate=None, reviewer="codex-critic"):
+    scaffold(tmp_path, use_mock=True)
+    orch = Orchestrator(Config.load(tmp_path), auto=True)
+    orch.escalate = escalate or {}
+    calls = []
+    review_index = 0
+    artifact_index = 0
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        nonlocal review_index, artifact_index
+        calls.append((worker, task_kind))
+        orch._step_i += 1
+        if task_kind == "critic":
+            text = reviews[review_index]
+            review_index += 1
+            score = 5.0
+        else:
+            text = (artifacts or ["artifact"] * len(reviews))[artifact_index]
+            artifact_index += 1
+            score = None
+        orch.steps.append(StepLog(orch._step_i, worker, task_kind, "done",
+                                  summary=text, score=score))
+        return BackendResult(backend=worker, ok=True, text=text)
+
+    monkeypatch.setattr(orch, "call_worker", fake_call)
+    if verify_results is not None:
+        orch.verify_cmd = "mock verify"
+        results = iter(verify_results)
+        monkeypatch.setattr(orch, "_run_round_verify",
+                            lambda artifact, rnd: (*next(results),))
+    orch.run_producer_reviewer("review this", "claude-main", reviewer,
+                               max_rounds=len(reviews), pass_score=8.0)
+    return orch, calls
+
+
+def test_s4_identical_structured_defects_stall_even_when_reordered(tmp_path, monkeypatch):
+    defect = {"severity": "high", "description": "  same   defect  "}
+    reordered = [{"description": "same defect", "severity": "high"}]
+    orch, calls = _run_rounds(
+        tmp_path, monkeypatch,
+        [_round_response([defect]), _round_response(reordered)])
+
+    assert orch.stop_reason == "no_new_evidence"
+    assert [kind for _, kind in calls] == ["build", "critic", "revise", "critic"]
+    assert [row["issues_sig_source"] for row in orch._calib_rounds] == ["structured", "structured"]
+
+
+def test_s4_changed_structured_defects_retry_with_issues_changed(tmp_path, monkeypatch):
+    orch, calls = _run_rounds(
+        tmp_path, monkeypatch,
+        [_round_response([{"severity": "high", "description": "first"}]),
+         _round_response([{"severity": "high", "description": "first"},
+                          {"severity": "low", "description": "new"}])],
+        artifacts=["same artifact", "same artifact"])
+
+    assert orch.stop_reason == "max_rounds"
+    assert len([kind for _, kind in calls if kind == "critic"]) == 2
+    assert orch._calib_rounds[0]["issues_sig_source"] == "structured"
+    assert orch._calib_rounds[1]["issues_sig_source"] == "structured"
+
+
+@pytest.mark.parametrize("axis", ["artifact", "verify"])
+def test_s4_artifact_and_verify_are_independent_evidence_axes(tmp_path, monkeypatch, axis):
+    kwargs = {}
+    if axis == "artifact":
+        kwargs["artifacts"] = ["artifact one", "artifact two"]
+    else:
+        kwargs["verify_results"] = [(False, "first", "original_tree"),
+                                     (True, "second", "original_tree")]
+    orch, calls = _run_rounds(
+        tmp_path / axis, monkeypatch,
+        [_round_response([{"severity": "high", "description": "same"}])] * 2,
+        **kwargs)
+
+    assert orch.stop_reason == "max_rounds"
+    assert len([kind for _, kind in calls if kind == "critic"]) == 2
+
+
+def test_s4_structured_and_legacy_rounds_both_use_their_declared_path(tmp_path, monkeypatch):
+    structured = _round_response([{"severity": "high", "description": "same defect"}])
+    legacy = "SCORE: 5\n- same defect"
+    orch, calls = _run_rounds(tmp_path, monkeypatch, [structured, legacy])
+
+    assert orch.stop_reason == "max_rounds"
+    assert [row["issues_sig_source"] for row in orch._calib_rounds] == ["structured", "legacy_text"]
+    assert len([kind for _, kind in calls if kind == "critic"]) == 2
+
+
+def test_s4_escalated_reviewer_still_parses_structured_json(tmp_path, monkeypatch):
+    review = _round_response([{"severity": "medium", "description": "same"}])
+    orch, calls = _run_rounds(
+        tmp_path, monkeypatch, [review, review],
+        escalate={"after_round": 1, "if_score_below": 6, "to_reviewer": "gemini"})
+
+    critic_workers = [worker for worker, kind in calls if kind == "critic"]
+    assert critic_workers == ["codex-critic", "gemini"]
+    assert [row["issues_sig_source"] for row in orch._calib_rounds] == ["structured", "structured"]
+    assert [row["reviewer"] for row in orch._calib_rounds] == ["codex-critic", "gemini"]
+
+
+def test_s4_old_step_without_issues_sig_source_replays_as_legacy_compatible(tmp_path):
+    step = {
+        "worker": "codex-critic", "task_kind": "critic", "task": "review",
+        "call_key": "old-call", "ok": True, "error": None,
+        "text": "SCORE: 5\n- old defect", "score": 5.0, "checklist": [],
+        "usage": {"cost_usd": 0, "total_tokens": 1, "duration_ms": 1},
+    }
+    (tmp_path / "step_01_codex-critic.json").write_text(
+        json.dumps(step), encoding="utf-8")
+
+    cache, reason = _load_replay_steps(tmp_path)
+    assert "old-call" in cache
+    assert "issues_sig_source" not in cache["old-call"]
+    assert reason
