@@ -8,10 +8,12 @@ import pytest
 from yok3x.automation import (
     EXPLICIT_TASK_FIELDS,
     build_automation_decision_snapshot,
+    calibrated_benchmark_scores,
     calculate_task_features,
     effective_automation_decision,
     plan_quota_aware_effort_rounds,
     recommend_effort_rounds,
+    record_experiment_comparison,
     resolve_effective_mode,
     validate_automation_config,
     validate_automation_mode,
@@ -422,6 +424,64 @@ def test_s3_is_reproducible_and_does_not_return_task_text(tmp_path):
     second = load_calibration_statistics(path)
     assert first == second
     assert secret not in repr(first)
+
+
+def _s7_stats(*groups):
+    return {"groups": [
+        {"backend": candidate, "sample_count": count,
+         "moving_average_score": score, "confidence": confidence}
+        for candidate, count, score, confidence in groups
+    ]}
+
+
+def test_s7_calibrates_only_candidates_with_enough_samples():
+    result = calibrated_benchmark_scores(
+        {"claude": 8.0, "codex": 7.0},
+        _s7_stats(("claude", 5, 9.0, 1.0), ("codex", 4, 10.0, 0.8)),
+        min_samples=5,
+    )
+    assert result["claude"]["applied"] is True
+    assert result["claude"]["corrected"] > 8.0
+    assert result["codex"]["applied"] is False
+    assert result["codex"]["corrected"] == 7.0
+    assert result["codex"]["sample_count"] == 4
+
+
+def test_s7_missing_or_empty_calibration_preserves_benchmarks():
+    benchmarks = {"known": 8, "missing": 6}
+    assert calibrated_benchmark_scores(benchmarks, {"groups": []})["known"]["corrected"] == 8.0
+    assert calibrated_benchmark_scores(benchmarks, {})["missing"]["corrected"] == 6.0
+    assert calibrated_benchmark_scores(benchmarks, _s7_stats(("known", 0, 10, 1.0)))["known"]["applied"] is False
+
+
+def test_s7_candidate_availability_and_ties_are_deterministic():
+    result = calibrated_benchmark_scores(
+        {"first": 8.0, "second": 8.0, "unavailable": 9.0},
+        _s7_stats(("first", 5, 8.0, 1.0), ("second", 5, 8.0, 1.0)),
+    )
+    assert list(result) == ["first", "second", "unavailable"]
+    assert result["unavailable"]["applied"] is False
+    assert result["first"]["corrected"] == result["second"]["corrected"]
+
+
+def test_s7_experiment_budget_zero_does_not_record():
+    assert record_experiment_comparison(["claude"], _s7_stats(("claude", 5, 9, 1.0))) == {
+        "recorded": False, "reason": "experiment_budget=0(미승인)"
+    }
+
+
+def test_s7_experiment_budget_records_existing_calibration_only():
+    result = record_experiment_comparison(
+        ["codex", "missing", "claude"],
+        _s7_stats(("codex", 5, 7.0, 0.8), ("claude", 6, 9.0, 1.0)),
+        experiment_budget=1,
+    )
+    assert result["recorded"] is True
+    assert result["best_candidate"] == "claude"
+    assert [row["candidate"] for row in result["candidates"]] == ["claude", "codex"]
+    assert all(row["candidate"] != "missing" for row in result["candidates"])
+    assert result["candidates"][0]["sample_count"] == 6
+    assert result["candidates"][0]["confidence"] == 1.0
 
 
 def _pace(level, *, used=10.0, cap=20.0):

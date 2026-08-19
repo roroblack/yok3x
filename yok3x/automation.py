@@ -400,6 +400,125 @@ def plan_quota_aware_effort_rounds(
     return result
 
 
+def _calibration_groups_for_candidate(
+    candidate: Any, calibration_stats: Mapping[str, Any] | None,
+) -> list[Mapping[str, Any]]:
+    """Return S3 groups whose backend/model identity matches ``candidate``.
+
+    S3 currently groups by backend (and may not have model information), while
+    callers can use a logical model name.  Accept the explicit model-like
+    fields when present and also match the backend component of ``backend/model``
+    names.  No group is selected by score, so this helper cannot change a
+    candidate's availability or ordering.
+    """
+    if not isinstance(calibration_stats, Mapping):
+        return []
+    groups = calibration_stats.get("groups", [])
+    if not isinstance(groups, (list, tuple)):
+        return []
+    name = str(candidate).casefold()
+    tokens = {part for part in name.replace("@", "/").replace(":", "/").split("/") if part}
+    matched = []
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        identities = []
+        for field in ("candidate", "logical_model", "model", "backend", "reviewer"):
+            value = group.get(field)
+            if isinstance(value, str) and value:
+                identities.extend((value.casefold(), *value.casefold().replace("@", "/").replace(":", "/").split("/")))
+        if name in identities or tokens.intersection(identities):
+            matched.append(group)
+    return matched
+
+
+def _calibration_summary(candidate: Any, calibration_stats: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    groups = _calibration_groups_for_candidate(candidate, calibration_stats)
+    usable = []
+    for group in groups:
+        count = group.get("sample_count")
+        score = group.get("moving_average_score", group.get("average_score", group.get("mean_score")))
+        if (isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0
+                and isinstance(score, (int, float)) and not isinstance(score, bool)):
+            usable.append((int(count), float(score), group.get("confidence")))
+    if not usable:
+        return None
+    total = sum(count for count, _, _ in usable)
+    average_score = sum(count * score for count, score, _ in usable) / total
+    confidence_values = [float(conf) for _, _, conf in usable
+                         if isinstance(conf, (int, float)) and not isinstance(conf, bool)]
+    confidence = (sum(count * conf for (count, _, _), conf in zip(usable, confidence_values)) / total
+                  if confidence_values and len(confidence_values) == len(usable) else None)
+    return {"sample_count": total, "calibration_score": average_score, "confidence": confidence}
+
+
+def calibrated_benchmark_scores(
+    benchmarks: dict, calibration_stats: dict, *, min_samples: int = 5,
+) -> dict[str, dict[str, Any]]:
+    """Return explainable benchmark corrections without changing routing.
+
+    The input mapping's order is deliberately retained.  Thus equal corrected
+    scores remain in the original deterministic order; this function never
+    introduces a tie-break based on iteration timing or random exploration.
+    """
+    threshold = min_samples if isinstance(min_samples, int) and not isinstance(min_samples, bool) else 5
+    threshold = max(0, threshold)
+    result = {}
+    source = benchmarks if isinstance(benchmarks, Mapping) else {}
+    for candidate, value in source.items():
+        try:
+            original = float(value)
+        except (TypeError, ValueError):
+            result[str(candidate)] = {"original": value, "corrected": value, "applied": False,
+                                      "reason": "benchmark score is not numeric", "sample_count": 0}
+            continue
+        summary = _calibration_summary(candidate, calibration_stats)
+        if summary is None:
+            result[candidate] = {"original": original, "corrected": original, "applied": False,
+                                 "reason": "matching calibration data unavailable", "sample_count": 0}
+            continue
+        count = summary["sample_count"]
+        if count < threshold:
+            result[candidate] = {"original": original, "corrected": original, "applied": False,
+                                 "reason": f"calibration samples below min_samples={threshold}",
+                                 "sample_count": count}
+            continue
+        weight = min(0.35, 0.10 + 0.25 * count / (count + threshold + 1))
+        corrected = original * (1.0 - weight) + summary["calibration_score"] * weight
+        result[candidate] = {"original": original, "corrected": corrected, "applied": True,
+                             "reason": f"calibration average blended with weight={weight:.3f}",
+                             "sample_count": count}
+    return result
+
+
+def record_experiment_comparison(
+    candidates: list[str], calibration_stats: dict, *, experiment_budget: int = 0,
+) -> dict[str, Any]:
+    """Record comparisons from existing calibration only when explicitly approved."""
+    if experiment_budget == 0:
+        return {"recorded": False, "reason": "experiment_budget=0(미승인)"}
+    if not isinstance(experiment_budget, int) or experiment_budget < 0:
+        return {"recorded": False, "reason": "experiment_budget<0(무효)"}
+    observations = []
+    for candidate in candidates if isinstance(candidates, list) else []:
+        summary = _calibration_summary(candidate, calibration_stats)
+        if summary is not None:
+            observations.append({"candidate": candidate, **summary})
+    ranked = sorted(enumerate(observations), key=lambda item: (
+        -item[1]["calibration_score"], -item[1]["sample_count"], item[0]))
+    ranking = [item[1] for item in ranked]
+    comparisons = []
+    if ranking:
+        best = ranking[0]
+        for other in ranking[1:]:
+            comparisons.append({"winner": best["candidate"] if best["calibration_score"] >= other["calibration_score"] else other["candidate"],
+                                "candidate_a": best["candidate"], "candidate_b": other["candidate"]})
+    return {"recorded": True, "reason": "experiment_budget>0(승인)",
+            "experiment_budget": experiment_budget, "candidates": ranking,
+            "best_candidate": ranking[0]["candidate"] if ranking else None,
+            "comparisons": comparisons}
+
+
 # Short aliases make the S4 decision layer easy to discover for callers.
 quota_aware_plan = plan_quota_aware_effort_rounds
 recommend_quota_aware_plan = plan_quota_aware_effort_rounds
