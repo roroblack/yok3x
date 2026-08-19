@@ -1,5 +1,13 @@
 # HISTORY.md — 변경 이력
 
+## v4.9.0 · 2026-08-19 — 자동화 모드 전체 구현 완료
+
+- S1~S9 자동화 모드 구현과 mock backend 기반 통합·운영 안전성 검증을 완료했다.
+
+## v4.9.0 · 2026-08-18 — GUI 서버 응답 지연 조사
+
+- `_routing_preview()`의 백엔드 availability 조회를 state build 내부에서 메모이즈하고, GUI Handler 소켓에 15초 유휴 연결 timeout을 추가했다. 조사 결과와 pytest 환경 제약은 `docs/reports/v4.9.0-assessment-gui-server-slowness-2026-08-18.md`에 기록했다.
+
 형식: `버전 · 날짜 시간 — 변경 요약`. 갱신할 때마다 맨 위에 새 항목을 추가한다.
 
 ---

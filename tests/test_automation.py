@@ -20,7 +20,7 @@ from yok3x.automation import (
     validate_task_automation_mode,
 )
 from yok3x.config import Config, scaffold
-from yok3x.orchestrator import _resume_supported, run_task_file
+from yok3x.orchestrator import Orchestrator, RunAborted, _resume_supported, run_task_file
 from yok3x.calibration import load_calibration_statistics
 
 
@@ -254,6 +254,76 @@ def test_full_mode_applies_missing_round_fields_once_and_is_sticky(mock_root, mo
     task_file.write_text(json.dumps({"pattern": "producer-reviewer", "task": "x"}), encoding="utf-8")
     assert run_task_file(cfg, task_file, auto=True) == "done"
     assert calls == [(1, 8.0)]
+
+
+@pytest.mark.parametrize("pattern", ["pipeline", "fanout", "fanout-fanin"])
+@pytest.mark.parametrize("mode", ["off", "assist", "full"])
+def test_automation_modes_are_compatible_with_non_review_patterns(
+    mock_root, monkeypatch, pattern, mode
+):
+    """S9: pipeline/fanout 경로는 PR 전용 필드를 받아도 조용히 무시한다.
+
+    모든 worker 실행은 mock 메서드로 대체한다. 특히 full의 applied max_rounds/pass_score가
+    비-PR 패턴의 호출 시그니처로 새어 나가지 않는지 확인한다.
+    """
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = mode
+    calls = []
+
+    def fake_pipeline(self, task, stages, initial_context=""):
+        calls.append(("pipeline", task, stages, initial_context))
+        self._save_status("done")
+
+    def fake_fanout(self, task, workers, join_worker=None, initial_context=""):
+        calls.append(("fanout", task, workers, join_worker, initial_context))
+        self._save_status("done")
+
+    monkeypatch.setattr(Orchestrator, "run_pipeline", fake_pipeline)
+    monkeypatch.setattr(Orchestrator, "run_fanout", fake_fanout)
+    spec = {"pattern": pattern, "task": f"{pattern} task"}
+    if pattern == "pipeline":
+        spec["stages"] = [{"worker": "claude-main"}, {"worker": "codex-main"}]
+    else:
+        spec["workers"] = ["claude-main", "codex-main"]
+        spec["join_worker"] = "codex-critic"
+    task_file = mock_root / f"{pattern}-{mode}.json"
+    task_file.write_text(json.dumps(spec), encoding="utf-8")
+
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert calls and calls[0][0] == ("pipeline" if pattern == "pipeline" else "fanout")
+    status = json.loads(next(cfg.paths.runs.glob("run_*/status.json")).read_text(encoding="utf-8"))
+    decision = status["automation_decision"]
+    if mode == "full":
+        assert set(decision["applied"]) == {"max_rounds", "pass_score"}
+    else:
+        assert "applied" not in decision
+
+
+def test_full_mode_cannot_bypass_guard_stop_before_worker_call(mock_root, monkeypatch):
+    """S9 안전장치 4: full 자동화보다 기존 hard-stop/preflight가 먼저 최종 결정한다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation_mode"] = "full"
+    task_file = mock_root / "guard-stop.json"
+    task_file.write_text(json.dumps({
+        "pattern": "pipeline", "task": "must stop",
+        "stages": [{"worker": "claude-main"}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        Orchestrator, "preflight_budget",
+        lambda self, spec: (_ for _ in ()).throw(
+            RunAborted("guard hard stop", cause="guard_stop")),
+    )
+    monkeypatch.setattr(
+        Orchestrator, "run_pipeline",
+        lambda *args, **kwargs: pytest.fail("guard stop 뒤에는 worker 경로를 실행하면 안 됨"),
+    )
+
+    result = run_task_file(cfg, task_file, auto=True)
+    assert result.startswith("aborted: guard hard stop")
+    status = json.loads(next(cfg.paths.runs.glob("run_*/status.json")).read_text(encoding="utf-8"))
+    assert status["cause"] == "guard_stop"
+    assert status["automation_decision"]["applied"] == {"max_rounds": {"from": None, "to": 2},
+                                                        "pass_score": {"from": None, "to": 8.0}}
 
 
 @pytest.mark.parametrize("allow_effort, expected", [(False, None), (True, "low")])
