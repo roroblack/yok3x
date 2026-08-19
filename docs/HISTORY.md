@@ -15,6 +15,8 @@
 
 형식: `버전 · 날짜 시간 — 변경 요약`. 갱신할 때마다 맨 위에 새 항목을 추가한다.
 
+- v4.9.0 쨌 2026-08-20: GUI `/api/state` 요청/probe 로깅을 추가하고, GUI state·backend 갱신을 백그라운드 snapshot/stale 캐시로 분리해 Codex app-server 지연이 HTTP 요청을 막지 않게 했다. 상세: `docs/reports/v4.9.0-gui-server-down-root-cause-2026-08-19.md`.
+
 ---
 
 ## v4.6.0 · 2026-08-11 — S8 CLI 노출 및 S1~S9 전체 완료

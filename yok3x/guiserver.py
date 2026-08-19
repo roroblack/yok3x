@@ -11,6 +11,7 @@ from __future__ import annotations
 import http.server
 import copy
 import json
+import logging
 import shutil
 import socketserver
 import subprocess
@@ -33,6 +34,28 @@ _RUN_STATE = {"active": False, "task": None, "since": None, "last": None}
 _QUEUE: list[tuple[str, int]] = []   # (task_file, iterations)
 _LOCK = threading.Lock()
 _CLAUDE_LOGIN_STARTED_AT = None
+_GUI_LOGGER = logging.getLogger("yok3x.gui")
+_GUI_STATE: dict | None = None
+_GUI_STATE_BUILT_AT = 0.0
+_GUI_STATE_REFRESHING = False
+_GUI_STATE_GUARD = threading.Lock()
+_GUI_STATE_REFRESH_SEC = 5.0
+
+
+def _configure_gui_logging(cfg: Config) -> None:
+    path = cfg.paths.yok3x_dir / "guiserver.log"
+    cfg.paths.yok3x_dir.mkdir(parents=True, exist_ok=True)
+    for handler in _GUI_LOGGER.handlers:
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == path.resolve():
+            return
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z"))
+    _GUI_LOGGER.addHandler(handler)
+    _GUI_LOGGER.setLevel(logging.INFO)
+    _GUI_LOGGER.propagate = False
+    _GUI_LOGGER.info("GUI server logging enabled path=%s", path)
 
 
 def _claude_login_start() -> dict:
@@ -77,7 +100,7 @@ def _routing_preview(cfg: Config) -> list:
 
     def avail(b: str) -> bool:
         if b not in availability:
-            availability[b] = usage.backend_available(cfg, b)
+            availability[b] = usage.backend_available(cfg, b, probe_fn=limits.probe_gui)
         return availability[b]
     out = []
     for kind, label in (("build", "구현"), ("review", "검수"), ("design_review", "설계검토")):
@@ -86,14 +109,14 @@ def _routing_preview(cfg: Config) -> list:
     return out
 
 
-def _profile_routes(cfg: Config) -> dict:
+def _profile_routes(cfg: Config, available=None) -> dict:
     """각 프로파일이 상황별로 어떤 모델을 고르는지(설명용). 가용성 미반영 '이론상' 픽."""
     from .orchestrator import resolve_model
     out = {}
     for pname in cfg.yok3x.get("profiles", {}):
         rows = []
         for kind, label in (("build", "구현"), ("review", "검수"), ("design_review", "설계검토")):
-            b, m, _ = resolve_model(cfg, kind, profile=pname)
+            b, m, _ = resolve_model(cfg, kind, profile=pname, available=available)
             rows.append({"kind": kind, "label": label, "backend": b, "model": m})
         out[pname] = rows
     return out
@@ -117,10 +140,17 @@ def pick_directory() -> str | None:
 
 
 def build_state(cfg: Config) -> dict:
+    state_started = time.perf_counter()
     totals = usage.today_totals(cfg)
     tools = []
     for b in usage.BACKEND_KEYS:
-        v = usage.check_backend(cfg, b)
+        probe_started = time.perf_counter()
+        v = usage.check_backend(cfg, b, probe_fn=limits.probe_gui)
+        probe_ms = (time.perf_counter() - probe_started) * 1000
+        if probe_ms >= 2000:
+            _GUI_LOGGER.warning(
+                "slow backend check backend=%s duration_ms=%.1f level=%s source=%s error=%s",
+                b, probe_ms, v.level, v.source, v.reading.error if v.reading else "")
         t = totals.get(b, {"usd": 0, "tokens": 0, "calls": 0})
         wins = [{"name": w.name, "used_percent": round(w.used_percent, 1),
                  "reset": w.reset_in(), "used_tokens": w.used_tokens,
@@ -152,7 +182,7 @@ def build_state(cfg: Config) -> dict:
     workers = {name: {"backend": w.get("backend"), "role": w.get("role", ""),
                       "model": w.get("model", ""), "effort": w.get("effort", "")}
                for name, w in cfg.yok3x.get("workers", {}).items()}
-    return {
+    result = {
         "version": __version__,   # 코드 버전(단일 출처) — 저장된 yok3x.json의 낡은 값에 오염되지 않게
         "flavor": cfg.yok3x["flavor"],
         "flavors": list(cfg.yok3x.get("flavors", {})),
@@ -172,9 +202,11 @@ def build_state(cfg: Config) -> dict:
             (cfg.yok3x.get("limits") or {}).get("claude") or {}),
         "profiles": list(cfg.yok3x.get("profiles", {})),
         "route_preview": _routing_preview(cfg),
+        # Profile routes are configuration-only; availability is already
+        # represented by the async route preview above.
         "profile_routes": _profile_routes(cfg),
         "models_catalog": cfg.yok3x.get("models_catalog", {}),
-        "backend_models": {b: limits.list_models(cfg, b) for b in ("claude", "codex", "gemini")},
+        "backend_models": {b: limits.list_models_gui(cfg, b) for b in ("claude", "codex", "gemini")},
         # effort 미지정 시 실제 적용되는 각 CLI의 기본값(알 수 있는 것만. 모르면 "")
         "effort_defaults": backends.effort_defaults(),
         "default_effort": cfg.yok3x.get("default_effort", ""),   # yok3x 전역 기본(있으면 이게 우선)
@@ -188,7 +220,7 @@ def build_state(cfg: Config) -> dict:
                            "strategy": (g.get("daily_pace") or {}).get("strategy", "fixed"),
                            "underuse_policy": (g.get("daily_pace") or {}).get("underuse_policy", "flat"),
                            "overuse_policy": (g.get("daily_pace") or {}).get("overuse_policy", "flat")}},
-        "coach": usage.coach_messages(cfg),
+        "coach": usage.coach_messages(cfg, probe_fn=limits.probe_gui),
         "runs": _recent_runs(cfg, int(cfg.yok3x.get("runs_max", 20))),   # 작업별 그룹핑 위해 히스토리↑
         "tools": tools,
         "running": dict(_RUN_STATE),
@@ -198,6 +230,43 @@ def build_state(cfg: Config) -> dict:
         "workers": workers,
         "backends": list(cfg.backends),
         "routing": dict(cfg.yok3x.get("routing", {})),
+    }
+    state_ms = (time.perf_counter() - state_started) * 1000
+    if state_ms >= 2000:
+        _GUI_LOGGER.warning("slow build_state duration_ms=%.1f", state_ms)
+    return result
+
+
+def _gui_state(cfg: Config) -> dict:
+    """Serve the last snapshot while a full state build runs off the HTTP thread."""
+    global _GUI_STATE, _GUI_STATE_BUILT_AT, _GUI_STATE_REFRESHING
+    now = time.time()
+    with _GUI_STATE_GUARD:
+        if (not _GUI_STATE_REFRESHING
+                and (_GUI_STATE is None or now - _GUI_STATE_BUILT_AT >= _GUI_STATE_REFRESH_SEC)):
+            _GUI_STATE_REFRESHING = True
+
+            def refresh() -> None:
+                global _GUI_STATE, _GUI_STATE_BUILT_AT, _GUI_STATE_REFRESHING
+                try:
+                    state = build_state(cfg)
+                    with _GUI_STATE_GUARD:
+                        _GUI_STATE = state
+                        _GUI_STATE_BUILT_AT = time.time()
+                    _GUI_LOGGER.info("GUI state snapshot refreshed")
+                except Exception:
+                    _GUI_LOGGER.exception("GUI state snapshot refresh failed")
+                finally:
+                    with _GUI_STATE_GUARD:
+                        _GUI_STATE_REFRESHING = False
+
+            threading.Thread(target=refresh, name="gui-state-refresh", daemon=True).start()
+        if _GUI_STATE is not None:
+            return copy.deepcopy(_GUI_STATE)
+    return {
+        "version": __version__, "flavor": cfg.yok3x.get("flavor", ""),
+        "tools": [], "running": dict(_RUN_STATE), "queue": [], "tasks": [],
+        "backends": list(cfg.backends), "state_status": "warming",
     }
 
 
@@ -730,6 +799,7 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
     if not gui_index.exists():
         print(f"GUI 파일 없음: {gui_index}")
         return
+    _configure_gui_logging(cfg)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         # This bounds idle client connections (including a client that sends
@@ -741,7 +811,24 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
             super().setup()
             self.connection.settimeout(self.request_timeout)
 
+        def handle_one_request(self) -> None:
+            started = time.perf_counter()
+            self._response_code = None
+            try:
+                super().handle_one_request()
+            except Exception:
+                _GUI_LOGGER.exception("request handler exception path=%s", getattr(self, "path", ""))
+                raise
+            finally:
+                duration_ms = (time.perf_counter() - started) * 1000
+                request_line = getattr(self, "requestline", "")
+                path = request_line.split(" ", 2)[1] if request_line.count(" ") >= 2 else ""
+                level = logging.WARNING if duration_ms >= 2000 else logging.INFO
+                _GUI_LOGGER.log(level, "request path=%s duration_ms=%.1f status=%s",
+                                path, duration_ms, getattr(self, "_response_code", None))
+
         def _send(self, code: int, body, ctype: str) -> None:
+            self._response_code = code
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -768,13 +855,15 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                            "text/html; charset=utf-8")
             elif path == "/api/state":
                 try:
-                    self._json(200, build_state(cfg))
+                    self._json(200, _gui_state(cfg))
                 except Exception as e:
+                    _GUI_LOGGER.exception("GET /api/state failed")
                     self._json(500, {"error": str(e)})
             elif path == "/api/claude/login/status":
                 try:
                     self._json(200, _claude_login_status(cfg))
                 except Exception as e:
+                    _GUI_LOGGER.exception("GET /api/claude/login/status failed")
                     self._json(500, {"error": str(e)})
             elif path == "/api/task":                 # 저장된 작업 열기(?name=task-x.json)
                 import urllib.parse as _up
@@ -789,6 +878,7 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
             try:
                 body = self._read_body()
             except Exception as e:
+                _GUI_LOGGER.exception("POST %s bad request", path)
                 self._json(400, {"error": f"bad request: {e}"})
                 return
 
@@ -843,6 +933,7 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                 try:
                     r = _sync_claim_action(cfg, body)
                 except Exception as e:
+                    _GUI_LOGGER.exception("POST /api/sync/claim_action failed")
                     r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 self._json(200 if r.get("ok") else 400, r)
                 return
@@ -850,13 +941,17 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
             self._json(404, {"error": "not found"})
 
         def log_message(self, *a):
-            pass
+            if not a:
+                return
+            _GUI_LOGGER.info("http " + str(a[0]), *a[1:])
 
     class Server(socketserver.ThreadingTCPServer):
         allow_reuse_address = True
         daemon_threads = True
 
+    _GUI_LOGGER.info("binding GUI server host=127.0.0.1 port=%s", port)
     httpd = Server(("127.0.0.1", port), Handler)
+    _GUI_LOGGER.info("GUI server listening host=127.0.0.1 port=%s", port)
     url = f"http://127.0.0.1:{port}/"
     print(f"yok3x gui → {url}   (Ctrl+C 로 종료)")
     if open_browser:

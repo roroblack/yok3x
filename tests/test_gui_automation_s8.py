@@ -19,10 +19,11 @@ def test_gui_state_exposes_automation_fields(monkeypatch):
     fake = SimpleNamespace(level="ok", ratio=0, source="test", real=False,
                            detail="", reading=None)
     monkeypatch.setattr(gs.usage, "today_totals", lambda cfg: {})
-    monkeypatch.setattr(gs.usage, "check_backend", lambda cfg, name: fake)
-    monkeypatch.setattr(gs.usage, "coach_messages", lambda cfg: [])
+    monkeypatch.setattr(gs.usage, "check_backend", lambda cfg, name, **kw: fake)
+    monkeypatch.setattr(gs.usage, "coach_messages", lambda cfg, **kw: [])
     monkeypatch.setattr(gs.limits, "claude_token_status", lambda conf: {})
     monkeypatch.setattr(gs.limits, "list_models", lambda cfg, b: [])
+    monkeypatch.setattr(gs.limits, "list_models_gui", lambda cfg, b: [])
     monkeypatch.setattr(gs.backends, "effort_defaults", lambda: {})
     monkeypatch.setattr(gs, "_routing_preview", lambda cfg: [])
     monkeypatch.setattr(gs, "_profile_routes", lambda cfg: {})

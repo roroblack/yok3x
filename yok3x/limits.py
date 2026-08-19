@@ -39,7 +39,7 @@ from typing import Any
 from .config import Config
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("yok3x.gui")
 
 
 @dataclass
@@ -119,6 +119,8 @@ _TTL_SEC = 60.0   # 루프 한 바퀴 내 여러 호출이 app-server를 반복 
 # 간격 프로세스 스냅샷 스레드)가 이 중복 스폰 하나하나를 더 무겁게 만들어 체감 지연이 커졌다.
 _CACHE_LOCKS: dict[str, threading.Lock] = {}
 _CACHE_LOCKS_GUARD = threading.Lock()
+_GUI_REFRESHING: set[str] = set()
+_GUI_REFRESH_GUARD = threading.Lock()
 
 
 def _cache_lock(backend: str) -> threading.Lock:
@@ -137,23 +139,66 @@ def probe(cfg: Config, backend: str, use_cache: bool = True) -> LimitReading:
     if hit and (time.time() - hit[0]) < _TTL_SEC:
         return hit[1]
     # 백엔드별 락으로 직렬화 — 동시 호출은 하나만 실제로 스폰하고 나머지는 그 결과를 공유해서 기다린다.
-    with _cache_lock(backend):
+    lock = _cache_lock(backend)
+    wait_started = time.perf_counter()
+    lock.acquire()
+    lock_wait_ms = (time.perf_counter() - wait_started) * 1000
+    try:
         hit = _CACHE.get(backend)              # 대기하는 동안 다른 스레드가 이미 채웠을 수 있다
         if hit and (time.time() - hit[0]) < _TTL_SEC:
+            if lock_wait_ms >= 100:
+                logger.warning("probe lock wait backend=%s duration_ms=%.1f cache_filled=true",
+                               backend, lock_wait_ms)
             return hit[1]
+        probe_started = time.perf_counter()
         r = _probe_uncached(cfg, backend)
+        probe_ms = (time.perf_counter() - probe_started) * 1000
         _CACHE[backend] = (time.time(), r)
+        if lock_wait_ms >= 100:
+            logger.warning("probe lock wait backend=%s duration_ms=%.1f", backend, lock_wait_ms)
+        if probe_ms >= 2000:
+            logger.warning("slow probe backend=%s duration_ms=%.1f source=%s error=%s",
+                           backend, probe_ms, r.source, r.error)
         return r
+    finally:
+        lock.release()
 
 
 def clear_cache() -> None:
     _CACHE.clear()
 
 
+def probe_gui(cfg: Config, backend: str) -> LimitReading:
+    """Return cached GUI data immediately; refresh expired data in a daemon thread."""
+    hit = _CACHE.get(backend)
+    if hit and (time.time() - hit[0]) < _TTL_SEC:
+        return hit[1]
+    with _GUI_REFRESH_GUARD:
+        if backend not in _GUI_REFRESHING:
+            _GUI_REFRESHING.add(backend)
+
+            def refresh() -> None:
+                try:
+                    probe(cfg, backend)
+                except Exception:
+                    logger.exception("GUI background probe failed backend=%s", backend)
+                finally:
+                    with _GUI_REFRESH_GUARD:
+                        _GUI_REFRESHING.discard(backend)
+
+            threading.Thread(target=refresh, name=f"gui-probe-{backend}", daemon=True).start()
+    if hit:
+        return hit[1]
+    return LimitReading(backend, "none", ok=False, real=False,
+                        detail="GUI probe in progress")
+
+
 _MODELS_CACHE: dict[str, tuple[float, list[str]]] = {}
 _MODELS_TTL = 300.0   # 5분: 모델 목록은 자주 안 바뀜
 _MODELS_CACHE_LOCKS: dict[str, threading.Lock] = {}
 _MODELS_CACHE_LOCKS_GUARD = threading.Lock()
+_GUI_MODELS_REFRESHING: set[str] = set()
+_GUI_MODELS_REFRESH_GUARD = threading.Lock()
 # BUG-43 여섯 번째 후속(라이브 관측): probe()·codex_percent_at()과 같은 락 없는 캐시가 여기도
 # 있었다. TTL 5분이라 스탬피드 창이 드물게 열리지만, 열릴 때 gemini(키 없는 계정)는 매번
 # _gemini_bundle_models()로 번들 디렉터리의 .js 파일을 전부 읽어 정규식으로 스캔한다 — 동시
@@ -189,6 +234,28 @@ def list_models(cfg: Config, backend: str) -> list[str]:
             models = []
         _MODELS_CACHE[backend] = (time.time(), models)
         return models
+
+
+def list_models_gui(cfg: Config, backend: str) -> list[str]:
+    """Return cached model data immediately and refresh it outside HTTP threads."""
+    hit = _MODELS_CACHE.get(backend)
+    if hit and (time.time() - hit[0]) < _MODELS_TTL:
+        return hit[1]
+    with _GUI_MODELS_REFRESH_GUARD:
+        if backend not in _GUI_MODELS_REFRESHING:
+            _GUI_MODELS_REFRESHING.add(backend)
+
+            def refresh() -> None:
+                try:
+                    list_models(cfg, backend)
+                except Exception:
+                    logger.exception("GUI background model refresh failed backend=%s", backend)
+                finally:
+                    with _GUI_MODELS_REFRESH_GUARD:
+                        _GUI_MODELS_REFRESHING.discard(backend)
+
+            threading.Thread(target=refresh, name=f"gui-models-{backend}", daemon=True).start()
+    return hit[1] if hit else []
 
 
 def _fetch_models(cfg: Config, backend: str) -> list[str]:

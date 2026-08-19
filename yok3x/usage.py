@@ -678,13 +678,13 @@ def pace_approve(cfg: Config, backend: str, today: str | None = None) -> None:
     cfg.yok3x.setdefault("guard", {}).setdefault("daily_pace_override", {})[backend] = today
 
 
-def check_backend(cfg: Config, backend: str) -> GuardVerdict:
+def check_backend(cfg: Config, backend: str, probe_fn=None) -> GuardVerdict:
     """한도 판정. 실측 probe가 있으면 그것이 기준, 없으면 원장(일일 예산) 폴백."""
     g = cfg.yok3x["guard"]
 
     # 1) 진짜 한도 우선 — limits.py 의 서버 보고 실측/롤링 추정
     if g.get("use_real_limits", True):
-        reading = limits.probe(cfg, backend)
+        reading = (probe_fn or limits.probe)(cfg, backend)
         if reading.ok and reading.windows:
             ratio = reading.ratio()
             w = reading.worst()
@@ -766,7 +766,7 @@ def guard_allows(cfg: Config, worker: str) -> tuple[bool, GuardVerdict]:
     return v.level != "stop", v
 
 
-def backend_available(cfg: Config, backend: str) -> bool:
+def backend_available(cfg: Config, backend: str, probe_fn=None) -> bool:
     """S2 라우팅 필터: 이 backend를 지금 쓸 수 있는가 = CLI 설치 + 한도 여유(stop 아님).
 
     설치 안 됐거나 한도가 꽉 찼으면 False → resolve_model이 다음 순위로 폴백한다.
@@ -778,7 +778,9 @@ def backend_available(cfg: Config, backend: str) -> bool:
         if not cmd or shutil.which(str(cmd[0])) is None:
             return False        # CLI 미설치
     try:
-        return check_backend(cfg, backend).level != "stop"   # 한도 여유
+        verdict = (check_backend(cfg, backend, probe_fn=probe_fn)
+                   if probe_fn is not None else check_backend(cfg, backend))
+        return verdict.level != "stop"   # 한도 여유
     except Exception:
         return True
 
@@ -870,11 +872,15 @@ def _window(v: GuardVerdict, name: str) -> "limits.Window | None":
     return None
 
 
-def coach_messages(cfg: Config) -> list[str]:
+def coach_messages(cfg: Config, probe_fn=None) -> list[str]:
     """'어느 작업을 · 왜 · 언제' 코칭. 실측 한도가 있으면 5시간/7일 이중 윈도우로 코칭한다."""
     g = cfg.yok3x["guard"]
     soft = g.get("soft_ratio", 0.8)
-    verdicts = {b: check_backend(cfg, b) for b in BACKEND_KEYS}
+    verdicts = {
+        b: (check_backend(cfg, b, probe_fn=probe_fn)
+            if probe_fn is not None else check_backend(cfg, b))
+        for b in BACKEND_KEYS
+    }
     routing = cfg.yok3x.get("routing", {})
     msgs: list[str] = []
     ordered = sorted(verdicts.values(), key=lambda v: v.ratio)

@@ -3164,11 +3164,12 @@ def test_claude_transcript_tokens_are_exposed_in_gui_state(tmp_path, monkeypatch
     verdict = usage.GuardVerdict("claude", reading.ratio(), "x", "ok", reading.detail,
                                  source=reading.source, real=False, reading=reading)
     monkeypatch.setattr(gs.usage, "today_totals", lambda c: {})
-    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b: verdict)
-    monkeypatch.setattr(gs.usage, "coach_messages", lambda c: [])
+    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b, **kw: verdict)
+    monkeypatch.setattr(gs.usage, "coach_messages", lambda c, **kw: [])
     monkeypatch.setattr(gs, "_routing_preview", lambda c: {})
     monkeypatch.setattr(gs, "_profile_routes", lambda c: {})
     monkeypatch.setattr(gs.limits, "list_models", lambda c, b: [])
+    monkeypatch.setattr(gs.limits, "list_models_gui", lambda c, b: [])
     monkeypatch.setattr(gs.limits, "claude_token_status", lambda c: {})
     state = gs.build_state(cfg)
     win = state["tools"][0]["windows"][0]
@@ -3327,11 +3328,12 @@ def test_apply_config_and_build_state_expose_autocalibrate(tmp_path, monkeypatch
     monkeypatch.setattr(gs.usage, "today_totals", lambda c: {})
     empty = type("V", (), {"reading": None, "real": False, "level": "ok",
                             "ratio": 0, "source": "none", "detail": ""})()
-    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b: empty)
-    monkeypatch.setattr(gs.usage, "coach_messages", lambda c: [])
+    monkeypatch.setattr(gs.usage, "check_backend", lambda c, b, **kw: empty)
+    monkeypatch.setattr(gs.usage, "coach_messages", lambda c, **kw: [])
     monkeypatch.setattr(gs, "_routing_preview", lambda c: {})
     monkeypatch.setattr(gs, "_profile_routes", lambda c: {})
     monkeypatch.setattr(gs.limits, "list_models", lambda c, b: [])
+    monkeypatch.setattr(gs.limits, "list_models_gui", lambda c, b: [])
     monkeypatch.setattr(gs.limits, "claude_token_status", lambda c: {})
     state = gs.build_state(cfg)
     assert state["claude_autocalibrate"] is False
@@ -3524,10 +3526,10 @@ def test_backend_available_installed_and_headroom(tmp_path, monkeypatch):
     assert usage.backend_available(cfg, "claude") is False
     monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)   # 설치됨
     monkeypatch.setattr(usage, "check_backend",
-                        lambda c, b: usage.GuardVerdict(b, 0.2, "5h", "ok", "d"))
+                        lambda c, b, **kw: usage.GuardVerdict(b, 0.2, "5h", "ok", "d"))
     assert usage.backend_available(cfg, "claude") is True
     monkeypatch.setattr(usage, "check_backend",
-                        lambda c, b: usage.GuardVerdict(b, 1.0, "5h", "stop", "d"))
+                        lambda c, b, **kw: usage.GuardVerdict(b, 1.0, "5h", "stop", "d"))
     assert usage.backend_available(cfg, "claude") is False              # 한도 stop
 
 
