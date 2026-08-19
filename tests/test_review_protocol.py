@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from yok3x.review_protocol import (
     PROTOCOL_VERSION,
     SEVERITIES,
@@ -90,6 +92,42 @@ def test_non_object_top_level_falls_back():
 
 def test_extract_returns_none_without_an_object():
     assert extract_json_candidate("plain text without braces") is None
+
+
+@pytest.mark.parametrize("text", [None, "", "   ", "{" * 5000])
+def test_extract_json_candidate_is_safe_for_empty_or_pathological_text(text):
+    assert extract_json_candidate(text) is None
+
+
+def test_parse_review_response_non_string_falls_back_without_raising():
+    result = parse_review_response(None)
+    assert result["source"] == "legacy_text"
+    assert result["raw_text"] is None
+
+
+def test_canonical_signature_is_stable_for_duplicate_defects_and_long_text():
+    defect = {"severity": "high", "description": ("  repeated   defect  " * 20_000)}
+    signature = canonical_defect_signature([defect, dict(defect)])
+    assert len(signature) == 2
+    assert signature[0] == signature[1]
+
+
+def test_canonical_signature_tolerates_malformed_description_values():
+    assert canonical_defect_signature([
+        {"severity": "low", "description": None},
+        {"severity": "low", "description": 123},
+        "not a defect",
+    ]) == ("low:", "low:123")
+
+
+def test_observation_logging_swallows_write_failures(tmp_path, monkeypatch):
+    cfg = observation_cfg(tmp_path)
+
+    def fail_open(*args, **kwargs):
+        raise OSError("simulated disk-full/lock")
+
+    monkeypatch.setattr("pathlib.Path.open", fail_open)
+    log_observation(cfg, run_id="r", reviewer="codex", source="structured")
 
 
 def observation_cfg(tmp_path):

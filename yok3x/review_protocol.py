@@ -124,35 +124,36 @@ def _is_json_object(candidate: str) -> bool:
 
 def _balanced_candidates(text: str):
     """Yield balanced brace substrings, ignoring braces inside JSON strings."""
-    for start, char in enumerate(text):
-        if char != "{":
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, current in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif current == "\\":
+                escaped = True
+            elif current == '"':
+                in_string = False
             continue
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(text)):
-            current = text[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif current == "\\":
-                    escaped = True
-                elif current == '"':
-                    in_string = False
-                continue
-            if current == '"':
-                in_string = True
-            elif current == "{":
-                depth += 1
-            elif current == "}":
-                depth -= 1
-                if depth == 0:
-                    yield text[start : index + 1]
-                    break
+        if current == '"':
+            in_string = True
+        elif current == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif current == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield text[start : index + 1]
+                start = None
 
 
 def extract_json_candidate(text: str) -> str | None:
     """Find a likely JSON object in reviewer output."""
+    if not isinstance(text, str):
+        return None
     if _is_json_object(text):
         return text
 
@@ -241,15 +242,16 @@ def parse_review_response(text: str) -> dict[str, Any]:
     }
 
 
-def _normalize_description(description: str) -> str:
-    return " ".join(description.split()).casefold()
+def _normalize_description(description: Any) -> str:
+    return " ".join(str(description if description is not None else "").split()).casefold()
 
 
 def canonical_defect_signature(defects: list[dict]) -> tuple[str, ...]:
     """Return an order-independent signature based only on severity and description."""
     return tuple(
         sorted(
-            f"{defect['severity']}:{_normalize_description(defect['description'])}"
+            f"{defect.get('severity', '')}:{_normalize_description(defect.get('description'))}"
             for defect in defects
+            if isinstance(defect, dict)
         )
     )

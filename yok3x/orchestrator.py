@@ -2252,7 +2252,11 @@ def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
     if spec.get("pattern", "producer-reviewer") not in (
             "pipeline", "producer-reviewer", "fanout", "fanout-fanin"):
         return False, "재개는 pattern=pipeline·producer-reviewer·fanout에서만 지원합니다"
-    if automation.resolve_effective_mode(spec, cfg) == "full":
+    try:
+        effective_mode = automation.resolve_effective_mode(spec, cfg)
+    except (TypeError, ValueError) as exc:
+        return False, f"재개는 유효한 automation_mode가 필요합니다: {exc}"
+    if effective_mode == "full":
         return False, "재개는 automation_mode=full이 아닐 때만 지원합니다"
     if "acquire" in spec:
         return False, "재개는 acquire가 없을 때만 지원합니다(preflight 호출은 재생 대상 아님)"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 AUTOMATION_MODES = frozenset(("off", "assist", "full"))
@@ -209,7 +210,15 @@ def calculate_task_features(
         40,
     )
     searchable = " ".join(_bounded_text(spec.get(field)) for field in _TEXT_FIELDS).casefold()
-    risk_terms = tuple(term for term in _RISK_TERMS if term.casefold() in searchable)
+    def risk_match(term: str) -> bool:
+        # Risk terms are tokens, not arbitrary substrings (e.g. preview must
+        # not match review). Keep the historical deserializ stem.
+        suffix = r"\w*" if term == "deserializ" else ""
+        return re.search(
+            rf"(?<!\w){re.escape(term.casefold())}{suffix}(?!\w)", searchable
+        ) is not None
+
+    risk_terms = tuple(term for term in _RISK_TERMS if risk_match(term))
     risk = bool(risk_terms)
     return {
         "input_chars": input_chars,
@@ -351,6 +360,9 @@ def plan_quota_aware_effort_rounds(
         over_cap = float(pace.get("used")) >= float(pace.get("cap"))
     except (TypeError, ValueError):
         pass
+    if level not in ("warn", "stop"):
+        result["quota_reason"] = f"unknown daily_pace level={level!r}; S2 recommendation preserved"
+        return result
     if level != "warn" and not over_cap:
         result["quota_reason"] = f"알 수 없는 daily_pace level={level!r}; S2 추천 유지"
         return result

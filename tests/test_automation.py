@@ -352,6 +352,16 @@ def test_full_mode_resume_is_rejected_with_reason(mock_root):
     assert "automation_mode=full" in reason
 
 
+@pytest.mark.parametrize("automation_mode", ["Full", [], {"mode": "full"}, 1])
+def test_resume_rejects_malformed_automation_mode_without_raising(mock_root, automation_mode):
+    ok, reason = _resume_supported(
+        {"pattern": "producer-reviewer", "task": "x", "automation_mode": automation_mode},
+        Config.load(mock_root),
+    )
+    assert ok is False
+    assert reason
+
+
 def test_guiserver_task_spec_validation_rejects_bad_automation_mode(mock_root):
     from yok3x import guiserver as gs
 
@@ -403,6 +413,39 @@ def test_s2_recommendation_is_deterministic_and_ignores_calibration():
     first = recommend_effort_rounds(spec, calibration={"should": "be ignored"})
     second = recommend_effort_rounds(spec, calibration=["also ignored"])
     assert first == second
+
+
+@pytest.mark.parametrize("value", [None, "", "\U0001f680" * 1000, "{" * 1000])
+def test_s2_feature_extraction_handles_empty_unicode_and_structured_text(value):
+    features = calculate_task_features({"task": value})
+    assert isinstance(features["input_chars"], int)
+    assert features["input_chars"] <= 400_000
+
+
+def test_s2_risk_terms_do_not_match_inside_other_words():
+    assert calculate_task_features({"task": "preview the result"})["risk"] is False
+
+
+def test_snapshot_off_ignores_malformed_pace(monkeypatch):
+    monkeypatch.setattr(
+        "yok3x.automation.recommend_effort_rounds",
+        lambda *args, **kwargs: pytest.fail("off mode must return before recommendation"),
+    )
+    assert build_automation_decision_snapshot(
+        {"task": "x"}, {"automation_mode": "off"},
+        pace={"level": ["unknown"], "used": None, "cap": object()},
+    ) == {"mode": "off", "computed": False}
+
+
+def test_s4_unknown_pace_level_does_not_adjust_even_when_numbers_exceed_cap():
+    source = {"effort": "high", "rounds": 4, "effort_candidates": ("medium", "high"),
+              "round_candidates": (2, 4)}
+    result = plan_quota_aware_effort_rounds(
+        source, {"level": "future", "used": "999", "cap": 1},
+    )
+    assert result["rounds"] == source["rounds"]
+    assert result["effort"] == source["effort"]
+    assert result["quota_adjustment"] == "none"
 
 
 @pytest.mark.parametrize("bucket_spec", [{}, {"task": "x" * 5000}, {"task": "security migration"}])
