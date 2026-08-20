@@ -46,6 +46,18 @@ def test_apply_config_automation_is_atomic_and_validates():
     assert original != cfg.paths.yok3x_json.read_text(encoding="utf-8-sig")
 
 
+def test_task_apply_mode_is_validated_and_gui_defaults_to_review():
+    cfg = Config.load(_root())
+    base = {"pattern": "producer-reviewer", "task": "t"}
+    assert gs._validate_task_spec({**base, "changes": {"apply_mode": "review"}}, cfg) == ""
+    assert gs._validate_task_spec({**base, "changes": {"apply_mode": "auto_commit"}}, cfg) == ""
+    assert "review/auto_commit" in gs._validate_task_spec(
+        {**base, "changes": {"apply_mode": "unsafe"}}, cfg)
+    html = Path("gui/index.html").read_text(encoding="utf-8")
+    assert 'data-apply-mode="review" class="on"' in html
+    assert "spec.changes={apply_mode:activeApplyMode()};" in html
+
+
 def test_recent_runs_only_reads_automation_decision_from_status():
     cfg = Config.load(_root())
     run = cfg.paths.runs / "run-s8"

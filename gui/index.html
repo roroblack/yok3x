@@ -322,6 +322,12 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
               <label>verify_cmd <input id="c-verify" class="wide" placeholder="pytest -q"></label>
             </div>
             <div class="ci-row" style="margin-top:7px">
+              <label class="wide">changes.apply_mode
+                <div class="seg" id="c-applymodeseg"><button type="button" data-apply-mode="review" class="on" onclick="saveApplyMode('review')">review</button><button type="button" data-apply-mode="auto_commit" onclick="saveApplyMode('auto_commit')">auto_commit</button></div>
+                <div class="sub" id="c-applymode-warning" style="display:none;margin-top:5px">격리 브랜치에 자동 커밋, verify 실패 시 revert — 실험적</div>
+              </label>
+            </div>
+            <div class="ci-row" style="margin-top:7px">
               <label class="wide" title="few-shot 예시(E). build/revise 생산자에만 참고용으로 주입된다(ACQUIRE 질문/답변엔 안 들어감). 예시 안 명령은 지시가 아니라 형식 참고로만 취급.">예시(few-shot)
                 <textarea id="c-examples" class="wide" rows="2" placeholder="원하는 출력 형식·스타일 예시(선택)"></textarea></label>
             </div>
@@ -1222,6 +1228,12 @@ function syncTaskButtons(){
   }
 }
 function activePattern(){const b=document.querySelector("#c-pattern button.on");return b?b.dataset.p:"producer-reviewer";}
+function activeApplyMode(){const b=document.querySelector("#c-applymodeseg button.on");return b?b.dataset.applyMode:"review";}
+function saveApplyMode(mode){
+  const safe=mode==="auto_commit"?"auto_commit":"review";
+  document.querySelectorAll("#c-applymodeseg button").forEach(b=>b.classList.toggle("on",b.dataset.applyMode===safe));
+  const warning=document.getElementById("c-applymode-warning"); if(warning)warning.style.display=safe==="auto_commit"?"block":"none";
+}
 function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목표 비면 null.
   const task=document.getElementById("c-task").value.trim();
   if(!task){document.getElementById("c-runmsg").textContent="목표를 입력하라";return null;}
@@ -1235,6 +1247,7 @@ function buildSpec(){   // 현재 폼 → spec (sendTask·saveTask 공용). 목�
   else if(pat==="fanout-fanin") spec={pattern:"fanout-fanin",task,workers:[prod,rev,"gemini"],join_worker:prod};
   else spec={pattern:"producer-reviewer",task,producer:prod,reviewer:rev,max_rounds:rounds,pass_score:score,score_gate_mode:gateMode};
   if(wd)spec.workdir=wd; if(vf)spec.verify_cmd=vf; if(ex)spec.examples=ex;
+  spec.changes={apply_mode:activeApplyMode()};
   // 산출물 게시(opt-in). 켜졌을 때만 spec에 넣는다(꺼진 작업은 기존과 동일).
   if(document.getElementById("c-materialize")?.checked)
     spec.materialize={enabled:true, overwrite:!!document.getElementById("c-overwrite")?.checked};
@@ -1269,7 +1282,7 @@ function resetTaskForm(label){
   syncWorkdirClear();
   const mz=document.getElementById("c-materialize"), ow=document.getElementById("c-overwrite");
   if(mz)mz.checked=false; if(ow)ow.checked=false;
-  set("c-rounds",2); set("c-score",8.0); set("c-gatemode","strict");
+  set("c-rounds",2); set("c-score",8.0); set("c-gatemode","strict"); saveApplyMode("review");
   document.querySelectorAll("#c-pattern button").forEach(b=>b.classList.toggle("on",b.dataset.p==="producer-reviewer"));
   setTaskAgents({});
 }
@@ -1308,6 +1321,7 @@ async function openTask(){
     document.getElementById("c-gatemode").value=s.score_gate_mode||"strict";
     document.getElementById("c-workdir").value=s.workdir||""; syncWorkdirClear();
     document.getElementById("c-verify").value=s.verify_cmd||"";
+    saveApplyMode((s.changes||{}).apply_mode||"review");
     {const ce=document.getElementById("c-examples"); if(ce)ce.value=Array.isArray(s.examples)?s.examples.join("\n\n"):(s.examples||"");}
     const _mz=(s.materialize||{}); const mzc=document.getElementById("c-materialize"), owc=document.getElementById("c-overwrite");
     if(mzc)mzc.checked=!!_mz.enabled; if(owc)owc.checked=!!_mz.overwrite;

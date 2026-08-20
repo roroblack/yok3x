@@ -27,6 +27,7 @@ from .config import Config
 from .automation import validate_automation_config, validate_automation_mode, validate_task_automation_mode
 
 EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
+APPLY_MODES = ("review", "auto_commit")
 
 # 실행 상태 + 큐. 단일 실행 락으로 동시 실행 방지, 나머지는 큐 대기.
 # last: 직전 실행 결과/오류를 보존해 GUI에 노출(조용한 실패 금지).
@@ -416,6 +417,12 @@ def _validate_task_spec(spec: dict, cfg: Config | None = None,
         return "task(목표)가 비었다"
     if spec.get("pattern") not in _VALID_PATTERNS:
         return "pattern이 잘못됨"
+    changes = spec.get("changes")
+    if changes is not None:
+        if not isinstance(changes, dict):
+            return "changes가 객체가 아님"
+        if changes.get("apply_mode", "review") not in APPLY_MODES:
+            return f"changes.apply_mode가 잘못됨 ({'/'.join(APPLY_MODES)})"
     try:
         validate_task_automation_mode(spec)
     except ValueError as exc:

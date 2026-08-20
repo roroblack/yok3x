@@ -524,6 +524,8 @@
 
 ## v4.5.0 · 2026-07-26 — 릴리스: 병렬 안전성(worktree 격리 + auto-commit 래칫) · BUG-39
 
+- 2026-08-20: GUI 작업 편집 폼에 `changes.apply_mode` 스위치(review 기본/auto_commit opt-in) 추가 및 서버 검증 보강.
+
 - v4.4.0 zip 이후 들어온 **R-7 1·2단계**와 **BUG-39**를 묶어 릴리스. 기능 추가가 있어 minor 상향(4.4.0 → 4.5.0).
 - 내용: 워커별 git worktree 격리(opt-in) · auto-commit 래칫(전용 브랜치 전용, 기본은 review=사람수락) ·
     로그 인코딩 크래시로 작업이 유실되던 BUG-39 수정.

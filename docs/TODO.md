@@ -122,7 +122,7 @@ T-1의 유일한 남은 선행조건. 기계(F1-a~g)는 다 갖춰졌고, **실�
 - 검증 중 **BUG-39**(cp949 콘솔이 로그의 `—`를 못 그려 크래시 → 체크포인트 유실) 발견·수정.
 - 관련 테스트 7개 통과(`pytest -k "worktree or auto_commit or ratchet"`).
 
-**남은 것**: GUI에 스위치 UI는 아직 없음(현재는 config 키로만 켬) — 필요해지면 별도 항목으로.
+**완료**: GUI 작업 편집 폼에서 `changes.apply_mode`를 review/auto_commit으로 선택할 수 있음(기본 review).
 
 ## T-4. MCP 워커도구 a2 — yok3x가 직접 MCP 클라이언트로 도구 호출 (2026-08-08 등록, 후속 착수)
 
