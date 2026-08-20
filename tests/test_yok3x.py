@@ -3339,6 +3339,50 @@ def test_apply_config_and_build_state_expose_autocalibrate(tmp_path, monkeypatch
     assert state["claude_autocalibrate"] is False
 
 
+def test_apply_config_refreshes_cached_gui_state_immediately(mock_root, monkeypatch):
+    """BUG-52: 저장 직후 재조회가 저장 전 5초 snapshot으로 UI를 되돌리면 안 된다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    pace = cfg.yok3x["guard"].setdefault("daily_pace", {})
+    pace["underuse_policy"] = "carry_fast"
+    cfg.save_yok3x()
+    old_snapshot = {"guard": {"pace": {"underuse_policy": "carry_fast"}}}
+    monkeypatch.setattr(gs, "_GUI_STATE_GUARD", threading.Condition())
+    monkeypatch.setattr(gs, "_GUI_STATE", old_snapshot)
+    monkeypatch.setattr(gs, "_GUI_STATE_BUILT_AT", time.time())
+    monkeypatch.setattr(gs, "_GUI_STATE_REFRESHING", False)
+    builds = []
+
+    def fake_build_state(current_cfg):
+        builds.append(1)
+        policy = current_cfg.yok3x["guard"]["daily_pace"]["underuse_policy"]
+        return {"guard": {"pace": {"underuse_policy": policy}}}
+
+    monkeypatch.setattr(gs, "build_state", fake_build_state)
+
+    assert gs._apply_config(
+        cfg, {"daily_pace": {"underuse_policy": "carry_smooth"}}) == {"ok": True}
+    assert builds == [1]
+    assert gs._gui_state(cfg)["guard"]["pace"]["underuse_policy"] == "carry_smooth"
+
+
+def test_gui_state_polling_still_serves_fresh_cached_snapshot(mock_root, monkeypatch):
+    """BUG-52: GET 폴링은 build_state를 요청 스레드에서 다시 계산하지 않는다."""
+    from yok3x import guiserver as gs
+    cfg = Config.load(mock_root)
+    snapshot = {"guard": {"pace": {"underuse_policy": "carry_smooth"}}}
+    monkeypatch.setattr(gs, "_GUI_STATE_GUARD", threading.Condition())
+    monkeypatch.setattr(gs, "_GUI_STATE", snapshot)
+    monkeypatch.setattr(gs, "_GUI_STATE_BUILT_AT", time.time())
+    monkeypatch.setattr(gs, "_GUI_STATE_REFRESHING", False)
+    builds = []
+    monkeypatch.setattr(gs, "build_state", lambda _cfg: builds.append(1))
+
+    assert gs._gui_state(cfg, copy_snapshot=False) is snapshot
+    assert gs._gui_state(cfg, copy_snapshot=False) is snapshot
+    assert builds == []
+
+
 def test_cli_backend_closes_stdin_and_substitutes_prompt(monkeypatch):
     # headless 실행 중 CLI가 대화형 입력을 기다려 데드락하지 않도록 stdin=DEVNULL,
     # 프롬프트는 argv({prompt})로 치환, Windows에서 UTF-8 디코딩이 되어야 한다.

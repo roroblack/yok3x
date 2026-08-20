@@ -15,6 +15,8 @@
 
 형식: `버전 · 날짜 시간 — 변경 요약`. 갱신할 때마다 맨 위에 새 항목을 추가한다.
 
+- 2026-08-20: GUI 설정 저장 직후 state snapshot을 동기 갱신해 정책·자동화·pace 토글이 이전 값으로 잠시 되돌아가던 BUG-52 수정.
+
 - v4.9.0 쨌 2026-08-20: GUI `/api/state` 요청/probe 로깅을 추가하고, GUI state·backend 갱신을 백그라운드 snapshot/stale 캐시로 분리해 Codex app-server 지연이 HTTP 요청을 막지 않게 했다. 상세: `docs/reports/v4.9.0-gui-server-down-root-cause-2026-08-19.md`.
 
 ---

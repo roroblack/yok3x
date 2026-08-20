@@ -39,7 +39,7 @@ _GUI_LOGGER = logging.getLogger("yok3x.gui")
 _GUI_STATE: dict | None = None
 _GUI_STATE_BUILT_AT = 0.0
 _GUI_STATE_REFRESHING = False
-_GUI_STATE_GUARD = threading.Lock()
+_GUI_STATE_GUARD = threading.Condition()
 _GUI_STATE_REFRESH_SEC = 5.0
 
 
@@ -265,6 +265,7 @@ def _gui_state(cfg: Config, *, copy_snapshot: bool = True) -> dict:
                 finally:
                     with _GUI_STATE_GUARD:
                         _GUI_STATE_REFRESHING = False
+                        _GUI_STATE_GUARD.notify_all()
 
             threading.Thread(target=refresh, name="gui-state-refresh", daemon=True).start()
         if _GUI_STATE is not None:
@@ -274,6 +275,25 @@ def _gui_state(cfg: Config, *, copy_snapshot: bool = True) -> dict:
         "tools": [], "running": dict(_RUN_STATE), "queue": [], "tasks": [],
         "backends": list(cfg.backends), "state_status": "warming",
     }
+
+
+def _refresh_gui_state_sync(cfg: Config) -> None:
+    """Publish a fresh snapshot after a rare, user-initiated state change."""
+    global _GUI_STATE, _GUI_STATE_BUILT_AT, _GUI_STATE_REFRESHING
+    with _GUI_STATE_GUARD:
+        while _GUI_STATE_REFRESHING:
+            _GUI_STATE_GUARD.wait()
+        _GUI_STATE_REFRESHING = True
+    try:
+        state = build_state(cfg)
+        with _GUI_STATE_GUARD:
+            _GUI_STATE = state
+            _GUI_STATE_BUILT_AT = time.time()
+        _GUI_LOGGER.info("GUI state snapshot refreshed synchronously")
+    finally:
+        with _GUI_STATE_GUARD:
+            _GUI_STATE_REFRESHING = False
+            _GUI_STATE_GUARD.notify_all()
 
 
 def _list_tasks(cfg: Config) -> list:
@@ -801,6 +821,7 @@ def _apply_config(cfg: Config, body: dict) -> dict:
             return {"error": f"알 수 없는 backend(pace_approve): {pace_approve}"}
         usage.pace_approve(cfg, pace_approve)
     cfg.save_yok3x()
+    _refresh_gui_state_sync(cfg)
     return {"ok": True}
 
 
