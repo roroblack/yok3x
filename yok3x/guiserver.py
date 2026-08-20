@@ -807,6 +807,11 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
     _configure_gui_logging(cfg)
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        # Keep GUI polling connections short-lived.  A browser/preload layer
+        # may open a TCP connection before it sends the request line; keeping
+        # that connection alive otherwise makes handle_one_request() include
+        # the idle socket read in the apparent request duration.
+        protocol_version = "HTTP/1.0"
         # This bounds idle client connections (including a client that sends
         # only part of a request). It does not interrupt build_state(); that
         # work must remain cancellable at its subprocess/network boundaries.
@@ -819,26 +824,40 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
         def handle_one_request(self) -> None:
             started = time.perf_counter()
             self._response_code = None
+            self._request_started_at = None
             try:
                 super().handle_one_request()
             except Exception:
                 _GUI_LOGGER.exception("request handler exception path=%s", getattr(self, "path", ""))
                 raise
             finally:
-                duration_ms = (time.perf_counter() - started) * 1000
+                # BaseHTTPRequestHandler reads the request line before it
+                # dispatches do_GET/do_POST.  Do not report that idle read as
+                # application latency; retain the full duration for the
+                # blank-path timeout diagnostic below.
+                measured_from = self._request_started_at or started
+                duration_ms = (time.perf_counter() - measured_from) * 1000
                 request_line = getattr(self, "requestline", "")
                 path = request_line.split(" ", 2)[1] if request_line.count(" ") >= 2 else ""
                 level = logging.WARNING if duration_ms >= 2000 else logging.INFO
                 _GUI_LOGGER.log(level, "request path=%s duration_ms=%.1f status=%s",
                                 path, duration_ms, getattr(self, "_response_code", None))
 
+        def parse_request(self) -> bool:
+            ok = super().parse_request()
+            if ok:
+                self._request_started_at = time.perf_counter()
+            return ok
+
         def _send(self, code: int, body, ctype: str) -> None:
             self._response_code = code
+            self.close_connection = True
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
             self.end_headers()
             try:
                 self.wfile.write(data)

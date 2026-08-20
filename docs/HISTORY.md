@@ -19,6 +19,8 @@
 
 ---
 
+- 2026-08-20: GUI preconnect 연결 read 대기가 `/api/state` 지연으로 기록되던 BUG-51 수정. 상세: `docs/reports/v4.9.0-gui-server-alternating-slow-request-2026-08-20.md`.
+
 ## v4.6.0 · 2026-08-11 — S8 CLI 노출 및 S1~S9 전체 완료
 
 - `yok3x sync <run_id>`가 run의 `understanding_bundle.json`을 claims 타입별, standard quiz, deep forensic 섹션으로 표시한다.
