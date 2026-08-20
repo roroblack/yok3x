@@ -44,6 +44,8 @@ def resolve_mcp_grant(cfg_mcp_servers: dict[str, Any], worker_cfg: dict[str, Any
     **이번 요청에서 실제로 화이트리스트 통과한 서버**에 속한 것만 남긴다(서버 경계를 넘는 도구명
     요청은 조용히 버려진다 — 예: filesystem 서버만 허용됐는데 mcp__other__delete를 적어도 무시).
     """
+    if not isinstance(cfg_mcp_servers, dict) or not isinstance(worker_cfg, dict):
+        return McpGrant(denied_reason="mcp policy 설정 형식 오류")
     req = worker_cfg.get("mcp_tools")
     if not isinstance(req, dict) or not req.get("servers"):
         return McpGrant(denied_reason="워커에 mcp_tools 미설정(opt-in 안 함)")
@@ -55,6 +57,9 @@ def resolve_mcp_grant(cfg_mcp_servers: dict[str, Any], worker_cfg: dict[str, Any
     granted_servers: dict[str, Any] = {}
     unknown: list[str] = []
     for name in req_servers:
+        if not isinstance(name, str):
+            unknown.append(str(name))
+            continue
         spec = cfg_mcp_servers.get(name)
         if spec is None:
             unknown.append(str(name))

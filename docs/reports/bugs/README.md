@@ -54,6 +54,7 @@
 | [47](BUG-47-autocalibrate-window-phase-mismatch-sawtooth.md) | **autocalibrate가 롤링 토큰 합계를 텀블링 창의 live %로 나눠 주 단위 톱니(최대 3.68배)로 진동 — 원리적 수렴 불가(BUG-35 클램프는 증상만 완화)** | **높음** | — | ✅ |
 | [48](BUG-48-review-artifact-clip-too-small-false-reject.md) | reviewer 산출물 클립이 6000자로 너무 작아 verify=ok인 완전한 코드도 "생략됨"으로 오탈락(T-2 #11에서 실측) | 중간 | — | ✅ |
 | [49](BUG-49-automation-review-edge-input-hardening.md) | 자동화·구조화 리뷰 엣지 입력 예외 및 오판 | 중간 | — | ✅ |
+| [50](BUG-50-backends-config-misc-modules-edge-input-hardening.md) | **backends/config/기타 모듈 엣지 입력 하드닝 — `worktree.remove()`가 등록 안 된 임의 디렉터리를 조건 없이 `rmtree`하던 위험 포함** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

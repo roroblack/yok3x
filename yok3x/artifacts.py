@@ -67,7 +67,9 @@ _WIN_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
 
 def _bad_path(raw: str) -> str:
     """경로가 거부돼야 하면 사유, 통과면 빈 문자열. 문자열 단계에서 1차 차단한다."""
-    p = (raw or "").strip().replace("\\", "/")
+    if not isinstance(raw, str):
+        return "경로 형식 오류"
+    p = raw.strip().replace("\\", "/")
     if not p:
         return "빈 경로"
     if p.startswith("/") or p.startswith("//"):

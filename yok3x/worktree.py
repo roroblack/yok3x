@@ -104,11 +104,23 @@ def remove(repo: str | Path, dest: str | Path) -> tuple[bool, str]:
     ok, out = _git(["worktree", "remove", "--force", str(dest)], cwd=repo)
     if not ok:
         # 이미 지워졌거나 등록이 깨진 경우: 디렉터리를 직접 정리하고 prune으로 등록만 회수한다.
-        try:
-            if Path(dest).exists():
+        listed_ok, listing = _git(["worktree", "list", "--porcelain"], cwd=repo)
+        dest_path = Path(dest).resolve()
+        registered = False
+        if listed_ok:
+            for line in listing.splitlines():
+                if line.startswith("worktree "):
+                    try:
+                        registered = Path(line[9:]).resolve() == dest_path
+                    except OSError:
+                        registered = False
+                    if registered:
+                        break
+        if registered:
+            try:
                 shutil.rmtree(dest, ignore_errors=True)
-        except OSError:
-            pass
+            except OSError:
+                pass
     _git(["worktree", "prune"], cwd=repo)
     return ok, out
 

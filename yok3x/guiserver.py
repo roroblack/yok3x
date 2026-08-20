@@ -237,8 +237,13 @@ def build_state(cfg: Config) -> dict:
     return result
 
 
-def _gui_state(cfg: Config) -> dict:
-    """Serve the last snapshot while a full state build runs off the HTTP thread."""
+def _gui_state(cfg: Config, *, copy_snapshot: bool = True) -> dict:
+    """Serve the last snapshot while a full state build runs off the HTTP thread.
+
+    Callers that will only serialize the result may disable the defensive copy;
+    the HTTP handler does that because snapshots are replaced, never mutated,
+    by the refresh thread.
+    """
     global _GUI_STATE, _GUI_STATE_BUILT_AT, _GUI_STATE_REFRESHING
     now = time.time()
     with _GUI_STATE_GUARD:
@@ -262,7 +267,7 @@ def _gui_state(cfg: Config) -> dict:
 
             threading.Thread(target=refresh, name="gui-state-refresh", daemon=True).start()
         if _GUI_STATE is not None:
-            return copy.deepcopy(_GUI_STATE)
+            return copy.deepcopy(_GUI_STATE) if copy_snapshot else _GUI_STATE
     return {
         "version": __version__, "flavor": cfg.yok3x.get("flavor", ""),
         "tools": [], "running": dict(_RUN_STATE), "queue": [], "tasks": [],
@@ -855,7 +860,7 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
                            "text/html; charset=utf-8")
             elif path == "/api/state":
                 try:
-                    self._json(200, _gui_state(cfg))
+                    self._json(200, _gui_state(cfg, copy_snapshot=False))
                 except Exception as e:
                     _GUI_LOGGER.exception("GET /api/state failed")
                     self._json(500, {"error": str(e)})

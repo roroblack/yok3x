@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import json
 from collections import Counter
+from collections import deque
 from pathlib import Path
 from statistics import mean, median
 
@@ -44,7 +45,8 @@ def read_calibration_jsonl(path: str | Path, window: int = 20) -> dict:
             "bucket_info": "bucket 정보 없음", "model_info": "model 정보 없음",
         }
 
-    usable = []
+    usable_count = 0
+    usable = deque(maxlen=max(0, window) if isinstance(window, int) and not isinstance(window, bool) else 20)
     try:
         lines = file_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
@@ -86,14 +88,15 @@ def read_calibration_jsonl(path: str | Path, window: int = 20) -> dict:
             else:
                 # Keep only aggregate inputs.  In particular, never return
                 # arbitrary/unknown fields that might contain task or prompt text.
+                usable_count += 1
                 usable.append({field: record[field] for field in
                                ("pattern", "backend", "effort", "reviewer", "bucket",
                                 "score", "verify_ok", "rounds") if field in record})
 
     limit = max(0, int(window)) if isinstance(window, int) and not isinstance(window, bool) else 20
-    records = usable[-limit:] if limit else []
-    if len(usable) > len(records):
-        reasons["outside_window"] += len(usable) - len(records)
+    records = list(usable) if limit else []
+    if usable_count > len(records):
+        reasons["outside_window"] += usable_count - len(records)
     if records and any("bucket" not in record or record.get("bucket") is None for record in records):
         reasons["bucket_info_missing"] += 1
     bucket_info = "bucket 정보 없음" if any("bucket" not in r or r.get("bucket") is None for r in records) else "bucket 정보 있음"
@@ -106,7 +109,13 @@ def aggregate_calibration_statistics(records: list[dict], reasons: dict | None =
     """Aggregate calibration records by the fields actually available in S3."""
     groups = {}
     result_reasons = Counter(reasons or {})
-    for record in records:
+    for record in records or []:
+        if not isinstance(record, dict) or not _valid_number(record.get("score")):
+            result_reasons["schema_mismatch"] += 1
+            continue
+        if record.get("verify_ok") is not None and not isinstance(record.get("verify_ok"), bool):
+            result_reasons["schema_mismatch"] += 1
+            continue
         key = tuple(record.get(field) for field in ("pattern", "backend", "effort", "reviewer"))
         groups.setdefault(key, []).append(record)
     output = []

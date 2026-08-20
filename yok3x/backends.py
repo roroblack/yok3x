@@ -144,12 +144,24 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
              process_started: Callable[[Any], None] | None = None,
              process_finished: Callable[[Any], None] | None = None,
              cancel_event: Any | None = None) -> BackendResult:
-    template = spec["command"]
+    template = spec.get("command")
+    if not isinstance(template, (list, tuple)) or not template:
+        return BackendResult(backend=name, ok=False,
+                             error="invalid CLI backend command: expected a non-empty argv list")
     has_prompt_arg = any("{prompt}" in str(a) for a in template)
     # BUG-18 방어(BUG-10 재발 차단): 멀티라인 프롬프트를 argv({prompt})로 넘기면 Windows npm .cmd
     # 심이 첫 줄바꿈에서 argv를 잘라 워커가 첫 줄([작업])만 받는다. 스테일 backends.json이 옛 {prompt}
     # 형식이어도, 멀티라인이면 {prompt} 자리를 빼고 stdin으로 넘겨 잘림을 원천 차단한다.
-    if has_prompt_arg and "\n" in prompt:
+    # Keep untrusted/large input out of argv. NUL and OS argv-size limits are
+    # rejected before a child can start; stdin also avoids .cmd multiline issues.
+    prompt_bytes = prompt.encode("utf-8", errors="replace")
+    try:
+        prompt.encode("utf-8")
+        prompt_encoding_error = False
+    except UnicodeEncodeError:
+        prompt_encoding_error = True
+    if has_prompt_arg and ("\n" in prompt or "\x00" in prompt or prompt_encoding_error or
+                           len(prompt_bytes) > 128 * 1024):
         template = [a for a in template if "{prompt}" not in str(a)]
         has_prompt_arg = False
     cmd = [str(a).replace("{prompt}", prompt) for a in template]
@@ -209,6 +221,9 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
                                        f"type을 'mock'으로 바꿔 드라이런 가능. (cmd: {shlex.join(cmd)})")
         except subprocess.TimeoutExpired:
             return BackendResult(backend=name, ok=False, error=f"timeout {timeout}s: {shlex.join(cmd)}")
+        except (OSError, ValueError, UnicodeError) as exc:
+            return BackendResult(backend=name, ok=False,
+                                 error=f"CLI invocation failed: {type(exc).__name__}: {exc}")
     else:
         if cancel_event is not None and cancel_event.is_set():
             return BackendResult(backend=name, ok=False, error="cancelled before process start")
@@ -232,6 +247,9 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
             return BackendResult(backend=name, ok=False,
                                  error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
                                        f"type을 'mock'으로 바꿔 드라이런 가능. (cmd: {shlex.join(cmd)})")
+        except (OSError, ValueError, UnicodeError) as exc:
+            return BackendResult(backend=name, ok=False,
+                                 error=f"CLI invocation failed: {type(exc).__name__}: {exc}")
         if process_started is not None:
             process_started(proc)
         try:

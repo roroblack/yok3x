@@ -45,7 +45,10 @@ def _axes(spec: dict[str, Any]) -> dict[str, str]:
 
     # 비용: 예상 호출 수(패턴×라운드). 실제 토큰은 모르니 호출 수로 근사.
     pattern = spec.get("pattern", "producer-reviewer")
-    rounds = int(spec.get("max_rounds", 2) or 2)
+    try:
+        rounds = int(spec.get("max_rounds", 2) or 2)
+    except (TypeError, ValueError, OverflowError):
+        rounds = 2
     if pattern == "producer-reviewer":
         est_calls = 2 * max(1, rounds)
     elif pattern in ("fanout", "fanout-fanin"):

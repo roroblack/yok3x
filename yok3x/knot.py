@@ -99,6 +99,10 @@ def _recency_weight(created: str, now: datetime, halflife_days: float) -> float:
         dt = datetime.fromisoformat(str(created).strip())
     except Exception:
         return 1.0
+    if dt.tzinfo is not None and now.tzinfo is None:
+        now = datetime.now(dt.tzinfo)
+    elif dt.tzinfo is None and now.tzinfo is not None:
+        dt = dt.replace(tzinfo=now.tzinfo)
     age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
     return 0.5 ** (age_days / halflife_days)
 

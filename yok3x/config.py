@@ -442,8 +442,14 @@ class Config:
         backends = copy.deepcopy(DEFAULT_BACKENDS)
         # utf-8-sig: 윈도우 메모장·PowerShell(Out-File utf8)이 붙이는 BOM을 투명 제거.
         # BOM이 있든 없든 정상 파싱된다(쓰기는 BOM 없는 utf-8 유지).
-        yok3x = _deep_merge(yok3x, _load_json_or_empty(p.yok3x_json, logger))
-        backends = _deep_merge(backends, _load_json_or_empty(p.backends_json, logger))
+        try:
+            yok3x = _deep_merge(yok3x, _load_json_or_empty(p.yok3x_json, logger))
+        except RecursionError:
+            logger.warning("yok3x.json nesting is too deep; using defaults")
+        try:
+            backends = _deep_merge(backends, _load_json_or_empty(p.backends_json, logger))
+        except RecursionError:
+            logger.warning("backends.json nesting is too deep; using defaults")
         validate_automation_config(yok3x)
         return cls(paths=p, yok3x=yok3x, backends=backends)
 
@@ -479,11 +485,16 @@ def _load_json_or_empty(path: Path, log: logging.Logger) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as e:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, RecursionError, UnicodeError) as e:
         log.warning("%s 파싱 실패(손상됨, %s) — 기본값으로 폴백. 백업(.bak)이 있으면 확인하라.",
                     path, e)
         return {}
+    if not isinstance(value, dict):
+        log.warning("%s configuration root must be an object; got %s. Falling back to defaults.",
+                    path, type(value).__name__)
+        return {}
+    return value
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
