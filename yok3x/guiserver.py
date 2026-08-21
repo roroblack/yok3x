@@ -12,6 +12,7 @@ import http.server
 import copy
 import json
 import logging
+import signal
 import shutil
 import socketserver
 import subprocess
@@ -57,6 +58,15 @@ def _configure_gui_logging(cfg: Config) -> None:
     _GUI_LOGGER.setLevel(logging.INFO)
     _GUI_LOGGER.propagate = False
     _GUI_LOGGER.info("GUI server logging enabled path=%s", path)
+
+
+def _flush_gui_logging() -> None:
+    """Best-effort final flush for shutdown diagnostics."""
+    for handler in _GUI_LOGGER.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
 
 
 def _claude_login_start() -> dict:
@@ -1008,9 +1018,55 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
     print(f"yok3x gui → {url}   (Ctrl+C 로 종료)")
     if open_browser:
         threading.Timer(0.7, lambda: webbrowser.open(url)).start()
+
+    stop_reason = "normal_return"
+    previous_sigterm_handler = None
+    sigterm_registered = False
+
+    def handle_sigterm(signum, _frame) -> None:
+        nonlocal stop_reason
+        try:
+            signal_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            signal_name = str(signum)
+        stop_reason = f"external_signal:{signal_name}"
+        _GUI_LOGGER.warning("external termination signal received signal=%s", signal_name)
+        # Preserve termination semantics while allowing finally to record and
+        # flush the shutdown reason. Forced termination (for example,
+        # taskkill /F) cannot run a Python signal handler.
+        raise SystemExit(128 + signum)
+
+    try:
+        previous_sigterm_handler = signal.signal(signal.SIGTERM, handle_sigterm)
+        sigterm_registered = True
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        # Signal availability and main-thread restrictions vary by platform
+        # and embedding environment. Observability must not prevent startup.
+        pass
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        stop_reason = "keyboard_interrupt"
         print("\ngui 종료")
+    except Exception as exc:
+        stop_reason = f"main_loop_exception:{type(exc).__name__}"
+        _GUI_LOGGER.exception("GUI server main loop crashed")
+        raise
     finally:
-        httpd.shutdown()
+        _GUI_LOGGER.info("GUI server stopping (reason=%s)", stop_reason)
+        try:
+            try:
+                httpd.shutdown()
+            except Exception:
+                _GUI_LOGGER.exception("GUI server shutdown failed (reason=%s)", stop_reason)
+                raise
+            else:
+                _GUI_LOGGER.info("GUI server stopped (reason=%s)", stop_reason)
+        finally:
+            _flush_gui_logging()
+            if sigterm_registered:
+                try:
+                    signal.signal(signal.SIGTERM, previous_sigterm_handler)
+                except (AttributeError, OSError, RuntimeError, ValueError):
+                    pass
