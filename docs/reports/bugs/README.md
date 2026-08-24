@@ -57,6 +57,7 @@
 | [50](BUG-50-backends-config-misc-modules-edge-input-hardening.md) | **backends/config/기타 모듈 엣지 입력 하드닝 — `worktree.remove()`가 등록 안 된 임의 디렉터리를 조건 없이 `rmtree`하던 위험 포함** | **높음** | — | ✅ |
 | [51](BUG-51-gui-preconnect-duration-misattribution.md) | GUI preconnect 연결의 read 대기를 `/api/state` 처리 지연으로 오기록(계측 버그 — probe/락 문제 아니었음) | 중간 | — | ✅ |
 | [52](BUG-52-gui-config-save-stale-state-snapshot.md) | GUI 설정 저장 직후 5초 stale snapshot이 새 선택을 이전 값으로 되돌림 | 중간 | — | ✅ |
+| [53](BUG-53-orchestrator-edge-input-and-materialize-race-hardening.md) | **orchestrator 엣지 입력 크래시·SCORE 범위 우회·resume 손상값·materialize 동시 덮어쓰기/symlink root 하드닝** | **높음** | — | ✅ |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

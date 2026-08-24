@@ -147,8 +147,12 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
                 pass
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """같은 디렉터리의 임시 파일을 완성한 뒤 바이트 파일을 원자적으로 교체한다."""
+def _atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> None:
+    """완성한 임시 파일을 원자적으로 게시한다.
+
+    overwrite=False이면 hard link의 원자적 create-if-absent 성질을 사용해, 존재 확인과
+    게시 사이에 다른 런이 만든 파일을 덮어쓰는 TOCTOU를 막는다.
+    """
     tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -156,7 +160,11 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
                 prefix=f".{path.name}.", suffix=".tmp", delete=False) as tmp:
             tmp.write(data)
             tmp_path = Path(tmp.name)
-        os.replace(tmp_path, path)
+        if overwrite:
+            os.replace(tmp_path, path)
+        else:
+            os.link(tmp_path, path)  # path가 이미 있으면 FileExistsError — 덮어쓰기 없음
+            tmp_path.unlink()
         tmp_path = None
     finally:
         if tmp_path is not None:
@@ -219,6 +227,38 @@ class RunAborted(Exception):
         self.cause = cause
 
 
+def _coerce_int_option(value: Any, field: str, *, minimum: int = 0) -> int:
+    """JSON 숫자/숫자 문자열을 정수 옵션으로 엄격히 변환한다."""
+    if isinstance(value, bool):
+        raise RunAborted(f"{field} 값 오류: 정수여야 함", cause="config_error")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        parsed = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise RunAborted(f"{field} 값 오류: 정수여야 함", cause="config_error")
+    if parsed < minimum:
+        raise RunAborted(
+            f"{field} 값 오류: {minimum} 이상이어야 함", cause="config_error")
+    return parsed
+
+
+def _coerce_score_option(value: Any, field: str = "pass_score") -> float:
+    """게이트 점수는 bool/NaN/inf를 제외한 0~10 유한 실수만 허용한다."""
+    if isinstance(value, bool):
+        raise RunAborted(f"{field} 값 오류: 0~10 숫자여야 함", cause="config_error")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RunAborted(
+            f"{field} 값 오류: 0~10 숫자여야 함", cause="config_error") from None
+    if not math.isfinite(parsed) or not 0.0 <= parsed <= 10.0:
+        raise RunAborted(f"{field} 값 오류: 0~10 유한 숫자여야 함", cause="config_error")
+    return parsed
+
+
 def evaluate_score_gate(mode: str, *, has_verify_cmd: bool,
                         verify_ok: bool | None, score: float | None,
                         threshold: float) -> dict[str, Any]:
@@ -231,6 +271,15 @@ def evaluate_score_gate(mode: str, *, has_verify_cmd: bool,
         raise RunAborted(
             "score_gate_mode=advisory에는 verify_cmd가 필요함",
             cause="config_error")
+
+    threshold = _coerce_score_option(threshold)
+    if score is not None:
+        try:
+            score = _coerce_score_option(score, "SCORE")
+        except RunAborted:
+            # 리뷰어가 낸 범위 밖 점수는 설정 오류가 아니라 관측 불능이다. fail closed로
+            # 미채점 취급해 strict 게이트를 통과시키지 않는다.
+            score = None
 
     observed_verify = bool(verify_ok) if has_verify_cmd else None
     score_ok = score is not None and score >= threshold
@@ -1134,7 +1183,11 @@ class Orchestrator:
         score = None
         m = SCORE_RE.search(res.text)
         if m:
-            score = float(m.group(1))
+            raw_score = float(m.group(1))
+            if 0.0 <= raw_score <= 10.0:
+                score = raw_score
+            else:
+                checklist.append(f"SCORE 범위 오류(0~10): {raw_score:g}")
         with self._state_lock:
             usage.record(cfg, worker, task_kind, res, run_id=self.run_id)
             self._run_usd += float(res.cost_usd or 0.0)   # 런당 실지출 누적(상한 판정용)
@@ -1524,6 +1577,10 @@ class Orchestrator:
     def run_pipeline(self, task: str, stages: list[dict[str, str]],
                      initial_context: str = "") -> None:
         """Pipeline: 이전 단계 출력이 다음 단계 입력이 된다."""
+        spec_error = _task_spec_error(
+            {"pattern": "pipeline", "task": task, "stages": stages}, self.cfg)
+        if spec_error:
+            raise RunAborted(spec_error, cause="config_error")
         self.pattern = "pipeline"
         self._save_status("running", {"task": task})
         prev = ""
@@ -1549,6 +1606,12 @@ class Orchestrator:
     def run_fanout(self, task: str, workers: list[str], join_worker: str | None = None,
                    initial_context: str = "") -> None:
         """Fan-out/Fan-in: 여러 워커에 같은 작업 → 결과 취합."""
+        direct_spec = {"pattern": "fanout", "task": task, "workers": workers}
+        if join_worker is not None:
+            direct_spec["join_worker"] = join_worker
+        spec_error = _task_spec_error(direct_spec, self.cfg)
+        if spec_error:
+            raise RunAborted(spec_error, cause="config_error")
         self.pattern = "fanout-fanin"
         self._save_status("running", {"task": task})
         outs = []
@@ -1598,6 +1661,13 @@ class Orchestrator:
         adversarial=True면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제(ARIS AD1).
         """
         self.pattern = "producer-reviewer"
+        max_rounds = _coerce_int_option(max_rounds, "max_rounds")
+        pass_score = _coerce_score_option(pass_score)
+        configured_workers = self.cfg.yok3x.get("workers") or {}
+        for role, worker in (("producer", producer), ("reviewer", reviewer)):
+            if (not isinstance(worker, str) or not worker.strip()
+                    or worker not in configured_workers):
+                raise RunAborted(f"{role} 없는 워커: {worker}", cause="config_error")
         # 워커 호출 전에 설정 오류를 확정한다. advisory를 strict로 조용히 폴백하지 않는다.
         has_verify_cmd = bool(str(self.verify_cmd).strip())
         evaluate_score_gate(
@@ -1782,6 +1852,10 @@ class Orchestrator:
         root = (self._review_root()
                 if self._review_enabled()
                 else self._materialize_root())
+        if self._path_has_symlink(root):
+            self._log(f"[out] 게시 거부: root에 심볼릭 경로가 있음 — {root}")
+            return {"enabled": True, "ok": False, "reason": "root에 심볼릭 경로가 있음",
+                    "root": str(root), "written": [], "rejected": []}
         blocks = artifacts.parse_file_blocks(final_output or "")
         if not blocks:
             self._log("[out] 게시할 파일 없음 — 워커가 ```file:<경로> 블록을 내지 않았다")
@@ -1817,9 +1891,17 @@ class Orchestrator:
                     plan.rejected.append({"path": fb.path, "reason": "해석된 경로가 루트 밖(심볼릭 등)"})
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                tmp = dest.with_name(f".{dest.name}.yok3x.tmp")
-                tmp.write_text(fb.content, encoding="utf-8")
-                os.replace(tmp, dest)        # 부분 저장 방지: 완성 후 원자적 교체
+                # 고정 tmp 이름은 같은 materialize.root를 쓰는 동시 런끼리 서로의 임시 파일을
+                # replace/unlink할 수 있다. overwrite=False는 원자적 create-if-absent로 사전
+                # existing 스냅샷 뒤의 TOCTOU 덮어쓰기까지 막는다.
+                try:
+                    _atomic_write_bytes(
+                        dest, fb.content.encode("utf-8"),
+                        overwrite=bool(conf.get("overwrite")))
+                except FileExistsError:
+                    plan.rejected.append({
+                        "path": fb.path, "reason": "게시 중 파일이 이미 생성됨(덮어쓰기 거부)"})
+                    continue
                 written.append({"path": fb.path, "bytes": len(fb.content.encode("utf-8")),
                                 "sha256": fb.sha256()})
         except OSError as e:
@@ -1840,6 +1922,20 @@ class Orchestrator:
         for part in Path(relative_path).parts:
             current = current / part
             if current.is_symlink():
+                return True
+        return False
+
+    @staticmethod
+    def _path_has_symlink(path: Path) -> bool:
+        """절대화한 경로의 기존 구성요소에 symlink/junction이 있는지 확인한다."""
+        absolute = path.absolute()
+        current = Path(absolute.anchor)
+        for part in absolute.parts[1:]:
+            current = current / part
+            if current.is_symlink():
+                return True
+            is_junction = getattr(current, "is_junction", None)
+            if callable(is_junction) and is_junction():
                 return True
         return False
 
@@ -2193,6 +2289,182 @@ class Orchestrator:
 
 # ---------------------------------------------------------------- loop
 
+def _task_spec_error(spec: Any, cfg: Config) -> str:
+    """직접 실행 경로의 task JSON을 외부 호출 전에 검증한다.
+
+    GUI 저장 검증을 거치지 않는 CLI/automation 호출도 같은 파일을 실행할 수 있으므로,
+    여기서는 정상 입력을 보정하지 않고 깨진 형태만 명확한 config_error로 거부한다.
+    """
+    if not isinstance(spec, dict):
+        return "task spec이 객체가 아님"
+    if not isinstance(spec.get("task"), str) or not spec["task"].strip():
+        return "task(목표)가 비었거나 문자열이 아님"
+    pattern = spec.get("pattern", "producer-reviewer")
+    if pattern not in ("pipeline", "producer-reviewer", "fanout", "fanout-fanin"):
+        return f"pattern 값 오류: {pattern!r}"
+    try:
+        automation.resolve_effective_mode(spec, cfg)
+    except (TypeError, ValueError) as exc:
+        return str(exc)
+
+    configured_workers = cfg.yok3x.get("workers")
+    if not isinstance(configured_workers, dict):
+        return "config workers가 객체가 아님"
+
+    agents = spec.get("agents")
+    if agents is not None:
+        if not isinstance(agents, dict):
+            return "agents가 객체가 아님"
+        for name, override in agents.items():
+            if not isinstance(name, str) or name not in configured_workers:
+                return f"없는 워커(agents): {name}"
+            if not isinstance(override, dict):
+                return f"agents.{name}가 객체가 아님"
+            if ("backend" in override
+                    and (not isinstance(override["backend"], str)
+                         or override["backend"] not in cfg.backends)):
+                return f"agents.{name}.backend 값 오류: {override['backend']!r}"
+
+    def worker_error(value: Any, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            return f"{field}가 비었거나 문자열이 아님"
+        if value not in configured_workers:
+            return f"{field} 없는 워커: {value}"
+        return ""
+
+    if pattern == "pipeline":
+        stages = spec.get("stages")
+        if not isinstance(stages, list) or not stages:
+            return "pipeline.stages는 비어 있지 않은 리스트여야 함"
+        for index, stage in enumerate(stages):
+            if not isinstance(stage, dict):
+                return f"stages[{index}]가 객체가 아님"
+            error = worker_error(stage.get("worker"), f"stages[{index}].worker")
+            if error:
+                return error
+            if "task" in stage and not isinstance(stage["task"], str):
+                return f"stages[{index}].task가 문자열이 아님"
+            if "kind" in stage and not isinstance(stage["kind"], str):
+                return f"stages[{index}].kind가 문자열이 아님"
+    elif pattern in ("fanout", "fanout-fanin"):
+        workers = spec.get("workers")
+        if not isinstance(workers, list) or not workers:
+            return "fanout.workers는 비어 있지 않은 리스트여야 함"
+        seen: set[str] = set()
+        for index, name in enumerate(workers):
+            error = worker_error(name, f"workers[{index}]")
+            if error:
+                return error
+            if name in seen:
+                return f"workers에 중복 워커가 있음: {name}"
+            seen.add(name)
+        join_worker = spec.get("join_worker")
+        if join_worker is not None:
+            error = worker_error(join_worker, "join_worker")
+            if error:
+                return error
+    else:
+        for field, default in (("producer", "claude-main"),
+                               ("reviewer", "codex-critic")):
+            error = worker_error(spec.get(field, default), field)
+            if error:
+                return error
+        try:
+            _coerce_int_option(spec.get("max_rounds", 2), "max_rounds")
+            _coerce_score_option(spec.get("pass_score", 8.0))
+        except RunAborted as exc:
+            return str(exc)
+
+    gate_mode = spec.get("score_gate_mode", "strict")
+    if gate_mode not in SCORE_GATE_MODES:
+        return f"score_gate_mode 값 오류: {gate_mode!r} (strict/advisory)"
+    verify_cmd = spec.get("verify_cmd")
+    if verify_cmd is not None and not isinstance(verify_cmd, str):
+        return "verify_cmd가 문자열이 아님"
+    if "verify_timeout_sec" in spec:
+        try:
+            _coerce_int_option(spec["verify_timeout_sec"], "verify_timeout_sec", minimum=1)
+        except RunAborted as exc:
+            return str(exc)
+    if "workdir" in spec and spec["workdir"] is not None and not isinstance(spec["workdir"], str):
+        return "workdir가 문자열이 아님"
+    context_globs = spec.get("context_globs")
+    if (context_globs is not None
+            and (not isinstance(context_globs, list)
+                 or any(not isinstance(item, str) for item in context_globs))):
+        return "context_globs가 문자열 리스트가 아님"
+    if "rubric" in spec and spec["rubric"] is not None and not isinstance(spec["rubric"], str):
+        return "rubric이 문자열이 아님"
+
+    changes = spec.get("changes")
+    if changes is not None:
+        if not isinstance(changes, dict):
+            return "changes가 객체가 아님"
+        if changes.get("mode") not in (None, "review"):
+            return "changes.mode가 잘못됨(review만 지원)"
+        if changes.get("apply_mode", "review") not in ("review", "auto_commit"):
+            return "changes.apply_mode가 잘못됨(review/auto_commit만 지원)"
+
+    materialize = spec.get("materialize")
+    if materialize is not None:
+        if not isinstance(materialize, dict):
+            return "materialize가 객체가 아님"
+        for field in ("enabled", "overwrite"):
+            if field in materialize and not isinstance(materialize[field], bool):
+                return f"materialize.{field}가 bool이 아님"
+        if ("root" in materialize and materialize["root"] is not None
+                and not isinstance(materialize["root"], str)):
+            return "materialize.root가 문자열이 아님"
+        if "max_files" in materialize:
+            try:
+                _coerce_int_option(materialize["max_files"], "materialize.max_files", minimum=1)
+            except RunAborted as exc:
+                return str(exc)
+
+    escalate = spec.get("escalate")
+    if escalate is not None:
+        if not isinstance(escalate, dict):
+            return "escalate가 객체가 아님"
+        for role in ("to_producer", "to_reviewer"):
+            if escalate.get(role) is not None:
+                error = worker_error(escalate[role], f"escalate.{role}")
+                if error:
+                    return error
+        if "after_round" in escalate:
+            try:
+                _coerce_int_option(escalate["after_round"], "escalate.after_round")
+            except RunAborted as exc:
+                return str(exc)
+        if "if_score_below" in escalate:
+            try:
+                _coerce_score_option(escalate["if_score_below"], "escalate.if_score_below")
+            except RunAborted as exc:
+                return str(exc)
+    acquire_spec = spec.get("acquire")
+    if "acquire" in spec:
+        if not isinstance(acquire_spec, dict):
+            return "acquire가 객체가 아님"
+        questioner = acquire_spec.get("questioner")
+        if questioner:
+            error = worker_error(questioner, "acquire.questioner")
+            if error:
+                return error
+        answerers = acquire_spec.get("answerers", [])
+        if (not isinstance(answerers, list)
+                or any(not isinstance(name, str) or not name.strip() for name in answerers)):
+            return "acquire.answerers가 워커 이름 리스트가 아님"
+        for index, name in enumerate(answerers):
+            error = worker_error(name, f"acquire.answerers[{index}]")
+            if error:
+                return error
+        if "qa_count" in acquire_spec:
+            try:
+                _coerce_int_option(acquire_spec["qa_count"], "acquire.qa_count")
+            except RunAborted as exc:
+                return str(exc)
+    return ""
+
+
 def resolve_model(cfg: Config, task_kind: str, available=None,
                   profile: str | None = None) -> tuple[str | None, str | None, str]:
     """상황별 모델 프로파일 라우팅. 반환 (backend|None, model_id|None, reason).
@@ -2205,33 +2477,79 @@ def resolve_model(cfg: Config, task_kind: str, available=None,
     사용자 우선: 프로파일은 '기본 추천'이며 call_worker에서 태스크 명시값이 있으면 이긴다.
     """
     yk = cfg.yok3x
-    prof_name = (profile if profile is not None else yk.get("active_profile") or "").strip()
+    if not isinstance(task_kind, str):
+        return (None, None, "")
+    raw_profile = profile if profile is not None else yk.get("active_profile") or ""
+    if not isinstance(raw_profile, str):
+        return (None, None, "")
+    prof_name = raw_profile.strip()
     if not prof_name:
         return (None, None, "")
-    prof = (yk.get("profiles") or {}).get(prof_name)
-    if not prof:
+    profiles = yk.get("profiles") or {}
+    if not isinstance(profiles, dict):
         return (None, None, "")
-    situation = (yk.get("situations") or {}).get(task_kind, task_kind)
-    bench_sit = (yk.get("benchmarks") or {}).get(situation) or {}
+    prof = profiles.get(prof_name)
+    if not isinstance(prof, dict) or not prof:
+        return (None, None, "")
+    situations = yk.get("situations") or {}
+    if not isinstance(situations, dict):
+        situations = {}
+    situation = situations.get(task_kind, task_kind)
+    if not isinstance(situation, str):
+        return (None, None, "")
+    benchmarks = yk.get("benchmarks") or {}
+    if not isinstance(benchmarks, dict):
+        benchmarks = {}
+    raw_bench = benchmarks.get(situation) or {}
+    if not isinstance(raw_bench, dict):
+        raw_bench = {}
+    # bool·문자열·NaN/inf 같은 오염 점수는 순위에 넣지 않는다. 동점은 dict 입력 순서를
+    # 그대로 보존해 기존 프로파일 선택을 바꾸지 않는다.
+    scored: list[tuple[str, float]] = []
+    for logical, raw_score in raw_bench.items():
+        if not isinstance(logical, str) or isinstance(raw_score, bool):
+            continue
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(score):
+            scored.append((logical, score))
     if prof.get("_derive"):     # S3: benchmarks 최고점 모델 자동 채택(argmax), 없으면 "*"
-        pick = max(bench_sit, key=lambda k: bench_sit[k]) if bench_sit else prof.get("*")
+        pick = max(scored, key=lambda item: item[1])[0] if scored else prof.get("*")
     else:
         pick = prof.get(situation) or prof.get("*")
     catalog = yk.get("models_catalog") or {}
-    candidates: list[str] = [pick] if pick else []
-    if available:   # S2: benchmarks 점수 내림차순으로 폴백 후보 확장
-        for m in sorted(bench_sit, key=lambda k: bench_sit[k], reverse=True):
+    if not isinstance(catalog, dict):
+        return (None, None, "")
+    candidates: list[str] = [pick] if isinstance(pick, str) and pick else []
+    availability_filter = available is not None
+    if availability_filter and not callable(available):
+        return (None, None, "")
+    if availability_filter:   # S2: benchmarks 점수 내림차순으로 폴백 후보 확장
+        for m, _score in sorted(scored, key=lambda item: item[1], reverse=True):
             if m not in candidates:
                 candidates.append(m)
     for logical in candidates:
         entry = catalog.get(logical) or {}
+        if not isinstance(entry, dict):
+            continue
         backend = entry.get("backend")
-        if not backend:
+        if not isinstance(backend, str) or not backend:
             continue
-        if available and not available(backend):
-            continue
+        if availability_filter:
+            try:
+                if not available(backend):
+                    continue
+            except Exception:
+                # 설치/쿼터 probe가 실패한 backend를 가용하다고 낙관하지 않는다. 다음 후보는
+                # 독립적으로 확인하되 모두 실패하면 기존 worker 기본값으로 폴백(None)을 돌린다.
+                continue
+        model = entry.get("model")
+        if not isinstance(model, str) or not model:
+            model = None
         reason = f"{prof_name}/{situation}→{logical}" + ("(폴백)" if logical != pick else "")
-        return (backend, entry.get("model") or None, reason)
+        return (backend, model, reason)
     return (None, None, "")
 
 
@@ -2249,6 +2567,8 @@ def _resume_supported(spec: dict[str, Any], cfg: Config) -> tuple[bool, str]:
           재소모된다. 허용하려면 acquire 결과도 step으로 기록하는 선행 작업이 필요하다.
     한계(C-6): 재현되는 것은 **호출 결과**뿐이며 **실행 순서·동시성은 재현되지 않는다**.
     """
+    if not isinstance(spec, dict):
+        return False, "재개는 객체 형태의 task spec이 필요합니다"
     if spec.get("pattern", "producer-reviewer") not in (
             "pipeline", "producer-reviewer", "fanout", "fanout-fanin"):
         return False, "재개는 pattern=pipeline·producer-reviewer·fanout에서만 지원합니다"
@@ -2373,6 +2693,47 @@ def _load_replay_steps(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
                 or not _REPLAY_USAGE_REQUIRED.issubset(usage_data)):
             skipped.append(f"step {index} usage 필수 필드 없음")
             continue
+        if (any(not isinstance(data.get(field), str)
+                for field in ("worker", "task_kind", "task", "text"))
+                or data.get("error") is not None and not isinstance(data.get("error"), str)
+                or not isinstance(data.get("checklist"), list)
+                or any(not isinstance(item, str) for item in data.get("checklist", []))):
+            skipped.append(f"step {index} 필드 타입 오류")
+            continue
+        score = data.get("score")
+        if score is not None:
+            if isinstance(score, bool):
+                skipped.append(f"step {index} score 타입 오류")
+                continue
+            try:
+                score_value = float(score)
+            except (TypeError, ValueError, OverflowError):
+                skipped.append(f"step {index} score 타입 오류")
+                continue
+            if not math.isfinite(score_value) or not 0.0 <= score_value <= 10.0:
+                skipped.append(f"step {index} score 범위 오류")
+                continue
+            data["score"] = score_value
+        bad_usage = False
+        for field in _REPLAY_USAGE_REQUIRED:
+            value = usage_data.get(field)
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                bad_usage = True
+                break
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError, OverflowError):
+                bad_usage = True
+                break
+            if (not math.isfinite(numeric) or numeric < 0
+                    or field != "cost_usd" and not numeric.is_integer()):
+                bad_usage = True
+                break
+        if bad_usage:
+            skipped.append(f"step {index} usage 값 오류")
+            continue
         if data.get("ok") is not True:
             skipped.append(f"step {index} 성공 아님")
             continue
@@ -2402,6 +2763,12 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     spec_bytes = task_path.read_bytes()
     spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
     orch = Orchestrator(cfg, auto=auto, ask=ask)
+    spec_error = _task_spec_error(spec, cfg)
+    if spec_error:
+        orch._log(f"[error] {spec_error}")
+        orch._save_status("aborted", {
+            "reason": spec_error, "cause": "config_error", "resumable": False})
+        return f"aborted: {spec_error}"
     orch.automation_decision = automation.build_automation_decision_snapshot(spec, cfg)
     effective_spec = spec
     if orch.automation_decision["mode"] == "full":
@@ -2493,8 +2860,16 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         print("[warn] verify_cmd가 설정됐지만 workdir가 없습니다 → 산출물 후보를 적용해 검증할 수 "
               "없어 검증이 계속 실패할 수 있습니다. task.json에 \"workdir\"(또는 전역 workspace)를 지정하세요.")
     orch.score_gate_mode = effective_spec.get("score_gate_mode", "strict")
-    orch.verify_timeout = int(effective_spec.get("verify_timeout_sec")
-                              or cfg.yok3x.get("verify_timeout_sec", 300))
+    try:
+        orch.verify_timeout = _coerce_int_option(
+            effective_spec.get("verify_timeout_sec")
+            or cfg.yok3x.get("verify_timeout_sec", 300),
+            "verify_timeout_sec", minimum=1)
+    except RunAborted as exc:
+        orch._log(f"[error] {exc}")
+        orch._save_status("aborted", {
+            "reason": str(exc), "cause": "config_error", "resumable": False})
+        return f"aborted: {exc}"
     orch.context_globs = effective_spec.get("context_globs", []) or []
     orch.rubric = effective_spec.get("rubric", "") or ""
     # few-shot 예시(E): 문자열 또는 문자열 리스트 허용. 리스트는 빈 줄로 이어붙인다.
@@ -2553,7 +2928,7 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                 orch.score_gate_mode,
                 has_verify_cmd=bool(str(orch.verify_cmd).strip()),
                 verify_ok=None, score=None,
-                threshold=float(effective_spec.get("pass_score", 8.0)))
+                threshold=_coerce_score_option(effective_spec.get("pass_score", 8.0)))
         orch.preflight_budget(effective_spec)      # R-3: 잔여예산으로 못 끝낼 런은 시작 전에 거부
         acquire_context = ""
         acquire_spec = effective_spec.get("acquire")
@@ -2573,8 +2948,9 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         elif pattern == "producer-reviewer":
             orch.run_producer_reviewer(task, effective_spec.get("producer", "claude-main"),
                                        effective_spec.get("reviewer", "codex-critic"),
-                                       int(effective_spec.get("max_rounds", 2)),
-                                       float(effective_spec.get("pass_score", 8.0)),
+                                       _coerce_int_option(
+                                           effective_spec.get("max_rounds", 2), "max_rounds"),
+                                       _coerce_score_option(effective_spec.get("pass_score", 8.0)),
                                        initial_context=acquire_context)
         else:
             raise ValueError(f"unknown pattern: {pattern}")
