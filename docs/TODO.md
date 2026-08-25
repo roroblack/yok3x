@@ -190,6 +190,11 @@ require_plan/require_selfcheck(절차 제어 — 프롬프트 수준), `_new_evi
 
 ### V-2. Agentic Transaction — 에이전트 작업의 ACID 보장 (arXiv 2608.13900)
 
+**계획서 승격됨(2026-08-24)**: [`docs/plans/v4.x-plan-materialize-transactional-publish-2026-08-24.md`](plans/v4.x-plan-materialize-transactional-publish-2026-08-24.md)
+— 검토 결과 **구현 권고**(V-1과 달리 실 데이터·쿼터 승인 불필요, BUG-53이 이미 남긴 잔여 위험을
+정확히 메움). `_materialize_outputs()`를 stage-then-publish로 바꾸는 설계 초안 있음 — 진행
+여부는 사용자 승인 필요.
+
 **출처 요지**: 에이전트가 여러 도구/API를 건드리다 중간에 실패하면 "부분 실행 후 죽음"이
 오염된 상태를 남긴다 — DB 트랜잭션의 원자성·일관성·격리·영속성(ACID) 개념을 에이전트
 작업에 적용하자는 제안(Claude Code 대비 10.6%p 향상, KramaBench). 핵심 기법: 탐색-실행-검증
