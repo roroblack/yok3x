@@ -213,6 +213,12 @@ require_plan/require_selfcheck(절차 제어 — 프롬프트 수준), `_new_evi
 
 ### V-3. AutoResearch 실패 분류 — 메타인지 루프 부재 (arXiv 2608.14905)
 
+**계획서 승격됨(2026-08-24)**: [`docs/plans/v4.x-plan-metacognitive-loop-review-2026-08-24.md`](plans/v4.x-plan-metacognitive-loop-review-2026-08-24.md)
+— 원문 확인 결과 논문 자체가 해결책을 제시 안 함(저자들이 "오케스트레이션 개입으로 해결
+가능한지는 이 연구가 테스트 안 한 열린 질문"이라 명시). **신규 구현 권고 없음** — 대신
+T-1(심판 신뢰도) 해석에 참고할 진단 렌즈로만 활용: 심판도 모델이라 같은 메타인지 결핍을
+가질 수 있음.
+
 **출처 요지**: 실제 연구 과제 100건에서 에이전트 실패를 진단, 45가지 실패 패턴을 분류
 (AutoResearch Failure Taxonomy). 핵심 발견: 대부분의 실패가 **메타인지 루프 부재** —
 "생산한 결과를 발견한 내용과 비교 검증하고, 안 맞으면 수정하고, 택한 경로가 타당한지
@@ -228,6 +234,11 @@ require_plan/require_selfcheck(절차 제어 — 프롬프트 수준), `_new_evi
 발견할 수도 있음.
 
 ### V-4. herdr — 멀티 에이전트 터미널 멀티플렉서 (외부 도구, https://herdr.dev)
+
+**계획서 승격됨(2026-08-24)**: [`docs/plans/v4.x-plan-herdr-integration-2026-08-24.md`](plans/v4.x-plan-herdr-integration-2026-08-24.md)
+— herdr.dev 재확인 결과 핵심 가치는 "멀티플렉서"가 아니라 **재부팅/접속끊김을 넘는 에이전트
+세션 지속성**. **코드 통합 권고 안 함**(yok3x 자체 subprocess 실행 계층과 계층이 겹치고
+의존성0 원칙과도 안 맞음) — 사용자 개인 도구로 설치해보는 것만 권고.
 
 **출처 요지**: Rust 기반 tmux류 터미널 멀티플렉서. Claude Code/Codex/Amp/OpenCode 등 여러 AI
 코딩 에이전트를 워크스페이스/탭/패인으로 띄우고 각각의 상태(working/idle/blocked)를 실시간
