@@ -239,6 +239,43 @@ herdr로 완전히 대체하긴 어렵지만, **사람이 여러 yok3x 워커/�
 실제 이점(신뢰성·가시성 향상 vs 기존 subprocess 방식)이 뭔지 먼저 따져봐야 함 — 지금은
 그냥 후보로만 남김.
 
+### V-5. 남은 쿼터 기반 모델·effort·에이전트(backend) 자동 셋팅 (2026-08-24 등록, 사용자 제안)
+
+**출처**: 사용자 제안 — "남은 쿼터에 따라서 자동으로 모델이랑 모델의 effort 수준이랑 사용하는
+에이전트까지 자동으로 셋팅해보는 기능".
+
+**이미 있는 것(v4.9.0 자동화 모드)**: `automation.py`의 S2(`recommend_effort_rounds`)가
+작업 특징(bucket)에 따라 effort/rounds를 추천하고, S4(`plan_quota_aware_effort_rounds`)가
+`daily_pace` 스냅샷(warn/stop 등급)을 받아 라운드를 먼저 줄이고 그다음 effort를 한 단계
+낮추는 조정을 이미 한다(`automation_mode=full` + `allow_effort_adjustment=True`일 때만
+producer/reviewer effort에 실제 적용). 즉 "effort 수준 자동 조정"은 **부분적으로 이미
+구현돼 있다** — 사용자가 원하는 게 이 기존 기능의 확장인지, 아니면 아래처럼 더 큰 범위인지
+먼저 구분해야 함.
+
+**없는 것(진짜 새로운 부분)**: 지금 `resolve_model()`/`backend_available()`은 "이 backend가
+설치돼 있고 한도가 stop이 아닌가"만 보는 **반응형(reactive)** 필터다 — 쿼터가 빠듯해지기
+*전에* 미리 더 저렴한 모델/backend로 **선제적으로(proactive)** 전환하는 로직은 없다. 예:
+codex 주간 사용률이 이미 70%를 넘었으면, stop에 걸리기 전에 자동으로 더 가벼운 모델이나
+claude로 미리 옮겨가는 것. 또한 "사용하는 에이전트"(어떤 backend/워커를 쓸지)를 쿼터
+상태만으로 자동 결정하는 것도 지금은 `profiles`/`benchmarks` 설정에 기반한 정적 라우팅이지,
+실시간 쿼터 곡선을 보고 동적으로 재계산하는 게 아님.
+
+**검토 후보(구현 전, 설계만)**:
+1. `plan_quota_aware_effort_rounds`의 warn/stop 판정을 backend *선택* 자체에도 확장 —
+   지금은 "이 backend를 쓸 수 있나(available)"만 boolean으로 보는데, "이 backend를 지금
+   쓰는 게 페이싱상 안전한가"까지 반영해 `resolve_model()`의 candidate 순서에 페널티를 주는 방식.
+2. "모델"(같은 backend 안에서 더 싸거나/빠른 모델로 다운그레이드)은 지금 `models_catalog`/
+   `benchmarks` 구조로 후보를 낼 수 있지만, "쿼터 아낀다"는 목표 함수로 순위를 매기는 로직은
+   없음 — 이건 새 코드가 필요.
+3. **주의**: T-1/T-2가 아직 "심판(codex-critic)이 SCORE를 신뢰할 만큼 잘 매기는지" 자체를
+   검증 못 한 상태(캘리브레이션 데이터 부족)라, 모델/effort를 자동으로 낮추는 기능을 먼저
+   만들면 "저품질 산출물이 저품질 심판을 통과"하는 조합이 생길 위험이 있음 — v5.0.0
+   계획서(나이틀리 자가개선)의 위험 A("심판 미검증")와 같은 종류의 우려. 실제 구현 전
+   T-1 완료 여부를 먼저 확인하는 게 안전.
+
+다른 비전 항목과 동일 — 여기 있다는 것 자체가 "하기로 결정"을 뜻하지 않음. 나중에 훑어보고
+가치가 있으면 별도 계획서로 승격.
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->
