@@ -163,7 +163,14 @@ def test_materialize_no_overwrite_is_atomic_between_concurrent_runs(cfg, monkeyp
         ))
 
     assert sum(result["ok"] for result in results) == 1
-    assert sum(bool(result["rejected"]) for result in results) == 1
+    succeeded = [r for r in results if r["ok"]]
+    failed = [r for r in results if not r["ok"]]
+    assert len(succeeded) == 1 and len(failed) == 1
+    # 실패한 쪽은 반드시 명시적으로 실패해야 한다 — TOCTOU 거부(rejected)든, 매니페스트
+    # 쓰기 등 다른 단계의 보고된 에러(reason)든, 조용히 덮어쓴 것처럼 보이면 안 된다.
+    # (v4.x stage-then-publish가 매니페스트 쓰기라는 새 공유 자원 접근을 추가했으므로,
+    # 실패 사유가 항상 TOCTOU 거부일 필요는 없다 — "절대 조용히 안 넘어간다"만 보장하면 된다.)
+    assert failed[0]["rejected"] or failed[0].get("reason")
     assert (root / "same.txt").read_text(encoding="utf-8") in {"first", "second"}
     assert not list(root.glob(".*.tmp"))
 
@@ -205,3 +212,70 @@ def test_fanout_join_worker_may_be_a_separate_configured_worker(cfg):
     }
 
     assert orchestrator._task_spec_error(spec, cfg) == ""
+
+
+def test_materialize_staging_failure_leaves_root_untouched(cfg, monkeypatch):
+    """v4.x stage-then-publish: 스테이징 단계 실패는 root를 전혀 안 건드려야 한다."""
+    root = cfg.paths.yok3x_dir.parent / "staging-fail-output"
+    orch = orchestrator.Orchestrator(cfg, auto=True)
+    orch.materialize = {"enabled": True, "root": str(root), "overwrite": True}
+    real_write = orchestrator._atomic_write_bytes
+
+    def failing_write(path, data, **kwargs):
+        if path.name == "b.txt":
+            raise OSError("simulated disk-full")
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "_atomic_write_bytes", failing_write)
+
+    result = orch._materialize_outputs(
+        "```file:a.txt\nA\n```\n```file:b.txt\nB\n```")
+
+    assert result["ok"] is False
+    assert not root.exists()
+
+
+def test_materialize_commit_failure_preserves_manifest_and_partial_state(cfg, monkeypatch):
+    """v4.x stage-then-publish: 커밋 도중 실패는 매니페스트를 남기고(고아 감지용),
+    스테이징 디렉터리는 정리한다 — 이미 이동된 파일이 남는 건 계획서가 명시한 잔여 위험."""
+    root = cfg.paths.yok3x_dir.parent / "commit-fail-output"
+    orch = orchestrator.Orchestrator(cfg, auto=True)
+    orch.materialize = {"enabled": True, "root": str(root), "overwrite": True}
+    real_replace = orchestrator.os.replace
+
+    def failing_replace(src, dst):
+        # 스테이징 단계도 내부적으로 os.replace를 쓰므로, staging 디렉터리 안의
+        # 쓰기는 건드리지 않고 root로의 최종 커밋 이동만 실패시킨다.
+        if str(dst).endswith("b.txt") and ".materialize-staging-" not in str(dst):
+            raise OSError("simulated crash mid-commit")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(orchestrator.os, "replace", failing_replace)
+
+    result = orch._materialize_outputs(
+        "```file:a.txt\nA\n```\n```file:b.txt\nB\n```")
+
+    assert result["ok"] is False
+    manifests = list(root.glob(".materialize-manifest-*.json"))
+    assert len(manifests) == 1
+    assert (root / "a.txt").exists()
+    assert not (root / "b.txt").exists()
+    assert not list(root.parent.glob(".materialize-staging-*"))
+
+
+def test_materialize_warns_on_orphan_manifest_from_previous_run(cfg, monkeypatch):
+    """v4.x: 이전 실행이 중간에 죽어 못 지운 매니페스트를 발견하면 경고만 남기고 자동 삭제 안 함."""
+    root = cfg.paths.yok3x_dir.parent / "orphan-output"
+    root.mkdir()
+    orphan = root / ".materialize-manifest-stale-run.json"
+    orphan.write_text("{}", encoding="utf-8")
+    orch = orchestrator.Orchestrator(cfg, auto=True)
+    orch.materialize = {"enabled": True, "root": str(root), "overwrite": True}
+    logged: list[str] = []
+    monkeypatch.setattr(orch, "_log", logged.append)
+
+    result = orch._materialize_outputs("```file:c.txt\nC\n```")
+
+    assert result["ok"] is True
+    assert any("고아" in line and "매니페스트" in line for line in logged)
+    assert orphan.exists()   # 자동 삭제하지 않는다(계획서 §3.1의 관측-only 결정)

@@ -1856,6 +1856,11 @@ class Orchestrator:
             self._log(f"[out] 게시 거부: root에 심볼릭 경로가 있음 — {root}")
             return {"enabled": True, "ok": False, "reason": "root에 심볼릭 경로가 있음",
                     "root": str(root), "written": [], "rejected": []}
+        if not self._review_enabled() and root.exists():
+            for orphan in sorted(root.glob(".materialize-manifest-*.json")):
+                self._log(
+                    "[out] 경고: 고아 materialize 매니페스트 발견 — "
+                    f"이전 게시가 반쪽짜리로 중단됐을 수 있음: {orphan}")
         blocks = artifacts.parse_file_blocks(final_output or "")
         if not blocks:
             self._log("[out] 게시할 파일 없음 — 워커가 ```file:<경로> 블록을 내지 않았다")
@@ -1876,35 +1881,116 @@ class Orchestrator:
                 else:
                     safe.append(fb)
             plan.accepted = safe
+            written: list[dict] = []
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                for fb in plan.accepted:
+                    dest = root / fb.path
+                    try:
+                        dest.resolve().relative_to(root.resolve())
+                    except (OSError, ValueError):
+                        plan.rejected.append({
+                            "path": fb.path,
+                            "reason": "해석된 경로가 루트 밖(심볼릭 등)",
+                        })
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        _atomic_write_bytes(
+                            dest, fb.content.encode("utf-8"),
+                            overwrite=bool(conf.get("overwrite")))
+                    except FileExistsError:
+                        plan.rejected.append({
+                            "path": fb.path,
+                            "reason": "게시 중 파일이 이미 생성됨(덮어쓰기 거부)",
+                        })
+                        continue
+                    written.append({
+                        "path": fb.path,
+                        "bytes": len(fb.content.encode("utf-8")),
+                        "sha256": fb.sha256(),
+                    })
+            except OSError as e:
+                self._log(f"[out] 게시 실패: {type(e).__name__}: {e}")
+                return {"enabled": True, "ok": False,
+                        "reason": f"{type(e).__name__}: {e}", "root": str(root),
+                        "written": written, "rejected": plan.rejected}
+            for rejected in plan.rejected:
+                self._log(f"[out] 거부: {rejected['path']} — {rejected['reason']}")
+            if written:
+                self._log(f"[out] 게시 {len(written)}개 → {root}")
+            return {"enabled": True, "ok": bool(written), "root": str(root),
+                    "written": written, "rejected": plan.rejected}
+
+        overwrite = bool(conf.get("overwrite"))
+        staged: list[tuple[Any, bytes, dict[str, Any]]] = []
+        real_root = root.resolve()
+        for fb in plan.accepted:
+            dest = root / fb.path
+            # 문자열 검증(artifacts)만 믿지 않고 **해석된 실제 경로**가 루트 안인지 재확인한다.
+            # 심볼릭 링크로 루트 밖을 가리키는 경우를 여기서 막는다.
+            try:
+                dest.resolve().relative_to(real_root)
+            except (OSError, ValueError):
+                plan.rejected.append({
+                    "path": fb.path, "reason": "해석된 경로가 루트 밖(심볼릭 등)"})
+                continue
+            data = fb.content.encode("utf-8")
+            staged.append((fb, data, {
+                "path": fb.path, "bytes": len(data), "sha256": fb.sha256()}))
+
         written: list[dict] = []
+        staging_root: Path | None = None
+        try:
+            root.parent.mkdir(parents=True, exist_ok=True)
+            staging_root = Path(tempfile.mkdtemp(
+                dir=root.parent, prefix=".materialize-staging-"))
+            for fb, data, _record in staged:
+                staging_dest = staging_root / fb.path
+                staging_dest.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_bytes(staging_dest, data)
+        except OSError as e:
+            if staging_root is not None:
+                shutil.rmtree(staging_root, ignore_errors=True)
+            self._log(f"[out] 게시 실패: {type(e).__name__}: {e}")
+            return {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}",
+                    "root": str(root), "written": [], "rejected": plan.rejected}
+
+        manifest_path = root / f".materialize-manifest-{self.run_id}.json"
         try:
             root.mkdir(parents=True, exist_ok=True)
-            for fb in plan.accepted:
-                dest = (root / fb.path)
-                # 문자열 검증(artifacts)만 믿지 않고 **해석된 실제 경로**가 루트 안인지 재확인한다.
-                # 심볼릭 링크로 루트 밖을 가리키는 경우를 여기서 막는다.
+            _atomic_write_json(manifest_path, {
+                "run_id": self.run_id,
+                "files": [record for _fb, _data, record in staged],
+            })
+            for fb, _data, record in staged:
+                dest = root / fb.path
+                # 스테이징 뒤 생긴 심볼릭 경로와 overwrite=False 경쟁을 커밋 시점에 다시 막는다.
                 try:
-                    real_root = root.resolve()
-                    real_dest = dest.resolve()
-                    real_dest.relative_to(real_root)
-                except (OSError, ValueError):
-                    plan.rejected.append({"path": fb.path, "reason": "해석된 경로가 루트 밖(심볼릭 등)"})
-                    continue
+                    if self._path_has_symlink(root):
+                        raise OSError("게시 root에 심볼릭 경로가 생김")
+                    dest.resolve().relative_to(root.resolve())
+                except ValueError:
+                    raise OSError("게시 대상이 root 밖을 가리킴") from None
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                # 고정 tmp 이름은 같은 materialize.root를 쓰는 동시 런끼리 서로의 임시 파일을
-                # replace/unlink할 수 있다. overwrite=False는 원자적 create-if-absent로 사전
-                # existing 스냅샷 뒤의 TOCTOU 덮어쓰기까지 막는다.
+                staging_dest = staging_root / fb.path
                 try:
-                    _atomic_write_bytes(
-                        dest, fb.content.encode("utf-8"),
-                        overwrite=bool(conf.get("overwrite")))
+                    if overwrite:
+                        os.replace(staging_dest, dest)
+                    else:
+                        os.link(staging_dest, dest)
+                        staging_dest.unlink()
                 except FileExistsError:
                     plan.rejected.append({
                         "path": fb.path, "reason": "게시 중 파일이 이미 생성됨(덮어쓰기 거부)"})
                     continue
-                written.append({"path": fb.path, "bytes": len(fb.content.encode("utf-8")),
-                                "sha256": fb.sha256()})
+                written.append(record)
+            shutil.rmtree(staging_root)
+            staging_root = None
+            manifest_path.unlink()
         except OSError as e:
+            if staging_root is not None:
+                shutil.rmtree(staging_root, ignore_errors=True)
             self._log(f"[out] 게시 실패: {type(e).__name__}: {e}")
             return {"enabled": True, "ok": False, "reason": f"{type(e).__name__}: {e}",
                     "root": str(root), "written": written, "rejected": plan.rejected}

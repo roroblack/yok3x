@@ -1,5 +1,7 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-08-25 — 직접 materialize를 stage-then-publish로 전환하고 커밋 매니페스트·고아 게시 경고를 추가했다.
+
 - 2026-08-21: GUI 서버의 정상 반환·KeyboardInterrupt·메인 루프 예외·포착 가능한 SIGTERM 종료 사유와 shutdown 전후 로그/flush를 추가했다. 상세: `docs/reports/v4.9.0-gui-server-shutdown-observability-2026-08-21.md`.
 
 ## v4.8.0 · 2026-08-19 · S5 구조화 리뷰 프로토콜 관측·점진적 기본값 전환 준비 완료
