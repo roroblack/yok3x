@@ -261,32 +261,34 @@ herdr로 완전히 대체하긴 어렵지만, **사람이 여러 yok3x 워커/�
 
 ### V-5. 남은 쿼터 기반 모델·effort·에이전트(backend) 자동 셋팅 (2026-08-24 등록, 사용자 제안)
 
+**계획서 승격됨(2026-08-25)**: [`docs/plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md`](plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md)
+— 검토 결과 **일부만 구현 권고**: 실제 pace→S4 연결과 assist 관측은 권고하지만, T-1·quota 계측·
+모델 비용 메타데이터가 준비될 때까지 model/effort/backend 자동 전환은 보류.
+
 **출처**: 사용자 제안 — "남은 쿼터에 따라서 자동으로 모델이랑 모델의 effort 수준이랑 사용하는
 에이전트까지 자동으로 셋팅해보는 기능".
 
 **이미 있는 것(v4.9.0 자동화 모드)**: `automation.py`의 S2(`recommend_effort_rounds`)가
-작업 특징(bucket)에 따라 effort/rounds를 추천하고, S4(`plan_quota_aware_effort_rounds`)가
-`daily_pace` 스냅샷(warn/stop 등급)을 받아 라운드를 먼저 줄이고 그다음 effort를 한 단계
-낮추는 조정을 이미 한다(`automation_mode=full` + `allow_effort_adjustment=True`일 때만
-producer/reviewer effort에 실제 적용). 즉 "effort 수준 자동 조정"은 **부분적으로 이미
-구현돼 있다** — 사용자가 원하는 게 이 기존 기능의 확장인지, 아니면 아래처럼 더 큰 범위인지
-먼저 구분해야 함.
+작업 특징(bucket)에 따라 effort/rounds를 추천하며, full+`allow_effort_adjustment=True`에서는
+이 **S2 정적 추천**을 producer/reviewer에 적용한다. S4(`plan_quota_aware_effort_rounds`)도
+`daily_pace` 스냅샷(warn/stop 등급)을 받으면 rounds→effort 순으로 낮추는 순수 함수와 테스트는
+있다. **다만 실제 `run_task_file()`은 pace를 넘기지 않아 S4의 quota 조정은 실행에 적용되지
+않는다.** 즉 작업 특징 기반 effort 자동 설정은 있지만, 남은 quota 기반 effort 조정은 아직 배선 전이다.
 
-**없는 것(진짜 새로운 부분)**: 지금 `resolve_model()`/`backend_available()`은 "이 backend가
-설치돼 있고 한도가 stop이 아닌가"만 보는 **반응형(reactive)** 필터다 — 쿼터가 빠듯해지기
-*전에* 미리 더 저렴한 모델/backend로 **선제적으로(proactive)** 전환하는 로직은 없다. 예:
-codex 주간 사용률이 이미 70%를 넘었으면, stop에 걸리기 전에 자동으로 더 가벼운 모델이나
-claude로 미리 옮겨가는 것. 또한 "사용하는 에이전트"(어떤 backend/워커를 쓸지)를 쿼터
-상태만으로 자동 결정하는 것도 지금은 `profiles`/`benchmarks` 설정에 기반한 정적 라우팅이지,
-실시간 쿼터 곡선을 보고 동적으로 재계산하는 게 아님.
+**없는 것(진짜 새로운 부분)**: `resolve_model()`/`backend_available()`은 "이 backend가 설치돼 있고
+한도가 stop이 아닌가"를 보는 boolean 필터이며 warn에는 순위 페널티가 없다. 별도의 기존
+`degrade_plan()`(기본 90% 이상에서 opt-in lite 모델)과 `failover_backend()`(기본 97%/stop에서
+opt-in backend 전환)는 있어 **선제 로직이 전혀 없는 것은 아니지만**, reset까지 남은 시간과
+지속 가능 pace를 보고 더 일찍 모델/backend 후보를 재순위하는 계획 단계 로직은 없다. 또한
+producer/reviewer 같은 worker 역할 자체를 quota로 자동 선택하는 기능도 없다.
 
 **검토 후보(구현 전, 설계만)**:
 1. `plan_quota_aware_effort_rounds`의 warn/stop 판정을 backend *선택* 자체에도 확장 —
    지금은 "이 backend를 쓸 수 있나(available)"만 boolean으로 보는데, "이 backend를 지금
    쓰는 게 페이싱상 안전한가"까지 반영해 `resolve_model()`의 candidate 순서에 페널티를 주는 방식.
 2. "모델"(같은 backend 안에서 더 싸거나/빠른 모델로 다운그레이드)은 지금 `models_catalog`/
-   `benchmarks` 구조로 후보를 낼 수 있지만, "쿼터 아낀다"는 목표 함수로 순위를 매기는 로직은
-   없음 — 이건 새 코드가 필요.
+   `benchmarks` 구조로 후보를 낼 수 있고 고정 lite 열화도 있지만, "쿼터를 아낀다"는 목표 함수로
+   전체 후보를 순위화할 비용 메타데이터·로직은 없음 — 이건 새 설계가 필요.
 3. **주의**: T-1/T-2가 아직 "심판(codex-critic)이 SCORE를 신뢰할 만큼 잘 매기는지" 자체를
    검증 못 한 상태(캘리브레이션 데이터 부족)라, 모델/effort를 자동으로 낮추는 기능을 먼저
    만들면 "저품질 산출물이 저품질 심판을 통과"하는 조합이 생길 위험이 있음 — v5.0.0
@@ -295,6 +297,27 @@ claude로 미리 옮겨가는 것. 또한 "사용하는 에이전트"(어떤 bac
 
 다른 비전 항목과 동일 — 여기 있다는 것 자체가 "하기로 결정"을 뜻하지 않음. 나중에 훑어보고
 가치가 있으면 별도 계획서로 승격.
+
+### V-6. 설치한 사람들끼리 작업 공유 기능 (2026-08-27 등록, 사용자 제안)
+
+**출처**: 사용자 제안 — "이거 설치한 사람들끼리 서로 작업 공유하는 기능 만들고 싶어."
+
+**아직 미정(설계 전, 다음에 계획서로 승격할 때 먼저 좁혀야 할 것)**:
+- **무엇을 공유하는가**: 작업(task) 스펙 템플릿? 완료된 런의 산출물? calibration/런북 같은
+  집계 통계(V-1 참고)? 실시간 협업(같은 작업을 여러 사용자가 동시에)?
+- **어떻게 공유하는가**: 사용자 간 직접 파일 교환(예: task.json 내보내기/가져오기, 의존성0
+  원칙과 충돌 없음)? 아니면 중앙 서버/저장소를 통한 공유(그러면 yok3x의 "로컬 우선, 서버
+  의존 없음" 설계 철학과 정면으로 부딪힘 — herdr 검토(V-4)에서도 같은 이유로 외부 상시
+  서버 통합을 권하지 않았음)?
+- **프라이버시/보안**: 이번 세션에서 review_protocol/calibration 관측 로그를 만들 때마다
+  "원문 텍스트·프롬프트·산출물은 절대 저장/공유하지 않는다"는 원칙을 반복 적용했음(v4.8.0 S5,
+  v4.9.0 S3) — 작업 공유 기능도 같은 원칙을 지켜야 함. 프로젝트 코드·프롬프트가 의도치 않게
+  새어나가지 않게 하는 설계가 핵심 난제가 될 것으로 예상.
+- **인증/신뢰**: "누구와" 공유하는지(불특정 다수 공개 vs 팀/친구 단위 비공개)에 따라 완전히
+  다른 설계가 필요함.
+
+**검토 후보**: 계획서로 승격할 때 가장 먼저 사용자에게 위 항목들(무엇을·어떻게·누구와)을
+구체적으로 확인해야 함 — 지금은 "만들고 싶다"는 의사만 등록.
 
 ---
 
