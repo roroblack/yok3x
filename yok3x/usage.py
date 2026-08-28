@@ -659,6 +659,89 @@ def daily_pace_status(cfg: Config, backend: str, current_pct: float | None,
             "forward_daily": forward_daily}
 
 
+def automation_pace_snapshot(cfg: Config, backends: Any, probe_fn=None) -> dict[str, dict]:
+    """Return one display-only daily-pace input per candidate backend.
+
+    The shape deliberately distinguishes a disabled policy (``off``) from a
+    failed/untrusted measurement (``unknown``).  Only the same real readings
+    accepted by the GUI are fed to :func:`daily_pace_status`; estimated and
+    failed readings remain observable but cannot trigger an S4 candidate.
+    """
+    if isinstance(backends, str):
+        requested = [backends]
+    else:
+        try:
+            requested = list(backends or [])
+        except TypeError:
+            requested = []
+    snapshots: dict[str, dict] = {}
+    for backend in dict.fromkeys(str(item) for item in requested if item):
+        dp = _pace_cfg(cfg, backend)
+        enabled = bool(dp.get("enabled"))
+        try:
+            reading = (probe_fn or limits.probe)(cfg, backend)
+        except Exception as exc:
+            snapshots[backend] = {
+                "backend": backend, "daily_pace_status": "unknown" if enabled else "off",
+                "measurement": "unknown", "source": "unknown", "real": False,
+                "current": None, "reset_at": None, "reset": None,
+                "since_reset_known": None, "used": None, "cap": None,
+                "level": "unknown", "reason": f"measurement_failed: {exc}",
+            }
+            continue
+
+        source = str(getattr(reading, "source", "") or "unknown")
+        real = bool(getattr(reading, "real", False))
+        reading_ok = bool(getattr(reading, "ok", False))
+        measurement = "measured" if reading_ok and real else (
+            "estimated" if reading_ok else "unknown")
+        reset_at = effective_reset_at(cfg, backend, reading) if real else _weekly_reset_at(reading)
+        reset_text = None
+        for window in (getattr(reading, "windows", None) or []):
+            if str(getattr(window, "name", "")) == "7d":
+                reset_text = window.reset_in()
+                break
+        base = {
+            "backend": backend, "daily_pace_status": "off" if not enabled else "unknown",
+            "measurement": measurement, "source": source, "real": real,
+            "current": _weekly_pct(reading) if reading_ok else None,
+            "reset_at": reset_at, "reset": reset_text,
+            "since_reset_known": None, "used": None, "cap": None,
+            "level": "unknown",
+        }
+        if not enabled:
+            base["reason"] = "daily_pace_off"
+            snapshots[backend] = base
+            continue
+        if not (reading_ok and real):
+            base["reason"] = "measurement_untrusted" if measurement == "estimated" else "measurement_failed"
+            error = str(getattr(reading, "error", "") or "")
+            if error:
+                base["error"] = error
+            snapshots[backend] = base
+            continue
+
+        current, known, today_used = _pace_inputs(cfg, backend, reading, reset_at)
+        status = daily_pace_status(
+            cfg, backend, current, today=_pacing_day_key(reset_at), reset_at=reset_at,
+            today_used=today_used, since_reset_known=known)
+        base.update({"current": current, "since_reset_known": known})
+        if status is None:
+            base["reason"] = "pace_measurement_unavailable"
+        else:
+            base.update({
+                "daily_pace_status": "measured", "used": status.get("used"),
+                "cap": status.get("cap"), "soft": status.get("soft"),
+                "level": status.get("level"), "mode": status.get("mode"),
+                "blocked": status.get("blocked"), "approved": status.get("approved"),
+                "base_cap": status.get("base_cap"), "strategy": status.get("strategy"),
+                "forward_daily": status.get("forward_daily"),
+                "reason": "daily_pace_measured",
+            })
+        snapshots[backend] = base
+    return snapshots
+
+
 def pace_block_active(cfg: Config, backend: str, today: str | None = None) -> bool:
     """저장된 sticky pause 정지가 오늘 유효한가(probe 실패 중에도 정지 유지). 승인/자정 전까지 True."""
     dp = _pace_cfg(cfg, backend)

@@ -1,5 +1,6 @@
 import json
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from yok3x.automation import (
 from yok3x.config import Config, scaffold
 from yok3x.orchestrator import Orchestrator, RunAborted, _resume_supported, run_task_file
 from yok3x.calibration import load_calibration_statistics
+from yok3x import limits, usage
 
 
 @pytest.fixture
@@ -677,3 +679,129 @@ def test_s4_stop_only_emits_optional_backend_reallocation_signal(allow, expected
     assert result["backend_reallocation_required"] is expected
     assert result["quota_reason"] == signal
     assert result["rounds"] == 4 and result["effort"] == "high"
+
+
+@pytest.fixture
+def quota_scenario(tmp_path):
+    root = tmp_path / "quota-scenario"
+    scaffold(root, use_mock=True)
+    cfg = Config.load(root)
+    cfg.yok3x["guard"]["daily_pace"].update({
+        "enabled": True, "strategy": "catch_up", "mode": "warn",
+        "pct_of_weekly": 0.14, "soft_frac": 0.8,
+    })
+    cfg.yok3x["automation_mode"] = "full"
+    cfg.yok3x["automation"].update({
+        "allow_effort_adjustment": True,
+        "allow_backend_reallocation": True,
+    })
+    now = 1_800_000_000.0
+    reset_at = now + 4 * 86400.0
+    reading = limits.LimitReading(
+        "codex", "codex_appserver", ok=True, real=True,
+        windows=[limits.Window("7d", 70.0, resets_at=reset_at)],
+    )
+    return cfg, now, reset_at, reading
+
+
+@pytest.mark.parametrize("mode,expected_level", [("warn", "warn"), ("pause", "stop")])
+def test_quota_scenario_separates_reset_pace_mode_and_codex_confidence(
+    quota_scenario, monkeypatch, mode, expected_level
+):
+    cfg, now, reset_at, reading = quota_scenario
+    cfg.yok3x["guard"]["daily_pace"]["mode"] = mode
+    monkeypatch.setattr(time, "time", lambda: now)
+    monkeypatch.setattr("yok3x.usage.time.time", lambda: now)
+    monkeypatch.setattr("yok3x.limits.time.time", lambda: now)
+    monkeypatch.setattr("yok3x.limits.codex_percent_at", lambda *_args, **_kwargs: None)
+
+    snapshot = usage.automation_pace_snapshot(
+        cfg, ["codex"], probe_fn=lambda _cfg, _backend: reading)["codex"]
+
+    assert snapshot["reset_at"] - now == 4 * 86400.0
+    assert snapshot["current"] == 70.0
+    assert snapshot["since_reset_known"] is False
+    assert snapshot["daily_pace_status"] == "measured"
+    assert snapshot["level"] == expected_level
+    assert snapshot["cap"] == 0.0
+
+
+def test_automation_pace_snapshot_distinguishes_off_unknown_and_estimated(tmp_path):
+    root = tmp_path / "pace-states"
+    scaffold(root, use_mock=True)
+    cfg = Config.load(root)
+
+    off = usage.automation_pace_snapshot(
+        cfg, ["codex"], probe_fn=lambda *_: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert off["codex"]["daily_pace_status"] == "off"
+    assert off["codex"]["measurement"] == "unknown"
+
+    cfg.yok3x["guard"]["daily_pace"]["enabled"] = True
+    failed = limits.LimitReading(
+        "codex", "codex_appserver", ok=False, real=False, error="probe failed")
+    unknown = usage.automation_pace_snapshot(cfg, ["codex"], probe_fn=lambda *_: failed)
+    assert unknown["codex"]["daily_pace_status"] == "unknown"
+    assert unknown["codex"]["reason"] == "measurement_failed"
+
+    estimated = limits.LimitReading(
+        "codex", "codex_sessions", ok=True, real=False,
+        windows=[limits.Window("7d", 70.0)])
+    estimate = usage.automation_pace_snapshot(cfg, ["codex"], probe_fn=lambda *_: estimated)
+    assert estimate["codex"]["measurement"] == "estimated"
+    assert estimate["codex"]["daily_pace_status"] == "unknown"
+    assert estimate["codex"]["level"] == "unknown"
+
+
+def test_full_quota_assist_wiring_never_changes_execution_values(
+    quota_scenario, monkeypatch, tmp_path
+):
+    cfg, _now, reset_at, _reading = quota_scenario
+    cfg.yok3x["workers"]["codex-main"]["backend"] = "codex"
+    cfg.yok3x["workers"]["codex-critic"]["backend"] = "codex"
+    pace = {
+        "codex": {
+            "backend": "codex", "daily_pace_status": "measured",
+            "measurement": "measured", "source": "codex_appserver", "real": True,
+            "current": 70.0, "reset_at": reset_at, "reset": "4일 후",
+            "since_reset_known": False, "used": 0.0, "cap": 0.0,
+            "level": "warn", "mode": "warn",
+        }
+    }
+    monkeypatch.setattr("yok3x.orchestrator.usage.automation_pace_snapshot",
+                        lambda *_args, **_kwargs: pace)
+    captured = {}
+
+    def fake_run(self, task, producer, reviewer, max_rounds=2, pass_score=8.0, **kwargs):
+        captured.update({
+            "max_rounds": max_rounds, "pass_score": pass_score,
+            "producer_effort": self._worker(producer).get("effort"),
+            "reviewer_effort": self._worker(reviewer).get("effort"),
+        })
+        self._save_status("done")
+
+    monkeypatch.setattr(Orchestrator, "run_producer_reviewer", fake_run)
+    task_file = tmp_path / "risk-task.json"
+    task_file.write_text(json.dumps({
+        "pattern": "producer-reviewer", "task": "security migration review",
+        "producer": "codex-main", "reviewer": "codex-critic",
+    }), encoding="utf-8")
+
+    assert run_task_file(cfg, task_file, auto=True) == "done"
+    assert captured == {
+        "max_rounds": 4, "pass_score": 8.0,
+        "producer_effort": "high", "reviewer_effort": "high",
+    }
+    status = json.loads(next(cfg.paths.runs.glob("run_*/status.json")).read_text(encoding="utf-8"))
+    decision = status["automation_decision"]
+    assert decision["recommendation"]["rounds"] == 4
+    assert decision["recommendation"]["effort"] == "high"
+    assert decision["quota_recommendation"]["rounds"] == 3
+    assert decision["quota_recommendation"]["effort"] == "medium"
+    assert decision["quota_adjustment"] == "rounds_and_effort"
+    assert decision["quota_observation_only"] is True
+    assert decision["role_decisions"]["producer"]["quota_candidate"]["effort"] == "medium"
+    reviewer = decision["role_decisions"]["reviewer"]
+    assert reviewer["current"]["effort"] == "high"
+    assert reviewer["quota_candidate"]["effort"] == "high"
+    assert reviewer["roles_no_downgrade_applied"] is True
+    assert reviewer["effort_change_suppressed"] is True

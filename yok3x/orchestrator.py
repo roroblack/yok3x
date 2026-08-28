@@ -2855,7 +2855,31 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         orch._save_status("aborted", {
             "reason": spec_error, "cause": "config_error", "resumable": False})
         return f"aborted: {spec_error}"
-    orch.automation_decision = automation.build_automation_decision_snapshot(spec, cfg)
+    pace_snapshot = None
+    automation_roles = None
+    if automation.resolve_effective_mode(spec, cfg) != "off":
+        automation_roles = {}
+        for role, worker_name, task_kind in (
+            ("producer", spec.get("producer", "claude-main"), "build"),
+            ("reviewer", spec.get("reviewer", "codex-critic"), "critic"),
+        ):
+            worker = dict(cfg.worker(worker_name))
+            override = (spec.get("agents") or {}).get(worker_name)
+            if isinstance(override, dict):
+                worker.update(override)
+            routed_backend, routed_model, _ = resolve_model(cfg, task_kind)
+            backend = routed_backend if routed_backend in cfg.backends else worker.get("backend")
+            model = routed_model if routed_backend in cfg.backends else worker.get("model")
+            automation_roles[role] = {
+                "worker": worker_name, "backend": backend, "model": model,
+                "effort": worker.get("effort") or cfg.yok3x.get("default_effort") or None,
+            }
+        candidate_backends = {
+            value.get("backend") for value in automation_roles.values() if value.get("backend")
+        }
+        pace_snapshot = usage.automation_pace_snapshot(cfg, candidate_backends)
+    orch.automation_decision = automation.build_automation_decision_snapshot(
+        spec, cfg, pace=pace_snapshot, roles=automation_roles)
     effective_spec = spec
     if orch.automation_decision["mode"] == "full":
         # Apply once to an execution copy; never mutate the source task dict.

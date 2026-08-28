@@ -89,6 +89,7 @@ def build_automation_decision_snapshot(
     config: Any = None,
     *,
     pace: Mapping[str, Any] | None = None,
+    roles: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the explainable, display-only automation decision snapshot."""
     decision = effective_automation_decision(spec, config)
@@ -97,17 +98,68 @@ def build_automation_decision_snapshot(
         return {"mode": "off", "computed": False}
 
     recommendation = recommend_effort_rounds(spec, config)
-    if pace is not None:
-        recommendation = plan_quota_aware_effort_rounds(
-            recommendation, pace, config)
-    return {
+    role_inputs = roles if isinstance(roles, Mapping) else {}
+
+    def role_pace(role: str) -> Mapping[str, Any] | None:
+        if not isinstance(pace, Mapping):
+            return None
+        # Backward-compatible pure-function seam: existing callers may pass
+        # one pace object rather than the production backend-keyed snapshot.
+        if "level" in pace:
+            return pace
+        role_input = role_inputs.get(role)
+        backend = role_input.get("backend") if isinstance(role_input, Mapping) else None
+        value = pace.get(backend) if backend else None
+        return value if isinstance(value, Mapping) else None
+
+    producer_pace = role_pace("producer")
+    quota_recommendation = plan_quota_aware_effort_rounds(
+        recommendation, producer_pace, config) if pace is not None else dict(recommendation)
+    role_decisions: dict[str, Any] = {}
+    protected_workers = (((_config_mapping(config).get("guard") or {}).get("degrade") or {})
+                         .get("roles_no_downgrade") or [])
+    for role in ("producer", "reviewer"):
+        raw = role_inputs.get(role)
+        if not isinstance(raw, Mapping):
+            continue
+        current_effort = raw.get("effort") or recommendation.get("effort")
+        source = dict(recommendation)
+        source["effort"] = current_effort
+        candidate = plan_quota_aware_effort_rounds(source, role_pace(role), config)
+        protected = role == "reviewer" and raw.get("worker") in protected_workers
+        candidate_effort = candidate.get("effort")
+        suppressed = protected and candidate_effort != current_effort
+        if suppressed:
+            candidate_effort = current_effort
+        current = {
+            "worker": raw.get("worker"), "backend": raw.get("backend"),
+            "model": raw.get("model"), "effort": current_effort,
+        }
+        role_decisions[role] = {
+            "current": current,
+            "quota_candidate": {
+                "worker": current["worker"], "backend": current["backend"],
+                "model": current["model"], "effort": candidate_effort,
+                "quota_adjustment": candidate.get("quota_adjustment", "none"),
+                "reason": "pace 경고에 따른 보수적 후보(관측 전용, 미적용)",
+            },
+            "roles_no_downgrade_applied": protected,
+            "effort_change_suppressed": suppressed,
+        }
+    snapshot = {
         "mode": mode,
         "computed": True,
         "mode_source": decision["mode_source"],
         "explicit_fields": _json_safe(decision["explicit_fields"]),
         "fields": _json_safe(decision["fields"]),
         "recommendation": _json_safe(recommendation),
+        "quota_recommendation": _json_safe(quota_recommendation),
+        "quota_adjustment": quota_recommendation.get("quota_adjustment", "none"),
+        "pace": _json_safe(pace) if pace is not None else None,
+        "role_decisions": _json_safe(role_decisions),
+        "quota_observation_only": True,
     }
+    return snapshot
 
 
 def validate_task_automation_mode(task_spec: Mapping[str, Any]) -> None:

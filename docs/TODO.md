@@ -261,9 +261,10 @@ herdr로 완전히 대체하긴 어렵지만, **사람이 여러 yok3x 워커/�
 
 ### V-5. 남은 쿼터 기반 모델·effort·에이전트(backend) 자동 셋팅 (2026-08-24 등록, 사용자 제안)
 
-**계획서 승격됨(2026-08-25)**: [`docs/plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md`](plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md)
-— 검토 결과 **일부만 구현 권고**: 실제 pace→S4 연결과 assist 관측은 권고하지만, T-1·quota 계측·
-모델 비용 메타데이터가 준비될 때까지 model/effort/backend 자동 전환은 보류.
+**계획서 승격 및 §4.1 구현 완료(2026-08-28)**: [`docs/plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md`](plans/v4.x-plan-quota-aware-model-effort-agent-selection-2026-08-25.md)
+— candidate backend별 실제 pace→S4 관측 배선과 producer/reviewer별 현재값·보수적 후보 표시를
+완료했다. full의 실제 max_rounds/pass_score/effort 및 model/backend 자동 전환은 바꾸지 않았으며,
+T-1·quota 계측·모델 비용 메타데이터가 준비될 때까지 계획서 §4.2는 계속 보류한다.
 
 **출처**: 사용자 제안 — "남은 쿼터에 따라서 자동으로 모델이랑 모델의 effort 수준이랑 사용하는
 에이전트까지 자동으로 셋팅해보는 기능".
@@ -272,8 +273,9 @@ herdr로 완전히 대체하긴 어렵지만, **사람이 여러 yok3x 워커/�
 작업 특징(bucket)에 따라 effort/rounds를 추천하며, full+`allow_effort_adjustment=True`에서는
 이 **S2 정적 추천**을 producer/reviewer에 적용한다. S4(`plan_quota_aware_effort_rounds`)도
 `daily_pace` 스냅샷(warn/stop 등급)을 받으면 rounds→effort 순으로 낮추는 순수 함수와 테스트는
-있다. **다만 실제 `run_task_file()`은 pace를 넘기지 않아 S4의 quota 조정은 실행에 적용되지
-않는다.** 즉 작업 특징 기반 effort 자동 설정은 있지만, 남은 quota 기반 effort 조정은 아직 배선 전이다.
+있다. 이제 실제 `run_task_file()`은 candidate backend별 pace snapshot을 넘겨 S4 후보를
+`status.json`에 관측값으로 남긴다. 단 `recommendation`은 기존 S2 실행 기준으로 유지하므로,
+남은 quota 기반 후보는 assist 표시일 뿐 실제 실행값에는 적용되지 않는다.
 
 **없는 것(진짜 새로운 부분)**: `resolve_model()`/`backend_available()`은 "이 backend가 설치돼 있고
 한도가 stop이 아닌가"를 보는 boolean 필터이며 warn에는 순위 페널티가 없다. 별도의 기존
