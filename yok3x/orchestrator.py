@@ -15,6 +15,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -38,9 +39,12 @@ SCORE_RE = re.compile(r"SCORE:\s*(\d+(?:\.\d+)?)")
 SCORE_GATE_MODES = ("strict", "advisory")
 REVIEW_BASE_MAX_BYTES = 2_000_000
 STAGE_MAX_FILES_DEFAULT = 5_000
+MATERIALIZE_STAGING_MAX_AGE_SECONDS = 24 * 60 * 60
 STAGE_IGNORED_NAMES = {
     ".git", "node_modules", ".yok3x", "yok3x-out", "__pycache__", ".tmp",
 }
+
+logger = logging.getLogger(__name__)
 # R-6(verifier separation): 프로듀서가 **검증기 자체**를 고쳐 게이트를 통과하는 우회를 막는다.
 # 이 glob에 걸리는 후보 파일은 스테이징에 적용하지 않는다(fail-closed: 하나라도 있으면 라운드
 # 후보 전체를 거부 → 기존 원본 verify 폴백). R-2가 재시도를 통제해도 R-6 없이는 verifier를
@@ -172,6 +176,75 @@ def _atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> N
                 tmp_path.unlink()
             except FileNotFoundError:
                 pass
+
+
+def materialize_staging_scan_dirs(cfg: Config) -> list[Path]:
+    """Return bounded, known parents where materialize staging can exist.
+
+    A task-specific ``materialize.root`` or ``workdir`` cannot be known at
+    process startup.  Limit discovery to the repository, its configured
+    workspace, and already-known run-local default output parents.
+    """
+    repo_root = cfg.paths.root
+    candidates = [repo_root, repo_root / "yok3x-out"]
+    workspace = cfg.yok3x.get("workspace")
+    if isinstance(workspace, str) and workspace.strip():
+        workspace_root = Path(workspace).expanduser()
+        if not workspace_root.is_absolute():
+            workspace_root = repo_root / workspace_root
+        candidates.extend((workspace_root, workspace_root / "yok3x-out"))
+    try:
+        run_dirs = list(cfg.paths.runs.iterdir())
+    except OSError:
+        run_dirs = []
+    candidates.extend(
+        path / "yok3x-out"
+        for path in run_dirs
+        if not path.is_symlink() and path.is_dir()
+    )
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def cleanup_orphan_materialize_staging(
+        scan_dirs: list[Path], *,
+        stale_after_seconds: float = MATERIALIZE_STAGING_MAX_AGE_SECONDS,
+        now: float | None = None) -> list[Path]:
+    """Best-effort removal of stale ``.materialize-staging-*`` directories.
+
+    The 24-hour safety floor prevents callers from turning startup cleanup into
+    an aggressive collector that could race another active process.
+    """
+    safe_age = max(stale_after_seconds, MATERIALIZE_STAGING_MAX_AGE_SECONDS)
+    cutoff = (time.time() if now is None else now) - safe_age
+    removed: list[Path] = []
+    for parent in scan_dirs:
+        try:
+            candidates = list(parent.glob(".materialize-staging-*"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if path.is_symlink() or not path.is_dir() or path.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            try:
+                path.stat()
+            except FileNotFoundError:
+                removed.append(path)
+                logger.info("오래된 materialize 스테이징 디렉터리 정리: %s", path)
+            except OSError:
+                pass
+    return removed
 
 
 @dataclass

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -233,6 +234,67 @@ def test_materialize_staging_failure_leaves_root_untouched(cfg, monkeypatch):
 
     assert result["ok"] is False
     assert not root.exists()
+
+
+def test_cleanup_orphan_materialize_staging_removes_only_old_directories(tmp_path, caplog):
+    parent = tmp_path / "output-parent"
+    parent.mkdir()
+    old = parent / ".materialize-staging-old"
+    recent = parent / ".materialize-staging-recent"
+    unrelated = parent / ".other-staging-old"
+    matching_file = parent / ".materialize-staging-file"
+    for path in (old, recent, unrelated):
+        path.mkdir()
+    matching_file.write_text("keep", encoding="utf-8")
+    now = 2_000_000_000.0
+    old_mtime = now - orchestrator.MATERIALIZE_STAGING_MAX_AGE_SECONDS
+    os.utime(old, (old_mtime, old_mtime))
+    os.utime(unrelated, (old_mtime, old_mtime))
+    os.utime(matching_file, (old_mtime, old_mtime))
+    recent_mtime = old_mtime + 1
+    os.utime(recent, (recent_mtime, recent_mtime))
+
+    with caplog.at_level("INFO", logger=orchestrator.__name__):
+        removed = orchestrator.cleanup_orphan_materialize_staging([parent], now=now)
+
+    assert removed == [old]
+    assert not old.exists()
+    assert recent.is_dir()
+    assert unrelated.is_dir()
+    assert matching_file.is_file()
+    assert any(str(old) in record.getMessage() for record in caplog.records)
+
+
+def test_cleanup_orphan_materialize_staging_enforces_24_hour_floor(tmp_path):
+    parent = tmp_path / "output-parent"
+    parent.mkdir()
+    recent = parent / ".materialize-staging-still-active"
+    recent.mkdir()
+    now = 2_000_000_000.0
+    mtime = now - orchestrator.MATERIALIZE_STAGING_MAX_AGE_SECONDS + 1
+    os.utime(recent, (mtime, mtime))
+
+    removed = orchestrator.cleanup_orphan_materialize_staging(
+        [parent], stale_after_seconds=1, now=now)
+
+    assert removed == []
+    assert recent.is_dir()
+
+
+def test_materialize_staging_scan_dirs_are_bounded_to_known_default_parents(cfg):
+    run_dir = cfg.paths.runs / "known-run"
+    run_dir.mkdir(parents=True)
+    cfg.yok3x["workspace"] = "workspace"
+
+    scan_dirs = orchestrator.materialize_staging_scan_dirs(cfg)
+
+    assert scan_dirs == [
+        cfg.paths.root,
+        cfg.paths.root / "yok3x-out",
+        cfg.paths.root / "workspace",
+        cfg.paths.root / "workspace" / "yok3x-out",
+        run_dir / "yok3x-out",
+    ]
 
 
 def test_materialize_commit_failure_preserves_manifest_and_partial_state(cfg, monkeypatch):

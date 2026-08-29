@@ -22,7 +22,12 @@ from pathlib import Path
 
 from . import __version__, knot, matview, usage
 from .config import Config, scaffold
-from .orchestrator import run_loop, run_task_file
+from .orchestrator import (
+    cleanup_orphan_materialize_staging,
+    materialize_staging_scan_dirs,
+    run_loop,
+    run_task_file,
+)
 
 SAMPLE_TASKS = {
     # 구현 → 코드 리뷰 → 재작업 루프 (한 모델이 만들고 다른 모델이 리뷰)
@@ -163,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = Config.load(".")
+    cleanup_orphan_materialize_staging(materialize_staging_scan_dirs(cfg))
 
     if a.cmd == "sync":
         from . import sync_layer

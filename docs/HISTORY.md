@@ -1,5 +1,7 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-08-29 — CLI 시작 시 알려진 materialize 게시 부모에서 24시간 이상 된 고아 `.materialize-staging-*` 디렉터리만 정리하도록 추가했다.
+
 - v4.x · 2026-08-28 — candidate backend별 실제 daily pace를 S4 관측 snapshot에 연결하고 역할별 현재값/보수적 후보를 기록하되 full 실행값은 바꾸지 않도록 고정했다.
 
 - v4.x · 2026-08-25 — 직접 materialize를 stage-then-publish로 전환하고 커밋 매니페스트·고아 게시 경고를 추가했다.
