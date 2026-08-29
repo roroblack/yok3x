@@ -4,4 +4,4 @@ setuptools(pyproject dynamic)가 패키지를 임포트하지 않고 이 파일�
 버전을 읽는다 — 런처 yok3x.py와 패키지 yok3x/의 이름 충돌을 피하기 위함.
 런타임에는 __init__ 이 이 값을 재노출한다.
 """
-__version__ = "4.5.0"
+__version__ = "4.10.0"
