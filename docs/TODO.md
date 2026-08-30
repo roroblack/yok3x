@@ -462,6 +462,29 @@ producer/reviewer 같은 worker 역할 자체를 quota로 자동 선택하는 �
 **검토 후보**: 계획서로 승격할 때 가장 먼저 사용자에게 위 항목들(무엇을·어떻게·누구와)을
 구체적으로 확인해야 함 — 지금은 "만들고 싶다"는 의사만 등록.
 
+### V-7. FreeToken류 로컬 MoE 서빙 엔진을 offline degrade 백엔드로 연결 (2026-08-30 등록, 사용자 제안)
+
+**출처**: 사용자가 공유한 논문 — [FreeToken: Efficient Edge-Native MoE Serving with
+Bandwidth-Adaptive Execution](https://arxiv.org/abs/2608.16157)(2026-08-17, Song Han·Matei
+Zaharia·Ion Stoica 등 공저). GPU VRAM만이 아니라 GPU+CPU+RAM+PCIe 대역폭 전체를 동적
+자원 풀로 취급해, 소비자급 하드웨어(8GB 노트북 GPU 등)에서도 수백B급 MoE를 실사용 가능한
+속도로 서빙한다고 보고. 논문 자체는 미검증(프리프린트, 벤치마크 수치는 사용자 전달 그대로).
+
+**우리와의 접점**: yok3x는 추론 엔진이 아니라 claude/codex/gemini CLI를 shell-out하는
+오케스트레이터라서(의존성0 원칙), FreeToken의 실제 기법(expert caching·PCIe-aware
+placement·prefill/decode 분리)을 코드에 이식하는 건 애초에 범위 밖이다. 대신 이미 있는
+연결점 하나: `backends.json`의 `local` 백엔드(범용 OpenAI-호환 HTTP, `base_url:
+http://localhost:8000/v1`)와 `cfg.yok3x["guard"]["degrade"]["offline_backend"]="local"`
+(클라우드 쿼터 전멸 시 로컬로 강등하는 기존 opt-in 폴백 경로, `tests/test_yok3x.py`에
+단위 테스트 있음 — a1처럼 완전히 미사용은 아님). FreeToken이 OpenAI-호환 서버 모드를
+제공한다면, `backends.json`의 `local.base_url`/`model`만 그쪽으로 바꾸면 **코드 변경
+전혀 없이** 이 폴백이 약한 로컬 모델 대신 실사용 가능한 대형 MoE로 바뀐다.
+
+**검토 후보**: V-4(herdr)와 같은 결론 — **코드 통합 대상이 아니라 개인 인프라 도구로
+설치해 `local` 백엔드 설정만 바꿔 끼우는 방식**을 권고. 실제 로컬 서버를 띄워 강등
+경로를 진짜로 타보는 실사용 검증은 아직 없음 — 필요해지면(클라우드 쿼터를 자주 전멸시킨다면)
+그때 시도해볼 후보.
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->
