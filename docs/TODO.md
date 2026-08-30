@@ -478,7 +478,10 @@ producer/reviewer 같은 worker 역할 자체를 quota로 자동 선택하는 �
 
 **계획서 승격됨(2026-08-30)**: [`docs/plans/v4.x-plan-teamflow-work-sharing-2026-08-30.md`](plans/v4.x-plan-teamflow-work-sharing-2026-08-30.md)
 — TeamFlow(jira-for-me) 기존 MCP 서버 연동, yok3x 코드 변경 없이 설정+프롬프트 지시로 구현.
-실행(스모크 테스트) 여부는 별도 사용자 승인 필요.
+**실행 보류(2026-08-30, 사용자 결정)** — 계획서까지만 완료해두고 실행(스모크 테스트:
+`yok3x-bot` TeamFlow 계정 생성 → 실 작업 1건 시험)은 나중에 사용자가 다시 꺼낼 때 진행.
+계획서의 "결정 필요" 2개(스모크 테스트 착수 여부·reviewer rubric에 규칙위반 점검 추가
+여부) 둘 다 미결정 상태로 대기.
 
 **출처**: 사용자 제안 — "이거 설치한 사람들끼리 서로 작업 공유하는 기능 만들고 싶어."
 
