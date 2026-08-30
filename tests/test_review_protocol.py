@@ -7,6 +7,7 @@ from yok3x.review_protocol import (
     PROTOCOL_VERSION,
     SEVERITIES,
     canonical_defect_signature,
+    compute_deterministic_score,
     extract_json_candidate,
     parse_review_response,
     log_observation,
@@ -48,6 +49,54 @@ def test_different_defect_content_changes_signature():
     base = [{"severity": "high", "description": "same"}]
     assert canonical_defect_signature(base) != canonical_defect_signature([{**base[0], "severity": "low"}])
     assert canonical_defect_signature(base) != canonical_defect_signature([{**base[0], "description": "other"}])
+
+
+def _defect(severity):
+    return {"severity": severity, "description": "d"}
+
+
+def test_deterministic_score_no_defects_is_ten():
+    assert compute_deterministic_score([]) == 10.0
+
+
+def test_deterministic_score_is_pure_and_reproducible():
+    defects = [_defect("high"), _defect("low")]
+    assert compute_deterministic_score(defects) == compute_deterministic_score(list(defects))
+
+
+def test_deterministic_score_applies_weights_and_rounds_to_half_point():
+    # base 10 - high(2.0) - low(0.1) = 7.9, capped at 7.0 by the "high" severity cap
+    assert compute_deterministic_score([_defect("high"), _defect("low")]) == 7.0
+
+
+def test_deterministic_score_never_negative():
+    defects = [_defect("critical")] * 10
+    assert compute_deterministic_score(defects) >= 0.0
+
+
+def test_deterministic_score_severity_cap_dominates_low_defect_count():
+    # a single critical caps the score at 4.0 even though the raw penalty (5.0) alone would allow 5.0
+    assert compute_deterministic_score([_defect("critical")]) == 4.0
+    assert compute_deterministic_score([_defect("high")]) == 7.0
+    assert compute_deterministic_score([_defect("medium")]) == 9.0
+
+
+def test_deterministic_score_highest_severity_present_sets_the_cap():
+    # raw penalty (5.0 + 0.1 = 5.1 -> score 4.9) would allow 4.9, but the critical
+    # severity cap (4.0) still binds even with an extra low-severity defect mixed in
+    defects = [_defect("critical"), _defect("low")]
+    assert compute_deterministic_score(defects) == 4.0
+
+
+def test_deterministic_score_custom_weights_and_caps_override_defaults():
+    custom_weights = {"critical": 1.0, "high": 0.0, "medium": 0.0, "low": 0.0}
+    custom_caps = {"critical": 9.0, "high": 10.0, "medium": 10.0}
+    assert compute_deterministic_score(
+        [_defect("critical")], weights=custom_weights, caps=custom_caps) == 9.0
+
+
+def test_deterministic_score_ignores_unknown_severity_and_non_dict_items():
+    assert compute_deterministic_score([{"severity": "unknown", "description": "x"}, "not-a-dict"]) == 10.0
 
 
 def test_fenced_and_surrounded_json_are_found():

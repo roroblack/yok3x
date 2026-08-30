@@ -14,6 +14,12 @@ from typing import Any
 PROTOCOL_VERSION = "review-v1"
 SEVERITIES = frozenset({"critical", "high", "medium", "low"})
 
+# T-1 실측(v4.x-result-t1-pilot-spec-test-separation-2026-08-30): 리뷰어가 직접 내는 SCORE는
+# 완전히 동일한 결함 목록에도 큰 분산을 보일 수 있다. 이 기본값은 그 실측에서 쓴 값 그대로다 —
+# 임의의 숫자이므로 cfg.yok3x["review_protocol"]에서 재정의 가능해야 한다(orchestrator가 전달).
+DEFAULT_SEVERITY_WEIGHTS = {"critical": 5.0, "high": 2.0, "medium": 0.5, "low": 0.1}
+DEFAULT_SEVERITY_CAPS = {"critical": 4.0, "high": 7.0, "medium": 9.0}
+
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.IGNORECASE | re.DOTALL)
 _OBSERVATION_FILENAME = "review_protocol_observations.jsonl"
 _OBSERVATION_SOURCES = frozenset({"structured", "legacy_text"})
@@ -240,6 +246,27 @@ def parse_review_response(text: str) -> dict[str, Any]:
         "raw_text": text,
         "parse_error": None,
     }
+
+
+def compute_deterministic_score(
+    defects: list[dict], *, weights: dict[str, float] | None = None,
+    caps: dict[str, float] | None = None,
+) -> float:
+    """결함 목록만으로 SCORE를 결정론적으로 계산한다(리뷰어의 자유형 SCORE 대체용).
+
+    같은 결함 목록이면 항상 같은 점수를 낸다(순수 함수) — "결함 탐지" 자체의 분산은
+    줄이지 못하지만(입력이 다르면 결과도 다름), "같은 결함을 보고도 점수 환산이 오락가락"하는
+    분산은 없앤다(T-1 실측으로 확인 — v4.x-result-t1-pilot-spec-test-separation-2026-08-30).
+    """
+    weights = weights if weights is not None else DEFAULT_SEVERITY_WEIGHTS
+    caps = caps if caps is not None else DEFAULT_SEVERITY_CAPS
+    penalty = sum(float(weights.get(d.get("severity"), 0.0)) for d in defects if isinstance(d, dict))
+    score = max(0.0, 10.0 - penalty)
+    for severity in ("critical", "high", "medium"):
+        if any(isinstance(d, dict) and d.get("severity") == severity for d in defects):
+            score = min(score, float(caps.get(severity, 10.0)))
+            break
+    return round(score * 2) / 2.0
 
 
 def _normalize_description(description: Any) -> str:

@@ -1817,6 +1817,19 @@ class Orchestrator:
                 source=issues_sig_source, parse_error=parsed_review.get("parse_error"))
             issues_sig = (review_protocol.canonical_defect_signature(parsed_review["defects"])
                           if issues_sig_source == "structured" else self._defect_sig(rev.text))
+            # T-1 실측(2026-08-30): 리뷰어가 직접 내는 SCORE는 완전히 동일한 결함 목록에도
+            # 분산이 크다. opt-in이면 구조화 결함 목록에서 결정론적으로 재계산해 대체한다 —
+            # 꺼져 있거나 구조화 파싱이 실패하면(legacy_text) 기존 SCORE_RE 값을 그대로 쓴다
+            # (fail-safe-to-existing-behavior — 기본 off, 기존 동작 불변).
+            rp_cfg = self.cfg.yok3x.get("review_protocol") or {}
+            if (rp_cfg.get("deterministic_scoring")
+                    and issues_sig_source == "structured"
+                    and isinstance(parsed_review.get("defects"), list)):
+                score = review_protocol.compute_deterministic_score(
+                    parsed_review["defects"],
+                    weights=rp_cfg.get("severity_weights"),
+                    caps=rp_cfg.get("severity_caps"))
+                self.steps[-1].score = score
             self._log(f"[review] round {rnd} score={score} verify={'ok' if verify_ok else 'fail'}")
             self.gate = evaluate_score_gate(
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,

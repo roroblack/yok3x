@@ -150,6 +150,16 @@ DEFAULT_YOK3X = {
         "deep_call_budget": 2,
         "auto_disable_if_uncorrelated": True,  # calibration으로 효과 무상관 확인되면 자동 off(§3.4)
     },
+    # T-1 실측(v4.x-result-t1-pilot-spec-test-separation-2026-08-30): 리뷰어가 직접 내는
+    # SCORE는 완전히 동일한 결함 목록에도 분산이 크다(stdev 1.6 관측). 구조화 결함 목록
+    # (review_protocol.py, T-6)에서 SCORE를 결정론적 공식으로 계산해 대체할 수 있다 — 단,
+    # **결함 탐지 자체의 분산**은 못 줄이므로 만능은 아니다(같은 실측에서 확인). 기본 off —
+    # 켜는 순간부터 게이트 통과/반려가 실제로 바뀔 수 있는 변경이라 opt-in.
+    "review_protocol": {
+        "deterministic_scoring": False,
+        "severity_weights": {"critical": 5.0, "high": 2.0, "medium": 0.5, "low": 0.1},
+        "severity_caps": {"critical": 4.0, "high": 7.0, "medium": 9.0},
+    },
     # 진짜 구독 한도 조회 어댑터 — 서버 보고 사용률을 읽어 '한도 무조건 준수'.
     # codex : app-server JSON-RPC 로 '지금 이 순간' 5h/7d used_percent 라이브 조회(진짜 실측).
     #         실패 시 세션 파일(stale) → 원장 순으로 폴백.

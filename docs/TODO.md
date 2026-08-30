@@ -73,6 +73,13 @@ round-1, #8)는 결정론적 재계산으로도 분산이 줄지 않음(입력�
 존재·게이트 임계값 근처인 고위험 사례에만 조건부 2·3차 블라인드 재리뷰(점수 평균 아닌
 결함 단위 재현 확인) 추가.
 
+**계획서 승격 및 옵션 ① 구현 완료(2026-08-30)** —
+[`docs/plans/v4.x-plan-deterministic-review-scoring-2026-08-30.md`](plans/v4.x-plan-deterministic-review-scoring-2026-08-30.md):
+`review_protocol.compute_deterministic_score()` + `cfg.yok3x["review_protocol"]`(기본
+off, opt-in) + orchestrator 라운드 루프 배선으로 구현. 기본 off라 켜기 전까진 기존 동작
+100% 불변(회귀 테스트로 확인), 단위 테스트 9개·통합 테스트 3개 전부 통과. 옵션 ②(조건부
+블라인드 재리뷰)는 round-loop 재시도 로직과 얽혀 더 큰 변경이라 계속 보류.
+
 ### 배경
 - **N0′**(2026-07-20): 심판(codex-critic)은 명백한 결함을 원본보다 낮게 평가한다(win 17/20, p=0.0001).
   **그러나** 제품 게이트 임계 **8.0**에서는 정상 코드조차 전량 반려됐다(정상 최고 SCORE 7.0).

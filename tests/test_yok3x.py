@@ -1592,6 +1592,95 @@ def test_calibration_logs_every_round_with_gate_context(mock_root, monkeypatch):
     assert sum(r["tokens"] or 0 for r in records) == (records[-1]["tokens"] or 0)
 
 
+def _structured_review_text(score, defects):
+    payload = {
+        "protocol_version": "review-v1",
+        "score": score,
+        "defects": defects,
+        "summary": "",
+    }
+    return f"SCORE: {score}\nround defect\n```json\n{json.dumps(payload)}\n```"
+
+
+def test_deterministic_scoring_off_by_default_leaves_score_unchanged(mock_root, monkeypatch):
+    """기본값(off)에서는 구조화 JSON이 와도 리뷰어의 자유형 SCORE를 그대로 쓴다(회귀 방지)."""
+    cfg = Config.load(mock_root)
+    assert cfg.yok3x["review_protocol"]["deterministic_scoring"] is False
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "critic":
+            score = 9.0
+            text = _structured_review_text(9.0, [{"severity": "critical", "description": "x"}])
+        else:
+            score, text = None, "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert o.gate["score"] == 9.0  # critical 결함이 있어도 결정론적 재계산이 안 켜졌으면 불변
+
+
+def test_deterministic_scoring_overrides_score_from_structured_defects(mock_root, monkeypatch):
+    """켜져 있고 구조화 파싱이 성공하면, 리뷰어의 자유형 SCORE 대신 결함 목록 기반 계산값을 쓴다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["review_protocol"]["deterministic_scoring"] = True
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "critic":
+            # 리뷰어는 9.0이라고 자유형으로 주장하지만, critical 결함 하나 = 결정론적 계산으로는 4.0.
+            score = 9.0
+            text = _structured_review_text(9.0, [{"severity": "critical", "description": "x"}])
+        else:
+            score, text = None, "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert o.gate["score"] == 4.0
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["score"] == 4.0
+
+
+def test_deterministic_scoring_on_but_parse_fails_keeps_free_text_score(mock_root, monkeypatch):
+    """켜져 있어도 구조화 파싱이 실패하면(legacy_text) 기존 SCORE_RE 값을 그대로 쓴다."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x["review_protocol"]["deterministic_scoring"] = True
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "critic":
+            score = 7.0
+            text = "SCORE: 7\n자유 텍스트 결함 목록만 있고 JSON은 없음"
+        else:
+            score, text = None, "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert o.gate["score"] == 7.0
+
+
 @pytest.mark.parametrize("adversarial", [False, True])
 def test_reviewer_is_blind_to_verify_result(mock_root, monkeypatch, adversarial):
     cfg = Config.load(mock_root)
