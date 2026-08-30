@@ -7,7 +7,31 @@
 
 ---
 
-## T-1. 심판 캘리브레이션 검증 (데이터 대기 중)
+## T-1. 심판 캘리브레이션 검증 — **mutation-testing 파일럿으로 사실상 해결(2026-08-30)**
+
+**최종 결론** — [`docs/reports/v4.x-result-t1-mutation-testing-pilot-2026-08-30.md`](reports/v4.x-result-t1-mutation-testing-pilot-2026-08-30.md):
+원래 착수 조건(`verify_ok=False`≥3)이 구조적으로 안 나오는 문제(위 진단 참고)를, producer의
+자연스러운 실패를 기다리는 대신 **정상 코드에 확정된 결함(mutation)을 인위적으로 주입**해
+해결했다(2026-08-30 기준 웹 리서치: SWE-ABS/SWE-Mutation 등 2026년 논문이 쓰는 표준 기법 +
+codex와의 설계 토론으로 K/S 혼합·witness·사전등록 방법론 확정). 대상 2개(#12·#11)에 각각
+K(단순)+S(semantic) mutant 1개씩 총 4개를 witness로 검증 후 주입, 기존 pytest로
+verify_ok 확인, 원본 2개+mutant 4개를 전부 새 세션·블라인드·순서혼합으로 재심사.
+
+**결과 — 사전등록 기준 6개 전부 충족**, 특히 "심판이 주입 결함을 구체적으로 지적" 기준은
+최소 3/4을 넘어 **4/4 만점**(injected bug를 문장 단위로 정확히 서술). 가장 결정적인
+증거: #12의 S mutant는 기존 테스트가 완전히 놓친(verify_ok=True) 진짜 spec 위반 결함이었는데,
+codex가 이를 **critical**로 정확히 짚어냈다 — "심판이 테스트가 못 보는 곳까지 실제로 본다"는
+통제된 직접 증거. 표본은 작지만(대상 2개·mutant 4개) 사전등록·witness·블라인드를 전부
+지킨 실험에서 4/4는 우연으로 보기 어렵다.
+
+**권고**: 이 방법론(mutation+witness+사전등록+블라인드)을 T-1의 정식 캘리브레이션 절차로
+채택. verify_ok=False를 기다리는 것보다 훨씬 저비용(전체 codex 호출 8회 미만)·통제 가능.
+V-1·V-5§4.2를 막고 있던 "T-1 미해결" 전제조건은 이 결과로 재검토 가능한 상태가 됐다 —
+다만 표본 확대(사용자 승인 시) 여부는 별도 결정 필요.
+
+---
+
+## T-1(구). 심판 캘리브레이션 검증 (데이터 대기 중 — 아래는 원래 착수 조건 기반 접근, 위 파일럿으로 대체됨)
 
 **진단 완료(2026-08-30, 비용 0 — 기존 산출물 재분석)** —
 [`docs/reports/v4.x-result-t2-round2-verify-ok-false-diagnosis-2026-08-30.md`](reports/v4.x-result-t2-round2-verify-ok-false-diagnosis-2026-08-30.md):
