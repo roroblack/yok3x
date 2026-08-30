@@ -1,5 +1,12 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-08-30 — V-1 파일럿(재사용 가능한 "런북", StateM 이식): 검증 통과 라운드의
+  접근을 고정 태그 어휘로 요약해 비슷한 신규 작업의 1라운드 프롬프트에 참고 힌트로 주입하는
+  기능을 opt-in(`automation.use_runbooks`, 기본 False)으로 추가했다. T-1 mutation-testing
+  파일럿으로 착수 조건이 재검토됐지만 표본이 작아(4/4 성공, 95% 신뢰 하한 약 50%) 전면
+  구현이 아닌 제한적 파일럿으로 범위를 좁혔다(codex 설계 토론). 상세:
+  `docs/plans/v4.x-plan-reusable-runbooks-2026-08-24.md`.
+
 - v4.x · 2026-08-30 — BUG-54: `yok3x run/loop`이 task.json의 workdir와 CLI 실행 위치(CWD)가
   다르면 stderr에 경고를 출력하도록 추가했다(동작은 안 바꿈 — Config.load(".")가 CWD의
   yok3x.json을 조용히 적용해 backend가 뒤바뀌거나 비용 상한이 무효화되는 문제, T-2 #8에서

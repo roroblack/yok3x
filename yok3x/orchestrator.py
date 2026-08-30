@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import acquire, artifacts, automation, calibration, knot, mcp_policy, reserve, review_protocol, sync_layer, triage, usage, worktree
+from . import acquire, artifacts, automation, calibration, knot, mcp_policy, reserve, review_protocol, runbooks, sync_layer, triage, usage, worktree
 from .backends import BackendResult, run_backend, terminate_process
 from .config import Config
 from ._version import __version__
@@ -1051,6 +1051,13 @@ class Orchestrator:
                          "하지 말고 코드는 텍스트로만 답한다. 코드 앞에 접근을 2~3줄로 요약(계획)하고, "
                          "끝에 'SELF-CHECK:'로 엣지케이스·오류처리·요구충족을 점검하라. 존재하지 않는 "
                          "API·파일을 지어내지 말고, 명확화를 되묻지 말고 합리적 가정으로 곧장 구현하라.")
+            # V-1 파일럿(runbooks, opt-in): 켜져 있을 때만 요청 — 꺼져 있으면 프롬프트 토큰 0 증가.
+            if (task_kind in ("build", "revise")
+                    and (cfg.yok3x.get("automation") or {}).get("use_runbooks")):
+                parts.append(
+                    "SELF-CHECK 다음 줄에 'APPROACH_TAGS: <목록>'으로 이번에 실제로 쓴 접근을 "
+                    "다음 중에서만 골라 1~2개 쉼표로 적어라(그 외 단어 금지): "
+                    + ", ".join(sorted(runbooks.APPROACH_TAGS)))
             # few-shot 예시(E): build/revise(Resolver/생산자)에만. general(ACQUIRE Questioner/Answerer)
             # 은 제외해 조기가설을 막는다. 사용자 입력이라 '[예시]' 데이터 블록으로만 넣는다(지시로 해석 금지).
             if self.examples and task_kind in ("build", "revise"):
@@ -1768,9 +1775,21 @@ class Orchestrator:
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
         prev_sig = None
+        # V-1 파일럿(runbooks, opt-in, 기본 off): 꺼져 있으면 계산 자체를 안 한다(zero overhead).
+        automation_cfg = self.cfg.yok3x.get("automation") or {}
+        runbook_bucket = ""
+        runbook_hint_text = ""
+        if automation_cfg.get("use_runbooks"):
+            runbook_bucket = automation.recommend_effort_rounds({"task": task}, self.cfg).get("bucket", "")
+            min_samples = automation_cfg.get("runbooks_min_samples", 5)
+            hint = runbooks.query_hint(
+                self.cfg, bucket=runbook_bucket, pattern=self.pattern, min_samples=min_samples)
+            runbook_hint_text = runbooks.build_hint_text(hint)
         for rnd in range(1, max_rounds + 1):
             t = task if rnd == 1 else f"{task}\n\n검수 지적을 반영해 수정하라."
             blocks = []
+            if rnd == 1 and runbook_hint_text:
+                blocks.append(runbook_hint_text)
             if rnd == 1 and initial_context:
                 blocks.append(initial_context)
             if rnd == 1 and repo:
@@ -1835,6 +1854,14 @@ class Orchestrator:
                 self.score_gate_mode, has_verify_cmd=has_verify_cmd,
                 verify_ok=verify_ok, score=score, threshold=pass_score)
             passed = self.gate["passed"]
+            # V-1 파일럿(runbooks): 검증 통과 라운드만, 태그가 있을 때만 기록(실패·반려 접근은
+            # 애초에 저장 안 함 — 재사용 후보에서 배제).
+            if automation_cfg.get("use_runbooks") and passed:
+                runbooks.log_runbook_entry(
+                    self.cfg, run_id=self.run_id, bucket=runbook_bucket, pattern=self.pattern,
+                    approach_tags=runbooks.extract_approach_tags(artifact),
+                    verify_ok=bool(verify_ok) if has_verify_cmd else True,
+                    gate_passed=True, score=score, rounds=rnd)
             # T-3/R-7(2단계): auto_commit 모드에서만, **검증이 실제로 통과한 라운드**를 격리 브랜치에
             # 체크포인트로 커밋한다(래칫). 사용자 작업 트리·기존 브랜치는 건드리지 않는다.
             if has_verify_cmd and verify_ok:

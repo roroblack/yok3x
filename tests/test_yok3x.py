@@ -1654,6 +1654,115 @@ def _structured_review_text(score, defects):
     return f"SCORE: {score}\nround defect\n```json\n{json.dumps(payload)}\n```"
 
 
+def test_runbooks_off_by_default_no_file_no_hint_no_prompt_change(mock_root, monkeypatch):
+    """기본값(off)에서는 파일도 안 생기고, APPROACH_TAGS 지시도 프롬프트에 안 들어간다(회귀 방지)."""
+    cfg = Config.load(mock_root)
+    assert cfg.yok3x["automation"]["use_runbooks"] is False
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    build_prompts = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "build":
+            build_prompts.append(extra_context)
+        score, text = (9.0, "SCORE: 9\nok") if task_kind == "critic" else (None, "artifact")
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert not (cfg.paths.runs.parent / "runbooks.jsonl").exists()
+    assert all("APPROACH_TAGS" not in (p or "") for p in build_prompts)
+
+
+def test_runbooks_on_logs_only_passed_rounds_with_valid_tags(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation"]["use_runbooks"] = True
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "build":
+            text = "plan\n```code```\nSELF-CHECK: ok\nAPPROACH_TAGS: tdd-first, made-up-tag"
+            score = None
+        else:
+            score, text = 9.0, "SCORE: 9\nok"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    path = cfg.paths.runs.parent / "runbooks.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["approach_tags"] == ["tdd-first"]  # 어휘 밖 태그는 저장 전에 걸러짐
+
+
+def test_runbooks_on_does_not_log_when_gate_not_passed(mock_root, monkeypatch):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation"]["use_runbooks"] = True
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "build":
+            text = "plan\n```code```\nSELF-CHECK: ok\nAPPROACH_TAGS: tdd-first"
+            score = None
+        else:
+            score, text = 3.0, "SCORE: 3\nrejected"  # below pass_score -> gate fails
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("task", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert not (cfg.paths.runs.parent / "runbooks.jsonl").exists()
+
+
+def test_runbooks_hint_injected_into_round_one_prompt_once_threshold_met(mock_root, monkeypatch):
+    from yok3x import runbooks as runbooks_mod
+
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation"]["use_runbooks"] = True
+    cfg.yok3x["automation"]["runbooks_min_samples"] = 2
+    for _ in range(2):
+        runbooks_mod.log_runbook_entry(
+            cfg, run_id="prior", bucket="tiny", pattern="producer-reviewer",
+            approach_tags=["simple-direct"], verify_ok=True, gate_passed=True,
+            score=9.0, rounds=1)
+
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    build_prompts = []
+
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "build":
+            build_prompts.append(extra_context)
+        score, text = (9.0, "SCORE: 9\nok") if task_kind == "critic" else (None, "artifact")
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=score))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+
+    monkeypatch.setattr(o, "call_worker", fake_call)
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert any("simple-direct" in (p or "") and "참고" in (p or "") for p in build_prompts)
+
+
 def test_deterministic_scoring_off_by_default_leaves_score_unchanged(mock_root, monkeypatch):
     """기본값(off)에서는 구조화 JSON이 와도 리뷰어의 자유형 SCORE를 그대로 쓴다(회귀 방지)."""
     cfg = Config.load(mock_root)

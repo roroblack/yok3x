@@ -31,6 +31,11 @@ DEFAULT_YOK3X = {
         "allow_effort_adjustment": False,
         "calibration_window": 20,
         "low_confidence_action": "assist",
+        # V-1 파일럿(2026-08-30, T-1 mutation-testing으로 재검토 가능해짐 — 여전히 opt-in,
+        # 제한적 롤아웃 권고): 검증 통과 라운드의 접근을 고정 태그로 요약해 재사용.
+        # docs/plans/v4.x-plan-reusable-runbooks-2026-08-24.md 참고.
+        "use_runbooks": False,
+        "runbooks_min_samples": 5,
     },
     "default_effort": "",           # 추론 강도 전역 기본(low/medium/high). 워커별 effort가 우선. ""=미지정
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제
