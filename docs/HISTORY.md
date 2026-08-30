@@ -1,5 +1,13 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-08-30 — V-9 파일럿(실측 라운드 캘리브레이션 힌트): `calibration.py`가 이미
+  기대하고 있었지만 한 번도 채워진 적 없던 `bucket` 필드를 매 런마다 자동으로 채우고
+  (비용 0), bucket+pattern별 실측 rounds 중앙값·성공률을 `rounds_by_bucket`/`rounds_hint_for`로
+  집계해 로그로만 노출하는 옵션(`automation.show_rounds_calibration_hint`, 기본 off)을
+  추가했다. `max_rounds`는 자동으로 안 바꿈(관측만). 원래 제안(에이전트 종류·수 자동 결정)은
+  실 데이터에 `producer-reviewer` 외 패턴이 전혀 없어 아직 불가능함을 확인. 상세:
+  `docs/plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md`.
+
 - v4.x · 2026-08-30 — V-1 파일럿(재사용 가능한 "런북", StateM 이식): 검증 통과 라운드의
   접근을 고정 태그 어휘로 요약해 비슷한 신규 작업의 1라운드 프롬프트에 참고 힌트로 주입하는
   기능을 opt-in(`automation.use_runbooks`, 기본 False)으로 추가했다. T-1 mutation-testing

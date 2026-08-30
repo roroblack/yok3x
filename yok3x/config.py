@@ -36,6 +36,12 @@ DEFAULT_YOK3X = {
         # docs/plans/v4.x-plan-reusable-runbooks-2026-08-24.md 참고.
         "use_runbooks": False,
         "runbooks_min_samples": 5,
+        # V-8 파일럿(2026-08-30, 사용자 제안 — "실제 결과 기반 근거있는 자동 결정"):
+        # calibration.jsonl의 실측 rounds를 bucket별로 집계해 로그로만 보여준다(관측만,
+        # max_rounds 자동 적용 안 함 — V-5§4.1과 같은 원칙, 가치 검증 전 실행 반영 금지).
+        # docs/plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md 참고.
+        "show_rounds_calibration_hint": False,
+        "rounds_calibration_min_samples": 5,
     },
     "default_effort": "",           # 추론 강도 전역 기본(low/medium/high). 워커별 effort가 우선. ""=미지정
     "adversarial_review": False,    # ARIS AD1: 켜면 리뷰어가 '반증/파괴' 우선 + 교차 패밀리 강제

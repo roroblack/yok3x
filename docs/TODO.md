@@ -526,6 +526,27 @@ sync_layer는 정적 텍스트(설명·퀴즈 질문)만 만들고, "직접 조�
 다른 비전 항목과 동일 — 여기 있다는 것 자체가 "하기로 결정"을 뜻하지 않음. 계획서로
 승격할 때 sync_layer 기존 구조와의 정합성부터 확인.
 
+### V-9. 실측 결과 기반 에이전트 종류·수·라운드 자동 결정 (2026-08-30 등록, 사용자 제안) — **축소판 구현 완료**
+
+**출처**: 사용자 제안 — triage/automation의 pattern·rounds 추천이 텍스트 길이 같은 정적
+특징뿐이라, "실제 작업 진행 결과를 바탕으로" 결정하는 게 "근거있는" 방식 아니냐는 지적.
+
+**계획서**: [`docs/plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md`](plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md)
+
+**조사 결과 — 원래 제안(에이전트 종류·수)은 아직 불가능**: 실 calibration 기록 24건(메인
+저장소 2+T-2 22)이 **전부 producer-reviewer 패턴**이라 solo 등 다른 패턴과 비교할 대조군이
+없다. V-1이 부딪혔던 것과 같은 선행조건 미충족(이번엔 표본 수가 아니라 변수 다양성 0).
+
+**축소판(라운드 수)은 구현 완료**: `calibration.py`가 이미 `bucket` 필드를 기대하도록
+설계돼 있었는데 orchestrator가 한 번도 채운 적이 없었다는 걸 발견 — 이제 매 런마다
+자동으로 채우고(비용 0, 상시), `rounds_by_bucket`/`rounds_hint_for`로 bucket+pattern별
+실측 라운드 중앙값·성공률을 집계한다. **로그로만 노출**(`automation.show_rounds_calibration_hint`,
+기본 off) — `max_rounds`를 자동으로 바꾸진 않는다(V-5§4.1과 같은 원칙, 표본 편향 강화
+위험 때문). 테스트 10개 추가, 전체 스위트 688 passed.
+
+**재검토 조건(원래 제안)**: solo 등 다른 패턴의 실 실행 기록이 쌓이면, 같은 방식으로
+pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 다음 단계.
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->

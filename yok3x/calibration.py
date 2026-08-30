@@ -19,7 +19,7 @@ from statistics import mean, median
 # 라운드별 캘리브레이션 레코드 스키마. 후보를 검증한 verify_ok만 지상진실로 쓴다.
 FIELDS = ("run_id", "ts", "pattern", "backend", "effort", "rounds",
           "score", "verify_ok", "verify_scope", "tokens", "cost_usd", "duration_ms", "issues",
-          "reviewer", "threshold", "gate_pass", "gate_mode", "round")
+          "reviewer", "threshold", "gate_pass", "gate_mode", "round", "bucket")
 
 
 _MIN_CALIBRATION_SAMPLE = 3
@@ -148,6 +148,58 @@ def load_calibration_statistics(path: str | Path, window: int = 20) -> dict:
     loaded = read_calibration_jsonl(path, window=window)
     aggregated = aggregate_calibration_statistics(loaded["records"], loaded["reasons"])
     return {**loaded, **aggregated}
+
+
+def rounds_by_bucket(records: list[dict], *, min_samples: int = _MIN_CALIBRATION_SAMPLE) -> dict:
+    """Aggregate rounds-to-pass by (bucket, pattern) from real calibration history.
+
+    Evidence-based counterpart to the static text-heuristic bucket→rounds lookup in
+    ``automation.recommend_effort_rounds`` — this reads what actually happened instead of
+    guessing from task length. Advisory only: callers decide whether to surface or act on
+    it (see docs/plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md). A group with fewer
+    than ``min_samples`` observations is marked unavailable rather than guessed at (same
+    fail-closed convention as ``calibrated_benchmark_scores``).
+    """
+    threshold = min_samples if isinstance(min_samples, int) and not isinstance(min_samples, bool) else _MIN_CALIBRATION_SAMPLE
+    threshold = max(0, threshold)
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        bucket, pattern = record.get("bucket"), record.get("pattern")
+        if not isinstance(bucket, str) or not bucket or not isinstance(pattern, str) or not pattern:
+            continue
+        if record.get("verify_ok") is not None and not isinstance(record.get("verify_ok"), bool):
+            continue
+        groups.setdefault((bucket, pattern), []).append(record)
+
+    output = []
+    for (bucket, pattern), rows in sorted(groups.items()):
+        rounds = [float(r["rounds"]) for r in rows if _valid_number(r.get("rounds"))]
+        verified = [r["verify_ok"] for r in rows if isinstance(r.get("verify_ok"), bool)]
+        n = len(rows)
+        entry = {"bucket": bucket, "pattern": pattern, "sample_count": n,
+                 "available": n >= threshold and bool(rounds)}
+        if entry["available"]:
+            entry["median_rounds"] = median(rounds)
+            entry["mean_rounds"] = mean(rounds)
+            entry["success_rate"] = (sum(verified) / len(verified)) if verified else None
+        else:
+            entry["reason"] = (f"samples below min_samples={threshold}" if n < threshold
+                                else "no rounds data in samples")
+        output.append(entry)
+    return {"groups": output}
+
+
+def rounds_hint_for(records: list[dict], *, bucket: str, pattern: str,
+                    min_samples: int = _MIN_CALIBRATION_SAMPLE) -> dict:
+    """Convenience wrapper: the single (bucket, pattern) entry from ``rounds_by_bucket``."""
+    for entry in rounds_by_bucket(records, min_samples=min_samples)["groups"]:
+        if entry["bucket"] == bucket and entry["pattern"] == pattern:
+            return entry
+    threshold = min_samples if isinstance(min_samples, int) and not isinstance(min_samples, bool) else _MIN_CALIBRATION_SAMPLE
+    return {"bucket": bucket, "pattern": pattern, "sample_count": 0, "available": False,
+            "reason": f"samples below min_samples={max(0, threshold)}"}
 
 
 # Alternate descriptive names for callers integrating the S3 seam.

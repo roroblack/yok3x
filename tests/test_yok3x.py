@@ -1763,6 +1763,88 @@ def test_runbooks_hint_injected_into_round_one_prompt_once_threshold_met(mock_ro
     assert any("simple-direct" in (p or "") and "참고" in (p or "") for p in build_prompts)
 
 
+def _fake_build_and_critic_call(o, score=9.0, critic_text=None):
+    def fake_call(worker, task, task_kind="general", extra_context="", **kwargs):
+        o._step_i += 1
+        if task_kind == "critic":
+            text = critic_text or f"SCORE: {score}\nok"
+            s = score
+        else:
+            s, text = None, "artifact"
+        o.steps.append(orchestrator.StepLog(
+            o._step_i, worker, task_kind, "done", summary=text, score=s))
+        return BackendResult(backend=o._worker(worker)["backend"], ok=True, text=text)
+    return fake_call
+
+
+def test_calibration_records_always_include_bucket(mock_root, monkeypatch):
+    """bucket은 opt-in 기능과 무관하게 항상 채워진다(순수 텍스트 계산, 비용 0) — S3 집계가
+    이미 이 필드를 기대하고 있었는데 지금까지 아무도 채운 적이 없었다."""
+    cfg = Config.load(mock_root)
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    monkeypatch.setattr(o, "call_worker", _fake_build_and_critic_call(o))
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    rec = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["bucket"] == "tiny"  # "t"는 아주 짧은 task 텍스트 -> tiny bucket
+
+
+def test_rounds_calibration_hint_off_by_default_no_log_line(mock_root, monkeypatch, capsys):
+    cfg = Config.load(mock_root)
+    assert cfg.yok3x["automation"]["show_rounds_calibration_hint"] is False
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    monkeypatch.setattr(o, "call_worker", _fake_build_and_critic_call(o))
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    assert "[calib-hint]" not in capsys.readouterr().out
+
+
+def test_rounds_calibration_hint_logs_insufficient_data_when_enabled_with_no_prior_data(
+        mock_root, monkeypatch, capsys):
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation"]["show_rounds_calibration_hint"] = True
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    monkeypatch.setattr(o, "call_worker", _fake_build_and_critic_call(o))
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    out = capsys.readouterr().out
+    assert "[calib-hint] bucket=tiny pattern=producer-reviewer" in out
+    assert "samples below min_samples" in out
+
+
+def test_rounds_calibration_hint_reports_real_history_once_threshold_met(mock_root, monkeypatch, capsys):
+    from yok3x import calibration as calib_mod
+
+    cfg = Config.load(mock_root)
+    cfg.yok3x["automation"]["show_rounds_calibration_hint"] = True
+    cfg.yok3x["automation"]["rounds_calibration_min_samples"] = 2
+    path = cfg.paths.runs.parent / "calibration.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for rounds in (1, 3):
+            rec = calib_mod.make_record(bucket="tiny", pattern="producer-reviewer",
+                                        rounds=rounds, verify_ok=True, score=9.0, run_id="prior")
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    o = Orchestrator(cfg, auto=True)
+    o.verify_cmd = "sentinel verify"
+    monkeypatch.setattr(o, "call_worker", _fake_build_and_critic_call(o))
+    monkeypatch.setattr(o, "_run_verify", lambda: (True, "ok"))
+    o.run_producer_reviewer("t", "claude-main", "codex-critic", max_rounds=1, pass_score=8.0)
+
+    out = capsys.readouterr().out
+    assert "[calib-hint] bucket=tiny pattern=producer-reviewer 과거 2건" in out
+    assert "중앙값 라운드=2" in out
+    assert "성공률=100%" in out
+
+
 def test_deterministic_scoring_off_by_default_leaves_score_unchanged(mock_root, monkeypatch):
     """기본값(off)에서는 구조화 JSON이 와도 리뷰어의 자유형 SCORE를 그대로 쓴다(회귀 방지)."""
     cfg = Config.load(mock_root)

@@ -1775,16 +1775,35 @@ class Orchestrator:
         artifact = ""
         repo, rubric = self._repo_context(), self._rubric_text()
         prev_sig = None
-        # V-1 파일럿(runbooks, opt-in, 기본 off): 꺼져 있으면 계산 자체를 안 한다(zero overhead).
+        # bucket은 순수 텍스트 특징 계산(호출·비용 0)이라 항상 구해서 calibration.jsonl에
+        # 남긴다 — S3 집계(aggregate_calibration_statistics)가 이미 이 필드를 기대하고 있었지만
+        # 지금까지 아무도 채운 적이 없었다.
         automation_cfg = self.cfg.yok3x.get("automation") or {}
-        runbook_bucket = ""
+        bucket = automation.recommend_effort_rounds({"task": task}, self.cfg).get("bucket", "")
+        # V-1 파일럿(runbooks, opt-in, 기본 off): 꺼져 있으면 조회·주입 자체를 안 한다.
         runbook_hint_text = ""
         if automation_cfg.get("use_runbooks"):
-            runbook_bucket = automation.recommend_effort_rounds({"task": task}, self.cfg).get("bucket", "")
             min_samples = automation_cfg.get("runbooks_min_samples", 5)
             hint = runbooks.query_hint(
-                self.cfg, bucket=runbook_bucket, pattern=self.pattern, min_samples=min_samples)
+                self.cfg, bucket=bucket, pattern=self.pattern, min_samples=min_samples)
             runbook_hint_text = runbooks.build_hint_text(hint)
+        # V-8 파일럿(실측 라운드 캘리브레이션 힌트, opt-in, 기본 off): 로그로만 관측 —
+        # max_rounds를 자동으로 바꾸지 않는다(가치 검증 전에는 실행에 반영 안 함, V-5§4.1과
+        # 같은 원칙). docs/plans/v4.x-plan-rounds-calibration-hint-2026-08-30.md 참고.
+        if automation_cfg.get("show_rounds_calibration_hint"):
+            loaded = calibration.read_calibration_jsonl(str(self.cfg.paths.runs.parent / "calibration.jsonl"))
+            rounds_hint = calibration.rounds_hint_for(
+                loaded["records"], bucket=bucket, pattern=self.pattern,
+                min_samples=automation_cfg.get("rounds_calibration_min_samples", 5))
+            if rounds_hint.get("available"):
+                msg = (f"[calib-hint] bucket={bucket} pattern={self.pattern} "
+                      f"과거 {rounds_hint['sample_count']}건 — 중앙값 라운드={rounds_hint['median_rounds']:g}")
+                if rounds_hint.get("success_rate") is not None:
+                    msg += f", 성공률={rounds_hint['success_rate']:.0%}"
+                self._log(msg)
+            else:
+                self._log(f"[calib-hint] bucket={bucket} pattern={self.pattern} "
+                          f"— {rounds_hint.get('reason', 'insufficient_data')}")
         for rnd in range(1, max_rounds + 1):
             t = task if rnd == 1 else f"{task}\n\n검수 지적을 반영해 수정하라."
             blocks = []
@@ -1858,7 +1877,7 @@ class Orchestrator:
             # 애초에 저장 안 함 — 재사용 후보에서 배제).
             if automation_cfg.get("use_runbooks") and passed:
                 runbooks.log_runbook_entry(
-                    self.cfg, run_id=self.run_id, bucket=runbook_bucket, pattern=self.pattern,
+                    self.cfg, run_id=self.run_id, bucket=bucket, pattern=self.pattern,
                     approach_tags=runbooks.extract_approach_tags(artifact),
                     verify_ok=bool(verify_ok) if has_verify_cmd else True,
                     gate_passed=True, score=score, rounds=rnd)
@@ -1877,6 +1896,7 @@ class Orchestrator:
                 "threshold": pass_score, "gate_pass": bool(passed),
                 "gate_mode": self.score_gate_mode,
                 "issues_sig_source": issues_sig_source,
+                "bucket": bucket or None,
             })
             if passed:
                 suffix = " · 검토 필요" if self.gate["review_required"] else ""
@@ -2474,7 +2494,7 @@ class Orchestrator:
                 verify_scope=c.get("verify_scope"),
                 reviewer=c.get("reviewer"), threshold=c.get("threshold"),
                 gate_pass=c.get("gate_pass"), gate_mode=c.get("gate_mode"),
-                round=c.get("round"),
+                round=c.get("round"), bucket=c.get("bucket"),
                 **(totals if i == last else empty_totals))
                 for i, c in enumerate(self._calib_rounds)]
             path = self.cfg.paths.runs.parent / "calibration.jsonl"   # .yok3x/calibration.jsonl

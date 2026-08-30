@@ -37,3 +37,53 @@ def test_summarize_verdict():
     strong = ([_r(9, True), _r(3, False)] * 6)
     assert "신호 있음" in C.summarize(strong)["verdict"]
     assert "부족" in C.summarize([_r(9, True), _r(3, False)])["verdict"]
+
+
+def _bucket_record(bucket, pattern, rounds, verify_ok=True):
+    return C.make_record(bucket=bucket, pattern=pattern, rounds=rounds, verify_ok=verify_ok,
+                         score=8.0, run_id="r")
+
+
+def test_rounds_by_bucket_below_threshold_is_unavailable():
+    recs = [_bucket_record("medium", "producer-reviewer", 2) for _ in range(2)]
+    groups = C.rounds_by_bucket(recs, min_samples=3)["groups"]
+    assert len(groups) == 1
+    assert groups[0]["available"] is False
+    assert groups[0]["sample_count"] == 2
+
+
+def test_rounds_by_bucket_reports_median_mean_and_success_rate_once_threshold_met():
+    recs = ([_bucket_record("medium", "producer-reviewer", 1, True)]
+            + [_bucket_record("medium", "producer-reviewer", 2, True)]
+            + [_bucket_record("medium", "producer-reviewer", 3, False)])
+    groups = C.rounds_by_bucket(recs, min_samples=3)["groups"]
+    assert len(groups) == 1
+    g = groups[0]
+    assert g["available"] is True
+    assert g["median_rounds"] == 2
+    assert abs(g["mean_rounds"] - 2.0) < 1e-9
+    assert abs(g["success_rate"] - 2 / 3) < 1e-9
+
+
+def test_rounds_by_bucket_separates_by_bucket_and_pattern():
+    recs = ([_bucket_record("medium", "producer-reviewer", 2) for _ in range(3)]
+            + [_bucket_record("large", "producer-reviewer", 4) for _ in range(3)]
+            + [_bucket_record("medium", "solo", 1) for _ in range(3)])
+    groups = C.rounds_by_bucket(recs, min_samples=3)["groups"]
+    keys = {(g["bucket"], g["pattern"]) for g in groups}
+    assert keys == {("medium", "producer-reviewer"), ("large", "producer-reviewer"), ("medium", "solo")}
+    assert all(g["available"] for g in groups)
+
+
+def test_rounds_by_bucket_ignores_records_missing_bucket_or_pattern():
+    recs = [C.make_record(score=8.0, verify_ok=True, run_id="r")] * 5  # no bucket/pattern
+    assert C.rounds_by_bucket(recs, min_samples=3)["groups"] == []
+
+
+def test_rounds_hint_for_returns_matching_group_or_unavailable_placeholder():
+    recs = [_bucket_record("medium", "producer-reviewer", 2) for _ in range(4)]
+    hit = C.rounds_hint_for(recs, bucket="medium", pattern="producer-reviewer", min_samples=3)
+    assert hit["available"] is True
+    miss = C.rounds_hint_for(recs, bucket="tiny", pattern="producer-reviewer", min_samples=3)
+    assert miss["available"] is False
+    assert miss["sample_count"] == 0
