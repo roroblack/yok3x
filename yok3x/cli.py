@@ -170,6 +170,28 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load(".")
     cleanup_orphan_materialize_staging(materialize_staging_scan_dirs(cfg))
 
+    # BUG-54: Config.load(".")는 항상 CLI 실행 위치(CWD)의 yok3x.json을 로드한다 — task.json의
+    # workdir 필드는 orchestrator 내부 파일 배치용일 뿐 config 로드 경로가 아니다. 태스크
+    # workdir 밖에서 실행하면 그 디렉터리의(예: 저장소 자체) profile·guard 상한이 조용히 끼어들어
+    # backend가 뒤바뀌거나 비용 상한이 무효화될 수 있다(실측: T-2 #8 첫 시도, $0.5648 낭비 후 폐기
+    # — docs/TODO.md 관찰 3). 동작은 안 바꾸고 조용히 새는 지점만 알린다.
+    if getattr(a, "cmd", None) in ("run", "loop"):
+        try:
+            task_spec = json.loads(Path(a.task_file).read_text(encoding="utf-8"))
+            task_workdir = task_spec.get("workdir") if isinstance(task_spec, dict) else None
+            if task_workdir:
+                resolved_task_workdir = Path(task_workdir).expanduser().resolve()
+                if resolved_task_workdir != Path.cwd().resolve():
+                    print(
+                        f"[warn] task.json의 workdir({resolved_task_workdir})와 현재 실행 위치"
+                        f"({Path.cwd().resolve()})가 다릅니다. Config.load('.')는 task.json의 "
+                        "workdir가 아니라 **현재 실행 위치**의 yok3x.json을 로드합니다 — "
+                        "이 디렉터리의 profile·guard 상한이 조용히 적용될 수 있습니다. "
+                        "태스크의 workdir로 cd한 뒤 실행하는 것을 권장합니다.",
+                        file=sys.stderr)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass  # 태스크 파일 자체의 오류는 기존 로직이 이미 처리 — 여기서는 경고만 시도
+
     if a.cmd == "sync":
         from . import sync_layer
 

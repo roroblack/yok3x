@@ -1,5 +1,16 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-08-30 — BUG-54: `yok3x run/loop`이 task.json의 workdir와 CLI 실행 위치(CWD)가
+  다르면 stderr에 경고를 출력하도록 추가했다(동작은 안 바꿈 — Config.load(".")가 CWD의
+  yok3x.json을 조용히 적용해 backend가 뒤바뀌거나 비용 상한이 무효화되는 문제, T-2 #8에서
+  $0.5648 낭비 후 발견). 상세: `docs/reports/bugs/BUG-54-cli-cwd-config-silently-overrides-task-workdir.md`.
+
+- v4.x · 2026-08-30 — 구조화 리뷰 결함 목록(T-6)에서 SCORE를 결정론적 공식(severity별 고정
+  감점+cap)으로 계산해 리뷰어의 자유형 SCORE를 대체하는 옵션을 추가했다
+  (`cfg.yok3x["review_protocol"]["deterministic_scoring"]`, 기본 off). T-1 실측(동일 결함
+  목록에도 SCORE가 stdev 1.6까지 흔들림)에 대한 직접 대응. 상세:
+  `docs/plans/v4.x-plan-deterministic-review-scoring-2026-08-30.md`.
+
 - v4.x · 2026-08-29 — CLI 시작 시 알려진 materialize 게시 부모에서 24시간 이상 된 고아 `.materialize-staging-*` 디렉터리만 정리하도록 추가했다.
 
 - v4.x · 2026-08-28 — candidate backend별 실제 daily pace를 S4 관측 snapshot에 연결하고 역할별 현재값/보수적 후보를 기록하되 full 실행값은 바꾸지 않도록 고정했다.

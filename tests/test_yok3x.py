@@ -1499,6 +1499,58 @@ def test_run_task_file_sink_carries_run_id_and_gate(mock_root):
     assert isinstance(sink.get("gate"), dict) and "passed" in sink["gate"]
 
 
+def test_cli_run_warns_when_task_workdir_differs_from_cwd(tmp_path, monkeypatch, capsys):
+    """BUG-54: Config.load(".")는 task.json의 workdir가 아니라 CLI 실행 위치를 읽는다 — 실측으로
+    비용상한 무효화·backend 뒤바뀜을 낳은 함정이라, 최소한 조용히 새지 않게 경고해야 한다."""
+    from yok3x import cli
+    monkeypatch.chdir(tmp_path)
+    other_dir = tmp_path / "elsewhere"
+    other_dir.mkdir()
+    (tmp_path / "t.json").write_text(json.dumps({"workdir": str(other_dir)}), encoding="utf-8")
+    monkeypatch.setattr(cli, "run_task_file", lambda cfg, task_file, auto=None, sink=None, **kw: "done")
+
+    cli.main(["run", "t.json"])
+
+    err = capsys.readouterr().err
+    assert "[warn]" in err
+    assert str(other_dir.resolve()) in err
+
+
+def test_cli_run_no_warning_when_workdir_matches_cwd(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "t.json").write_text(json.dumps({"workdir": str(tmp_path)}), encoding="utf-8")
+    monkeypatch.setattr(cli, "run_task_file", lambda cfg, task_file, auto=None, sink=None, **kw: "done")
+
+    cli.main(["run", "t.json"])
+
+    assert "[warn]" not in capsys.readouterr().err
+
+
+def test_cli_run_no_warning_when_workdir_not_set(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "t.json").write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(cli, "run_task_file", lambda cfg, task_file, auto=None, sink=None, **kw: "done")
+
+    cli.main(["run", "t.json"])
+
+    assert "[warn]" not in capsys.readouterr().err
+
+
+def test_cli_run_workdir_check_does_not_crash_on_missing_or_malformed_task_file(tmp_path, monkeypatch, capsys):
+    from yok3x import cli
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "run_task_file", lambda cfg, task_file, auto=None, sink=None, **kw: "done")
+
+    (tmp_path / "bad.json").write_text("{not valid json", encoding="utf-8")
+    cli.main(["run", "bad.json"])  # malformed JSON must not crash the workdir check itself
+    assert "[warn]" not in capsys.readouterr().err
+
+    cli.main(["run", "missing.json"])  # nonexistent file must not crash the workdir check itself
+    assert "[warn]" not in capsys.readouterr().err
+
+
 def test_cli_run_exit_separates_state_and_gate(tmp_path, monkeypatch):
     """F2-2 계약: `yok3x run` 종료코드가 실행 상태(state)와 산출물 승인(gate.passed)을 분리한다 —
     done+승인→0, done+미통과(strict 저점·verify 실패 등)→3, 중단→1. R-2의 verifier-gated 정지가

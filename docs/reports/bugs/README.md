@@ -58,6 +58,7 @@
 | [51](BUG-51-gui-preconnect-duration-misattribution.md) | GUI preconnect 연결의 read 대기를 `/api/state` 처리 지연으로 오기록(계측 버그 — probe/락 문제 아니었음) | 중간 | — | ✅ |
 | [52](BUG-52-gui-config-save-stale-state-snapshot.md) | GUI 설정 저장 직후 5초 stale snapshot이 새 선택을 이전 값으로 되돌림 | 중간 | — | ✅ |
 | [53](BUG-53-orchestrator-edge-input-and-materialize-race-hardening.md) | **orchestrator 엣지 입력 크래시·SCORE 범위 우회·resume 손상값·materialize 동시 덮어쓰기/symlink root 하드닝** | **높음** | — | ✅ |
+| [54](BUG-54-cli-cwd-config-silently-overrides-task-workdir.md) | **CLI 실행 위치가 task.json의 workdir를 조용히 무시 — backend 뒤바뀜·비용상한 무효화(T-2 #8에서 $0.5648 낭비)** | **높음** | — | ✅(경고만, 자동 차단 아님) |
 
 **최대 건**: BUG-10 — Windows npm `.cmd` 심이 멀티라인 argv를 첫 줄바꿈에서 잘라, 프로듀서가
 여러 세션에 걸쳐 "작업 없음"으로 실패하던 결정적 버그. stdin 전달로 근본 해결.

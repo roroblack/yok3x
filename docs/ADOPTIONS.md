@@ -13,6 +13,8 @@ yok3x 원칙: **프레임워크는 안 들이고, 외부 연구·도구의 좋�
 | **LightRAG**(이중레벨 검색) | knot 검색을 **저수준(키워드)+고수준([[링크]]·태그 확장)** 이중레벨로 | 지식그물 검색이 단순 키워드만이면 관련 노트를 놓쳐서 | `knot.query`(dual-level, 의존성0) | `reports/v3.5.0-assessment-lightrag-2026-07-11.md` |
 | **Mem0**(프로덕션 장기기억) | **consolidation** 3종 — 요점 추출·중복 통합(lint)·최신성 감쇠(검색 가중) | 런 산출물을 통째로 쌓으면 knot이 비대·중복해져서. 벡터DB 없이 실전 이득만 | `knot.extract_key_points`·`lint`(dedup)·`_recency_weight` | `reports/v3.5.0-assessment-mem0-2026-07-13.md`, `reports/v3.5.0-knot-consolidation-2026-07-13-1600.md` |
 | **LangGraph**(조건부 엣지) | **조건부 라우팅(에스컬레이션)** — 낮은 점수 지속 시 워커 1회 전환 | 정적 패턴 한계. 수렴 실패 시 다른/강한 워커로 동적 라우팅(스톨감지·열화의 일반화) | `orchestrator.run_producer_reviewer`(escalate), task spec `escalate` | `plans/v4.0.0-plan-conditional-routing-2026-07-15.md` |
+| **LLM-judge 채점 분산 완화 연구**(Rating Roulette EMNLP 2025, G-Eval) | LLM은 결함 탐지(findings)만, 점수(SCORE)는 프로그램이 결정론적 공식으로 계산 — 판정과 채점 책임 분리 | 완전히 동일한 결함 목록에도 SCORE가 stdev 1.6까지 흔들림을 실측(T-1) — "같은 결함, 다른 점수" 분산 제거 | `review_protocol.compute_deterministic_score()`, `cfg.yok3x["review_protocol"]`(opt-in) | `reports/v4.x-result-t1-pilot-spec-test-separation-2026-08-30.md`, `plans/v4.x-plan-deterministic-review-scoring-2026-08-30.md` |
+| **Mutation testing**(SWE-ABS ICML 2026, SWE-Mutation ACL 2026 Findings) | 정상 코드에 witness로 검증된 결함을 인위적으로 주입해 심판(reviewer)의 결함 탐지력을 통제 실험으로 직접 측정 | producer가 자연스럽게 실패하는 사례(verify_ok=False)가 구조적으로 안 나와 T-1 착수 조건을 못 채움 — organic 실패를 기다리는 대신 synthetic 결함으로 대체 | T-1 캘리브레이션 절차(코드 통합 없음 — 조사 방법론으로 채택, `yok3x_t1_mutation/` 재현 자료) | `reports/v4.x-result-t1-mutation-testing-pilot-2026-08-30.md` |
 
 ## 평가 후 미채택 (프레임워크 통째 도입 배제)
 
