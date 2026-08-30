@@ -414,6 +414,32 @@ T-1·quota 계측·모델 비용 메타데이터가 준비될 때까지 계획�
 사실상 해결됐다(위 T-1 항목 참고 — 4/4 결함 정확 지적, 표본은 작음). §4.2 착수 여부는
 여전히 별도 사용자 판단 필요 — 이 문서의 "보류" 결론은 아직 바꾸지 않았다.
 
+**나머지 두 전제조건 실측 점검(2026-08-30)** — 결론: **여전히 미충족, §4.2 보류 유지**.
+
+1. **쿼터 계측 신뢰도** — `yok3x limits --json`으로 실시간 조회한 결과, backend마다 신뢰도가
+   완전히 다르다:
+   - `codex`: `measured, real=True` — 공식 app-server JSON-RPC 실시간 조회, 알려진 리스크 없음. 자동화 근거로 안전.
+   - `claude`: `measured, real=True`지만 `claude_oauth` 경로 사용 중(이 저장소 yok3x.json 설정) —
+     [BUG-27](reports/bugs/BUG-27-claude-oauth-usage-probe-blocked-policy.md)에 "정책 보장
+     없는 unsupported access"로 명시됨. 과거 한 번 정책 변경으로 429 차단당했다 나중에 철회로
+     복구된 이력 있음 — **언제든 measured→unavailable로 조용히 꺼질 수 있다는 전제로 폴백
+     설계 필수**.
+   - `gemini`: `unavailable, ok=False` — `limits.py`의 `_probe_uncached` 디스패치 테이블에
+     `"ledger"`를 처리하는 분기 자체가 없어(코드 확인), `yok3x.json`에 `type: "ledger"`를
+     명시해도 "probe 미설정" 폴백으로 떨어진다. **구조적으로 신호 0** — 자동화 근거에서
+     아예 빼야 함(신호 없이 자동 전환하면 무작위 결정과 같음).
+2. **모델 비용 메타데이터** — `models_catalog`(논리모델명→backend/model_id)와
+   `benchmarks`(상황별 품질 점수)는 있지만, **모델별 비용(가격) 필드가 어디에도 없다**
+   (코드 확인). 유일한 비용 수치는 `guard.reservation.usd_per_1k_tokens: 0.03` 하나뿐이고
+   이건 모델·backend 무관 전역 추정치다. "쿼터를 아낀다"는 목표 함수로 후보를 순위화하려면
+   haiku/sonnet/opus/gpt-5.6 등 모델별 실제 단가가 있어야 하는데 **완전히 부재** — 새로
+   소싱·설계해야 함.
+
+**결론**: T-1은 해결됐지만 나머지 두 전제조건은 아직 채워지지 않았다. 실제 착수하려면
+(a) codex 중심으로 스코프를 좁히고 claude는 폴백 설계·gemini는 자동화 대상에서 제외,
+(b) 모델별 실제 단가를 `models_catalog`에 추가하는 선행 작업이 필요 — 둘 다 사용자 승인
+후 별도로 진행.
+
 **출처**: 사용자 제안 — "남은 쿼터에 따라서 자동으로 모델이랑 모델의 effort 수준이랑 사용하는
 에이전트까지 자동으로 셋팅해보는 기능".
 
