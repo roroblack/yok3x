@@ -492,6 +492,40 @@ http://localhost:8000/v1`)와 `cfg.yok3x["guard"]["degrade"]["offline_backend"]=
 경로를 진짜로 타보는 실사용 검증은 아직 없음 — 필요해지면(클라우드 쿼터를 자주 전멸시킨다면)
 그때 시도해볼 후보.
 
+### V-8. 어려운 변경은 "micro-world"(상호작용 게임)로 이해시키기 — Cognitive Sync Layer 확장 (2026-08-30 등록, 사용자 제안)
+
+**출처**: 사용자와 이전에 시청·논의한 [Geoffrey Litt(Notion), "Understanding is the new
+bottleneck"](https://youtu.be/WkBPX-oDMnA) 발표. 핵심 주장: 에이전트가 코드를 점점 더
+빨리 생산하면서 병목이 "정확성"에서 "사람이 그걸 이해하는가"로 옮겨갔다. 발표가 제안한
+3가지 기법 중 우리와 가장 직접 관련된 것 — **micro-worlds**: 원본 코드를 그냥 읽게 하는
+대신, 에이전트가 **별도의 작은 상호작용 프로그램(게임)**을 만들어 "타임라인을 드래그하며
+관찰"하거나 "단계별 사이드바이사이드 비교" 같은 조작·관찰로 이해시키는 방식(예시: Prolog
+디버거, Astro 마이그레이션 게임). 발표의 다른 두 기법("ExplainDiff" 설명문서+퀴즈,
+"shared spaces" 협업 공간)은 각각 아래 "우리와의 접점"·V-6과 이미 겹친다.
+
+**우리와의 접점**: yok3x는 이미 [Cognitive Sync Layer](plans/v4.6.0-plan-cognitive-sync-layer-2026-08-08.md)(`sync_layer.py`)로
+발표의 "ExplainDiff" 트랙(설명 문서 + comprehension quiz, S6a 온디맨드 클릭형·S6b 표준
+자동생성)을 이미 구현해뒀다 — 다만 **micro-worlds 트랙(상호작용 게임)은 없다.** 지금
+sync_layer는 정적 텍스트(설명·퀴즈 질문)만 만들고, "직접 조작해보며 이해"하는 산출물은
+안 만든다. 사용자가 말한 "어려운 건 게임 만들어주는 기능"이 정확히 이 빈틈이다. 참고로
+`sync_layer` 자체가 기본 off(opt-in)라, 퀴즈 트랙부터도 아직 실사용 검증이 없는 상태다.
+
+**검토 후보(구현 전, 설계만)**:
+1. 대상 선별: 모든 변경에 micro-world를 만들면 비용·복잡도가 크다 — S6b의 comprehension
+   quiz에서 "이해도 낮음"으로 판정된 claim이나, 사용자가 명시적으로 어렵다고 표시한
+   부분에만 온디맨드로 생성하는 방식이 합리적(S6a의 "클릭해서 요청" 패턴과 같은 원칙).
+2. 무엇을 만드는가: 코드 자체를 실행하는 게 아니라, **그 코드가 하는 일을 시뮬레이션하는
+   훨씬 작고 단순화된 별도 프로그램**을 에이전트가 생성 — 원본 코드베이스에 영향 없이
+   독립 산출물(HTML/JS 등)로 격리해야 안전(yok3x의 "텍스트 생산자=안전" 설계와 충돌 최소화).
+3. 비용: micro-world 생성 자체가 추가 LLM 호출 1회 이상 — sync_layer의 기존 비용 단계
+   (light/standard/deep) 구조에 자연스럽게 끼워 넣을 수 있음(예: deep 모드 전용).
+4. T-1 mutation-testing 파일럿처럼, 이것도 "만들어놓고 실제로 이해에 도움 되는지"를
+   검증할 방법이 필요함 — 예: 사용자가 micro-world를 본 뒤 comprehension quiz 정답률이
+   실제로 오르는지 비교(sync_layer의 기존 calibration 연동, S7과 접점).
+
+다른 비전 항목과 동일 — 여기 있다는 것 자체가 "하기로 결정"을 뜻하지 않음. 계획서로
+승격할 때 sync_layer 기존 구조와의 정합성부터 확인.
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->
