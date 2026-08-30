@@ -494,6 +494,13 @@ http://localhost:8000/v1`)와 `cfg.yok3x["guard"]["degrade"]["offline_backend"]=
 
 ### V-8. 어려운 변경은 "micro-world"(상호작용 게임)로 이해시키기 — Cognitive Sync Layer 확장 (2026-08-30 등록, 사용자 제안)
 
+**검토 완료(2026-08-30)** —
+[`docs/plans/v4.x-plan-micro-worlds-cognitive-sync-2026-08-30.md`](plans/v4.x-plan-micro-worlds-cognitive-sync-2026-08-30.md):
+micro-worlds가 얹힐 기반인 Cognitive Sync Layer(S6a/S6b/S7)가 **실사용 0건**임을 확인
+(`understanding_bundle.json`이 파일시스템 어디에도 없음 — `yok3x sync`가 실제로 산출물을
+만든 적이 한 번도 없음). T-4(MCP a2) 검토와 같은 종류의 순서 오류 — 기반이 검증 안 된
+상태에서 더 비싼 확장부터 만들 근거가 없음. **구현 보류 권고**, 재검토 조건은 문서 참고.
+
 **출처**: 사용자와 이전에 시청·논의한 [Geoffrey Litt(Notion), "Understanding is the new
 bottleneck"](https://youtu.be/WkBPX-oDMnA) 발표. 핵심 주장: 에이전트가 코드를 점점 더
 빨리 생산하면서 병목이 "정확성"에서 "사람이 그걸 이해하는가"로 옮겨갔다. 발표가 제안한
