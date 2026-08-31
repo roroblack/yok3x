@@ -277,6 +277,12 @@ mcp_servers를 등록하고 워커가 여러 차례 opt-in해 쓴 이력이 쌓�
 ### 배경
 - 현재는 구조화 리뷰 파싱을 관측만 하며, 구조화 서명을 기본값으로 강제하지 않는다. 기존 `legacy_text` 폴백은 계속 안전망으로 유지한다.
 - `review_protocol_observations.jsonl`에 원문 없이 source·parse error·reviewer별 관측만 누적한다.
+- **실측 확인(2026-08-30)**: 이 파일이 메인 저장소 `.yok3x/`뿐 아니라 **T-2 각 task workdir마다
+  별도로 흩어져 있다**(calibration.jsonl과 같은 파편화 — 격리 workdir에서 실행하면 그 실행의
+  `.yok3x/`에 생기기 때문). 전부 모아 세어보니 codex(리뷰어) 6건·claude(리뷰어) 1건, 전부
+  `source=structured`·parse_error 없음. 기준(backend별 ≥20건)엔 둘 다 한참 못 미침 —
+  자동 집계 메커니즘이 없어(`sync-calibration`류 명령이 이 파일엔 없음) 앞으로도 수동으로
+  모아 세야 정확한 진행률을 알 수 있다.
 
 ### 데이터가 쌓이면 할 것
 - backend별 독립 관측이 **20건 이상** 쌓이면 파싱 성공률과 false stall/false progress 사례를 검토한다.
