@@ -651,6 +651,22 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 0건이라 리스크 없음 확인)은 그대로 둠. 테스트 3개 추가, 전체 스위트 691 passed·1 skipped
 (회귀 없음).
 
+### 참고 문서 — P2P 도입 여부 및 "왜 yok3x인가" 평가 (2026-08-30)
+
+사용자 질문 2건에 대한 조사·결론 — [`docs/reports/v4.x-assessment-p2p-and-project-rationale-2026-08-30.md`](reports/v4.x-assessment-p2p-and-project-rationale-2026-08-30.md).
+
+- **P2P 네트워크**: 지금은 도입 안 함. 2026년 P2P 멀티에이전트 코디네이션 연구(Matrix·
+  AgentNet·MOD-X·Google A2A)가 활발하지만, 그 분야 자체가 "증거 기반 신뢰" 문제를 아직
+  못 풀었다고 인정함 — 이건 yok3x가 T-1에서 단일 로컬 환경으로도 겨우 검증한 문제라, 낯선
+  참가자·네트워크 규모로 확장하는 건 시기상조. 실제 요구("아는 사람끼리 공유")는 V-6로
+  충분. 재검토 조건은 문서 참고.
+- **"skill로 codex·claude 직접 연동하면 되는데 왜 yok3x냐"**: 일리 있는 비판이라고 인정 —
+  `skill-codex`/`codex-delegator` 같은 실제 도구가 있고, "한 번 위임"이 목적이면 그쪽이
+  낫다. 다만 yok3x는 그 위임 자체가 아니라 **그 주변의 안전장치**(객관적 verify_cmd 게이트,
+  T-1로 실측 검증한 심판 신뢰도, 쿼터 인식 페이싱, 원자적 게시, 캘리브레이션 데이터 축적)를
+  다룬다 — 검색한 어떤 대안 도구도 이걸 하지 않음(비교표는 문서 참고). 이 차별점이 실사용
+  가치로 이어지는지는 계속 지켜봐야 한다는 점도 정직하게 남겨둠.
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->
