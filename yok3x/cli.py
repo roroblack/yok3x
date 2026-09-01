@@ -101,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     ksub = sp.add_subparsers(dest="kcmd", required=True)
     k = ksub.add_parser("save"); k.add_argument("title"); k.add_argument("body", nargs="?")
     k.add_argument("--tags", default="")
+    k.add_argument("--type", default="Note")
     k = ksub.add_parser("ingest"); k.add_argument("path")
     k = ksub.add_parser("query"); k.add_argument("q", nargs="+"); k.add_argument("--limit", type=int, default=5)
     ksub.add_parser("lint")
@@ -545,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.kcmd == "save":
             body = a.body if a.body else sys.stdin.read()
             tags = [t.strip() for t in a.tags.split(",") if t.strip()]
-            path = knot.save(cfg, a.title, body, tags=tags)
+            path = knot.save(cfg, a.title, body, tags=tags, type=a.type)
             print(f"저장: {path}")
         elif a.kcmd == "ingest":
             out = knot.ingest(cfg, a.path)

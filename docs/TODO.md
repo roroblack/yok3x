@@ -635,6 +635,22 @@ sync_layer는 정적 텍스트(설명·퀴즈 질문)만 만들고, "직접 조�
 **재검토 조건(원래 제안)**: solo 등 다른 패턴의 실 실행 기록이 쌓이면, 같은 방식으로
 pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 다음 단계.
 
+### V-10. knot(지식그물)에 OKF(Open Knowledge Format) `type` 필드 도입 — **구현 완료** (2026-08-30 등록, 사용자 제안)
+
+**출처**: 사용자 질문 — "오픈위키나 OKF 같은 거 도입 안해도 됨?" 웹 리서치(2026-08-30
+기준)로 확인: "오픈위키"는 Andrej Karpathy의 LLM Wiki 개념, **OKF**는 Google Cloud가
+2026-06-12 공개한 그 개념의 표준화 결과(현재 v0.2, [스펙](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)) —
+벡터DB·임베딩 없이 마크다운+YAML frontmatter+명시적 링크로 지식을 구조화, git 버전관리.
+
+**계획서 및 구현 완료**: [`docs/plans/v4.x-plan-okf-knowledge-format-2026-08-30.md`](plans/v4.x-plan-okf-knowledge-format-2026-08-30.md)
+— `knot.py`가 이미 OKF 취지("평문 마크다운으로 에이전트끼리 기억 공유")를 80% 구현하고
+있었음을 확인, OKF의 유일한 필수 필드 `type`만 추가(Phase 1, 공식 가이드 기준 최소
+마이그레이션). `knot.save()`에 `type` 매개변수(기본 `"Note"`, 기존 호출부 안 깨짐),
+`cli.py`에 `--type` 옵션, orchestrator 자동 노트에 `Run Stall`/`Run Summary` 부여,
+`lint()`에 누락 검사 추가(관측만, 강제 안 함 — 기존 원칙). 기존 23개 노트·링크 문법(실사용
+0건이라 리스크 없음 확인)은 그대로 둠. 테스트 3개 추가, 전체 스위트 691 passed·1 skipped
+(회귀 없음).
+
 ---
 
 <!-- AUTO:todo_check START (scripts/todo_check.py가 자동 갱신) -->

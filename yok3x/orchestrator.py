@@ -1942,7 +1942,7 @@ class Orchestrator:
                 knot.save(self.cfg, f"stall-{self.run_id}",
                           f"작업: {task}\n새 증거 없음 조기종료(round {rnd}, score {score}).\n"
                           f"반복 결함: {list(issues_sig)}",
-                          tags=["stall", "run"], source="orchestrator")
+                          tags=["stall", "run"], source="orchestrator", type="Run Stall")
                 break
             self._log(f"[retry] round {rnd} 재시도 승인 — 새 증거: {why}")
             prev_sig = sig
@@ -2339,7 +2339,7 @@ class Orchestrator:
         key_points = knot.extract_key_points(final_output)
         knot.save(self.cfg, f"run-{self.run_id}",
                   f"작업: {task}\n\n요점:\n{key_points[:1200]}",
-                  tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator")
+                  tags=["run", self.cfg.yok3x["flavor"]], source="orchestrator", type="Run Summary")
         # v4.6.0 Cognitive Sync Layer(§ HISTORY 2026-08-08): 기본 off. enabled면 mode="off"에서도
         # (mode 자체는 아직 light/standard/deep의 추가 LLM 호출을 통제하는 자리표시 — 그 구현은 S6
         # 후속) changes.diff·run.log·acquire.json에서 근거기반 설명을 기계적으로 조립한다(호출 0).

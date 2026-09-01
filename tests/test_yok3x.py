@@ -3812,6 +3812,42 @@ def test_knot_lint_flags_duplicates(tmp_path):
     assert len(dups) == 1 and "cooking" not in dups[0]     # 유사 쌍만 감지
 
 
+def test_knot_save_type_defaults_to_note(tmp_path):
+    """OKF(Open Knowledge Format) 준수: type을 안 넣으면 기존 호출부가 안 깨지게 'Note' 기본값."""
+    from yok3x import knot
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    path = knot.save(cfg, "untyped note", "body text", tags=["x"])
+    text = path.read_text(encoding="utf-8-sig")
+    assert "type: Note" in text
+
+
+def test_knot_save_type_custom_value_recorded(tmp_path):
+    from yok3x import knot
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    path = knot.save(cfg, "typed note", "body text", tags=["x"], type="Run Summary")
+    text = path.read_text(encoding="utf-8-sig")
+    assert "type: Run Summary" in text
+    notes = knot._load_notes(cfg)
+    assert notes[0]["type"] == "Run Summary"
+
+
+def test_knot_lint_flags_missing_type_only_on_curated_notes(tmp_path):
+    """orchestrator 자동 이력 노트는(source=orchestrator) type이 없어도 기존 원칙대로 lint 제외."""
+    from yok3x import knot
+    cfg = Config.load(tmp_path); cfg.ensure_dirs()
+    curated_legacy = cfg.paths.knowledge / "manual-legacy.md"
+    curated_legacy.write_text(
+        "---\nid: x\ntitle: legacy\ncreated: 2026-01-01T00:00:00\nsource: user\n---\n\nno type field",
+        encoding="utf-8")
+    auto_legacy = cfg.paths.knowledge / "auto-legacy.md"
+    auto_legacy.write_text(
+        "---\nid: y\ntitle: run-old\ncreated: 2026-01-01T00:00:00\nsource: orchestrator\n---\n\nno type either",
+        encoding="utf-8")
+    issues = knot.lint(cfg)
+    assert any("legacy" in i and "manual" in i and "'type'" in i for i in issues)
+    assert not any("auto-legacy" in i for i in issues)
+
+
 def test_knot_extract_key_points():
     from yok3x import knot
     text = "intro line\nSCORE: 8\n- [x] 엣지케이스 처리\n랜덤 문장\nSELF-CHECK: 통과"

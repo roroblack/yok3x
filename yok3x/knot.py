@@ -32,7 +32,7 @@ def _slug(s: str) -> str:
 
 
 def save(cfg: Config, title: str, body: str, tags: list[str] | None = None,
-         source: str = "user") -> Path:
+         source: str = "user", type: str = "Note") -> Path:
     cfg.ensure_dirs()
     now = datetime.now()
     nid = now.strftime("%Y%m%d-") + hashlib.sha256(f"{title}{body}".encode()).hexdigest()[:6]
@@ -40,6 +40,7 @@ def save(cfg: Config, title: str, body: str, tags: list[str] | None = None,
     fm = (f"---\n"
           f"id: {nid}\n"
           f"title: {title}\n"
+          f"type: {type}\n"
           f"tags: [{', '.join(tags)}]\n"
           f"source: {source}\n"
           f"created: {now.isoformat(timespec='seconds')}\n"
@@ -189,7 +190,7 @@ def lint(cfg: Config) -> list[str]:
     curated = [n for n in notes if n.get("source") != "orchestrator"]
     for n in curated:
         rel = n["path"].name
-        for field in ("id", "title", "created"):
+        for field in ("id", "title", "created", "type"):
             if field not in n:
                 issues.append(f"{rel}: frontmatter '{field}' 누락")
         for link in LINK_RE.findall(n.get("body", "")):
