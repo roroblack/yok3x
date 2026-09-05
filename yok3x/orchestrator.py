@@ -1179,8 +1179,18 @@ class Orchestrator:
         if verdict.level == "warn":
             self._log(f"[guard] 경고: {verdict.backend} {verdict.metric} {verdict.ratio:.0%} ({verdict.detail})")
         _deg = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
-        if verdict.level == "stop" or verdict.ratio >= float(_deg.get("failover_ratio", 0.97)):
-            alt = usage.failover_backend(cfg, worker, backend, self._failovers)
+        _failover_at = float(_deg.get("failover_ratio", 0.97))
+        _downgrade_at = float(_deg.get("downgrade_ratio", 0.9))
+        # V-11: 계정/백엔드 전환은 **모델 품질을 유지한 채 쿼터만 새로 얻는다** — 모델을 깎는
+        # 강등(downgrade_ratio, 기본 90%)보다 먼저 시도하는 게 논리적이다. 종전에는 폴오버가
+        # 97%부터라 90~97% 구간에서 여유 있는 계정을 놔두고 모델만 깎였다. 선제 구간에서는
+        # current_ratio를 넘겨 "실질적으로 더 여유로운 후보"일 때만 옮긴다(스래싱·품질낙폭 방지).
+        _preemptive = (_deg.get("switch_before_degrade", True)
+                       and verdict.level != "stop" and verdict.ratio < _failover_at)
+        _switch_at = min(_failover_at, _downgrade_at) if _deg.get("switch_before_degrade", True) else _failover_at
+        if verdict.level == "stop" or verdict.ratio >= _switch_at:
+            alt = usage.failover_backend(cfg, worker, backend, self._failovers,
+                                         current_ratio=(verdict.ratio if _preemptive else None))
             if alt:
                 with self._state_lock:
                     self._log(f"[failover] {backend} {verdict.ratio:.0%} 한도 → {alt}로 전환(이번 런 유지)")

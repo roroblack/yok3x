@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "teamflow": {
+      "command": "node",
+      "args": [
+        "C:/Users/playdata2/Documents/test_workspace/jira_for_me/mcp-server/src/index.js"
+      ]
+    }
+  }
+}

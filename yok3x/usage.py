@@ -868,13 +868,20 @@ def backend_available(cfg: Config, backend: str, probe_fn=None) -> bool:
         return True
 
 
-def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int) -> str | None:
+def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int,
+                     current_ratio: float | None = None) -> str | None:
     """P2 백엔드 폴오버 + P3 오프라인 폴백. exclude(한도초과/불가) 대신 쓸 backend를 고른다.
 
     P2(클라우드↔클라우드): `failover_enabled` on일 때, 설치+여유(backend_available)한 '다른 클라우드'
     중 사용률(ratio) 최소를 고른다. 오프라인 backend는 여기서 제외(마지막 수단이라).
     P3(클라우드→로컬): 클라우드 대안이 없고 `offline_enabled`면, 로컬 서버가 실제로 떠 있을 때만
     `offline_backend`(local)로 강등해 무중단. 반환 None: 역할 제외·런당 상한 초과·대안 없음.
+
+    V-11: `current_ratio`를 주면 **지금보다 실질적으로 여유 있는 후보만** 반환한다
+    (`failover_min_gain`, 기본 0.1=10%p 이상 낮아야 전환). 강등 임계(90%) 구간에서 "모델을
+    깎기 전에 여유 있는 계정/백엔드로 먼저 넘긴다"를 안전하게 하기 위한 것 — 비슷하게 찬
+    backend로 왔다갔다하는 스래싱을 막는다. None(기존 호출)이면 종전대로 무조건 최저 사용률을
+    고른다(stop·97% 구간은 이미 절박한 상황이라 조금이라도 나으면 옮기는 게 맞다).
     """
     d = (cfg.yok3x.get("guard") or {}).get("degrade") or {}
     if worker in (d.get("roles_no_failover") or []):
@@ -894,8 +901,17 @@ def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int)
                 r = 0.0
             if best_ratio is None or r < best_ratio:
                 best, best_ratio = b, r
+    if best is not None and current_ratio is not None:
+        # 강등 전 선제 전환: 후보가 지금보다 의미 있게 여유로울 때만 옮긴다(스래싱 방지).
+        gain = float(d.get("failover_min_gain", 0.1))
+        if best_ratio is None or best_ratio > current_ratio - gain:
+            best = None
     if best is not None:
         return best
+    if current_ratio is not None:
+        # 선제 전환 모드에서는 여기서 끝낸다 — 로컬 강등(P3)은 품질 낙폭이 커서 '아직 여유가
+        # 조금 남은' 이 구간의 대응이 아니다(모델 lite 강등이 맞다). P3는 stop/97% 전용.
+        return None
     # P3: 클라우드 대안 없음 → 로컬로 강등(설정 on + 로컬 서버 도달 가능할 때만)
     if d.get("offline_enabled", True) and offline_b and offline_b != exclude:
         if offline_reachable(cfg, offline_b):

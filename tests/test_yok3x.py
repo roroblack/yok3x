@@ -2502,6 +2502,30 @@ def test_local_openai_http_adapter(monkeypatch):
     assert res.cost_usd == 0.0 and res.total_tokens == 20     # 로컬=무료
 
 
+def test_backend_env_injection_for_account_switching(monkeypatch):
+    """V-11: backend별 env를 자식 프로세스에 주입(계정 격리). 미지정이면 env=None(기존 동작 불변)."""
+    import os
+    from yok3x import backends
+    cap = {}
+    class _P:
+        stdout = '{"result":"ok","is_error":false}'; stderr = ""; returncode = 0
+    monkeypatch.setattr(backends.subprocess, "run",
+                        lambda cmd, **kw: (cap.__setitem__("env", kw.get("env")), _P())[1])
+    monkeypatch.setattr(backends.shutil, "which", lambda x: x)
+    monkeypatch.setenv("PATH", "/sentinel/path")
+
+    spec = {"type": "cli", "command": ["claude", "-p"], "parser": "raw",
+            "env": {"CLAUDE_CONFIG_DIR": "~/alt-account"}}
+    backends.run_backend("claude-alt", spec, "hi")
+    env = cap["env"]
+    assert env is not None
+    assert env["CLAUDE_CONFIG_DIR"] == os.path.expanduser("~/alt-account")   # ~ 확장
+    assert env["PATH"] == "/sentinel/path"        # 통째 교체가 아니라 덮어쓰기(PATH 보존)
+
+    backends.run_backend("claude", {"type": "cli", "command": ["claude", "-p"], "parser": "raw"}, "hi")
+    assert cap["env"] is None                     # env 미지정 → 기존 동작 그대로
+
+
 def test_effort_passthrough_argv(monkeypatch):
     # 워커 effort가 backend별 effort_arg로 argv에 붙는지(claude --effort, codex -c ...). 미지정 시 미부착.
     from yok3x import backends
@@ -3976,6 +4000,75 @@ def test_failover_backend_picks_freest_and_respects_limits(tmp_path, monkeypatch
     assert usage.failover_backend(cfg, "claude-main", "claude", 3) is None      # 런당 상한
     cfg.yok3x["guard"]["degrade"]["roles_no_failover"] = ["claude-main"]
     assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # 역할 제외
+
+
+def test_failover_preemptive_requires_meaningful_gain(tmp_path, monkeypatch):
+    """V-11: current_ratio를 주면 '실질적으로 더 여유로운' 후보일 때만 전환(스래싱 방지)."""
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"]["failover_enabled"] = True
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
+    ratios = {"claude": 0.92, "codex": 0.90, "gemini": 0.91}
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, ratios.get(b, 0.0), "5h", "ok", "d"))
+    # 후보가 2%p밖에 안 낮다 → 기본 min_gain(10%p) 미달이라 전환 안 함
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0, current_ratio=0.92) is None
+    # 같은 상황에서 current_ratio 없이 부르면(stop/97% 경로) 종전대로 최저 사용률 선택
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) == "codex"
+    # 후보가 충분히 여유로우면 선제 전환
+    ratios["codex"] = 0.1
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0, current_ratio=0.92) == "codex"
+
+
+def test_failover_preemptive_does_not_fall_back_to_offline(tmp_path, monkeypatch):
+    """선제 구간에서는 로컬 강등(P3)까지 가지 않는다 — 품질 낙폭이 커서 이 구간의 대응이 아니다."""
+    cfg = Config.load(tmp_path)
+    # 클라우드 폴오버(P2)를 꺼서 P3(로컬 강등)만 남긴 상태로 두 경로를 대조한다.
+    cfg.yok3x["guard"]["degrade"]["failover_enabled"] = False
+    cfg.yok3x["guard"]["degrade"]["offline_enabled"] = True
+    monkeypatch.setattr(usage, "offline_reachable", lambda c, b: True)
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0, current_ratio=0.95) is None
+    # stop 경로(current_ratio 없음)에서는 종전대로 로컬 강등이 살아 있다
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) == "local"
+
+
+def test_call_worker_switches_before_degrading(tmp_path, monkeypatch):
+    """V-11 사다리: 90~97% 구간에서 여유 있는 backend가 있으면 모델 강등 대신 전환한다."""
+    from yok3x.config import scaffold
+    from yok3x.backends import BackendResult
+    scaffold(tmp_path)
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"].update(enabled=True, failover_enabled=True)
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
+    monkeypatch.setattr(usage, "check_backend", lambda c, b: usage.GuardVerdict(
+        b, 0.92 if b == "claude" else 0.05, "5h", "warn" if b == "claude" else "ok", "d"))
+    cap = {}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None, effort=None: cap.update(backend=n, model=model) or
+                        BackendResult(backend=n, ok=True, text="x"))
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.call_worker("claude-main", "t", "build")
+    assert cap["backend"] != "claude"      # 강등이 아니라 여유 있는 backend로 전환
+    assert cap["model"] is None            # lite 모델로 깎이지 않았다
+
+
+def test_call_worker_degrades_when_no_freer_backend(tmp_path, monkeypatch):
+    """대안이 다 비슷하게 차 있으면 종전대로 모델 강등(회귀 방지)."""
+    from yok3x.config import scaffold
+    from yok3x.backends import BackendResult
+    scaffold(tmp_path)
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"].update(enabled=True, failover_enabled=True, offline_enabled=False)
+    cfg.yok3x.setdefault("limits", {}).setdefault("claude", {})["models"] = {"lite": "haiku-lite"}
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, 0.92, "5h", "warn", "d"))
+    cap = {}
+    monkeypatch.setattr(orchestrator, "run_backend",
+                        lambda n, s, p, cwd=None, model=None, effort=None: cap.update(backend=n, model=model) or
+                        BackendResult(backend=n, ok=True, text="x"))
+    o = orchestrator.Orchestrator(cfg, auto=True)
+    o.call_worker("claude-main", "t", "build")
+    assert cap["backend"] == "claude" and cap["model"] == "haiku-lite"
 
 
 def test_call_worker_fails_over_when_stopped(tmp_path, monkeypatch):

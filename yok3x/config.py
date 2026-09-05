@@ -126,6 +126,12 @@ DEFAULT_YOK3X = {
             # 결과물 품질이 달라질 수 있어 기본 OFF(별도 on/off). 켜면 정지 대신 계속 진행.
             "failover_enabled": False,      # ← on/off (기본 off = 한도 시 현행처럼 정지)
             "failover_ratio": 0.97,         # 이 사용률↑ 또는 backend stop → 다른 도구로 전환
+            # V-11 계정 스위칭: 전환은 모델 품질을 유지한 채 쿼터만 새로 얻으므로, 모델을 깎는
+            # 강등(downgrade_ratio)보다 먼저 시도한다. 이 선제 구간에서는 후보가 지금보다
+            # failover_min_gain 이상 여유로울 때만 옮긴다(비슷하게 찬 backend로의 스래싱 방지).
+            # 끄면 종전대로 failover_ratio(97%)에서만 전환한다.
+            "switch_before_degrade": True,
+            "failover_min_gain": 0.1,       # 선제 전환 최소 이득(10%p)
             "roles_no_failover": [],        # 특정 역할은 전환 제외(예: 리뷰어 고정 원하면 지정)
             "max_failovers_per_run": 3,     # 런당 전환 상한(스래싱 방지). sticky로 왕복도 방지
             # P3: 오프라인 폴백 — 클라우드 대안이 전부 소진(stop)이면 로컬 모델로 강등해 무중단.

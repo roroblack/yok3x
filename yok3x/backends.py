@@ -203,6 +203,17 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
     if resolved:
         cmd[0] = resolved
     timeout = int(spec.get("timeout_sec", 600))
+    # V-11 계정 스위칭: backend별 `env`를 자식 프로세스에 주입한다. 같은 CLI라도 인증 디렉터리를
+    # 바꾸면 별도 계정으로 동작한다(claude=CLAUDE_CONFIG_DIR · codex=CODEX_HOME · gemini=API 키).
+    # 즉 두 번째 계정을 "가상 backend"로 등록하면 쿼터추적·페이싱·폴오버가 자동으로 계정별 분리된다.
+    # os.environ을 통째로 갈아치우지 않고 **덮어쓰기**한다 — PATH가 사라지면 Windows에서 CLI 자체를
+    # 못 찾는다. env 미지정이면 None을 넘겨 기존 동작과 바이트 단위로 동일하게 둔다(회귀 방지).
+    child_env = None
+    spec_env = spec.get("env")
+    if isinstance(spec_env, dict) and spec_env:
+        child_env = os.environ.copy()
+        for k, v in spec_env.items():
+            child_env[str(k)] = os.path.expanduser(str(v))
     # 프롬프트 전달: argv에 {prompt}가 없으면 stdin으로 넘긴다. Windows npm .cmd 심은
     # 멀티라인 argv를 첫 줄바꿈에서 잘라버려(cmd.exe 파싱), 여러 줄 프롬프트가 첫 줄만
     # 전달되던 치명 버그가 있었다 — stdin 전달로 우회한다. input=prompt는 프롬프트 후
@@ -214,7 +225,7 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                                   cwd=cwd or None, encoding="utf-8", errors="replace",
-                                  **stdin_kw)
+                                  env=child_env, **stdin_kw)
         except FileNotFoundError:
             return BackendResult(backend=name, ok=False,
                                  error=f"실행 파일 없음: {cmd[0]!r} — 해당 CLI를 설치하거나 backends.json에서 "
@@ -235,6 +246,7 @@ def _run_cli(name: str, spec: dict[str, Any], prompt: str,
             "encoding": "utf-8",
             "errors": "replace",
             "stdin": subprocess.DEVNULL if has_prompt_arg else subprocess.PIPE,
+            "env": child_env,
         }
         # 중단 시 CLI가 띄운 하위 프로세스까지 함께 종료할 수 있는 경계를 만든다.
         if os.name == "nt":
