@@ -651,6 +651,33 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 0건이라 리스크 없음 확인)은 그대로 둠. 테스트 3개 추가, 전체 스위트 691 passed·1 skipped
 (회귀 없음).
 
+### V-11. 계정 스위칭 — 같은 backend의 다른 계정으로 쿼터 전환 (2026-09-06 등록, 사용자 제안)
+
+**출처**: 사용자 제안 — "계정 스위칭 기능 있으면 좋겠다."
+
+**실현 가능성 조사 완료(2026-09-06)** — 3개 backend 모두 환경변수로 계정 격리가 가능하다:
+
+| backend | 격리 수단 | 확인 방법 |
+|---|---|---|
+| claude | `CLAUDE_CONFIG_DIR` | `claude.exe` 바이너리에 해당 문자열 존재 확인 |
+| codex | `CODEX_HOME` | `codex --help`의 `--profile` 설명이 `$CODEX_HOME/<name>.config.toml` 참조 |
+| gemini | `GEMINI_API_KEY` 등 | `limits.gemini.api_key_env`에 이미 목록 존재 |
+
+**핵심 발견 — "가상 백엔드"로 등록하면 기존 기계장치가 그대로 작동한다**: `usage.py:888`의
+`failover_backend`가 `for b in (cfg.backends or {})`로 **모든 backend를 일반적으로 순회**하고,
+`limits.py:1321`의 `_claude_root(conf)`도 `conf.get("projects_dir")`로 **backend별 경로 지정이
+가능**하다. 두 번째 계정을 `backends.json`에 `claude-alt` 같은 별도 backend로 등록하면 쿼터
+추적·원장·페이싱이 **자동으로 계정별 분리**되고, failover가 사용률 최소 backend를 고르므로
+여유 있는 계정을 자동 선택한다.
+
+**필요한 코드 변경은 하나**: `backends.py:215`의 `subprocess.run(...)`이 `env=`를 안 넘긴다 —
+backends.json에 per-backend `env` 필드를 지원하도록 추가해야 한다(약 10줄).
+
+**설계 판단 필요(구현 전)**: 지금 폴백 사다리는 모델 강등(90%) → backend 폴오버(97%) 순인데,
+계정 스위칭은 **모델 품질을 유지한 채 쿼터만 새로 얻으므로 강등보다 먼저 와야 논리적**이다.
+지금 구조로는 "claude 90% → haiku 강등"이 먼저 터지고 멀쩡한 두 번째 계정이 놀게 된다 —
+사다리 순서 조정은 기존 `degrade_plan()` 로직을 건드리는 별도 판단이 필요.
+
 ### 참고 문서 — P2P 도입 여부 및 "왜 yok3x인가" 평가 (2026-08-30)
 
 사용자 질문 2건에 대한 조사·결론 — [`docs/reports/v4.x-assessment-p2p-and-project-rationale-2026-08-30.md`](reports/v4.x-assessment-p2p-and-project-rationale-2026-08-30.md).
