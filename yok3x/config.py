@@ -124,7 +124,10 @@ DEFAULT_YOK3X = {
             "roles_no_downgrade": ["codex-critic", "gemini"],  # 리뷰어=품질 게이트라 제외
             # P2: 백엔드 폴오버 — 한도 도달 시 여유 있는 '다른 도구'로 워커를 임시 전환.
             # 결과물 품질이 달라질 수 있어 기본 OFF(별도 on/off). 켜면 정지 대신 계속 진행.
-            "failover_enabled": False,      # ← on/off (기본 off = 한도 시 현행처럼 정지)
+            # ← on/off (기본 off = 한도 시 현행처럼 정지). **다른 모델로 넘기는 것만** 통제한다.
+            # 같은 모델의 다른 계정(backends.json의 `account_of`)으로 넘기는 계정 스위칭은
+            # 산출물 품질이 안 바뀌므로 이 옵션과 무관하게 항상 동작한다(V-11).
+            "failover_enabled": False,
             "failover_ratio": 0.97,         # 이 사용률↑ 또는 backend stop → 다른 도구로 전환
             # V-11 계정 스위칭: 전환은 모델 품질을 유지한 채 쿼터만 새로 얻으므로, 모델을 깎는
             # 강등(downgrade_ratio)보다 먼저 시도한다. 이 선제 구간에서는 후보가 지금보다

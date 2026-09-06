@@ -868,12 +868,24 @@ def backend_available(cfg: Config, backend: str, probe_fn=None) -> bool:
         return True
 
 
+def _account_family(cfg: Config, backend: str) -> str:
+    """backend가 속한 '같은 모델 계정군' 이름(V-11).
+
+    `backends.json`에서 `account_of: "claude"`로 선언하면 그 backend는 claude의 **다른 계정**
+    (같은 CLI·같은 모델, 인증 디렉터리만 다름)이라는 뜻이다. 선언이 없으면 자기 자신이 계정군.
+    """
+    spec = (cfg.backends or {}).get(backend) or {}
+    return str(spec.get("account_of") or backend)
+
+
 def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int,
                      current_ratio: float | None = None) -> str | None:
     """P2 백엔드 폴오버 + P3 오프라인 폴백. exclude(한도초과/불가) 대신 쓸 backend를 고른다.
 
-    P2(클라우드↔클라우드): `failover_enabled` on일 때, 설치+여유(backend_available)한 '다른 클라우드'
-    중 사용률(ratio) 최소를 고른다. 오프라인 backend는 여기서 제외(마지막 수단이라).
+    P2(클라우드↔클라우드): 설치+여유(backend_available)한 후보 중 사용률(ratio) 최소를 고른다.
+    **같은 계정군**(`account_of`, 같은 모델의 다른 계정)은 품질이 안 바뀌므로 `failover_enabled`
+    없이 항상 후보이고 우선 선택된다. **다른 모델**로 넘기는 것만 종전대로 opt-in이다.
+    오프라인 backend는 여기서 제외(마지막 수단이라).
     P3(클라우드→로컬): 클라우드 대안이 없고 `offline_enabled`면, 로컬 서버가 실제로 떠 있을 때만
     `offline_backend`(local)로 강등해 무중단. 반환 None: 역할 제외·런당 상한 초과·대안 없음.
 
@@ -890,17 +902,31 @@ def failover_backend(cfg: Config, worker: str, exclude: str, switches_used: int,
         return None
     offline_b = d.get("offline_backend", "local")
     # P2: 클라우드 간 폴오버(오프라인 backend는 후보에서 뺀다)
-    best, best_ratio = None, None
-    if d.get("failover_enabled"):
-        for b in (cfg.backends or {}):
-            if b in (exclude, "mock", offline_b) or not backend_available(cfg, b):
-                continue
-            try:
-                r = check_backend(cfg, b).ratio
-            except Exception:
-                r = 0.0
-            if best_ratio is None or r < best_ratio:
-                best, best_ratio = b, r
+    # V-11: 후보를 두 갈래로 나눈다.
+    #   ① 계정 전환(같은 계정군 = 같은 CLI·같은 모델, `account_of`로 선언): 산출물 품질이
+    #      전혀 안 바뀌므로 **failover_enabled 없이 항상** 허용한다. 옵션을 켜야만 쓸 수 있게
+    #      해두면 쿼터가 남은 계정을 놔두고 멈추거나 모델만 깎이는 게 기본값이 돼버린다.
+    #   ② 다른 모델로의 폴오버: 품질이 달라질 수 있어 종전대로 `failover_enabled` opt-in.
+    # 같은 값이면 ①을 먼저 고른다(같은 모델이 언제나 더 안전한 선택).
+    family = _account_family(cfg, exclude)
+    best, best_ratio, best_is_twin = None, None, False
+    cross_ok = bool(d.get("failover_enabled"))
+    for b in (cfg.backends or {}):
+        if b in (exclude, "mock", offline_b) or not backend_available(cfg, b):
+            continue
+        is_twin = _account_family(cfg, b) == family
+        if not is_twin and not cross_ok:
+            continue
+        try:
+            r = check_backend(cfg, b).ratio
+        except Exception:
+            r = 0.0
+        # 같은 계정군을 우선하고, 그 안에서 사용률 최소를 고른다.
+        better = (best is None
+                  or (is_twin and not best_is_twin)
+                  or (is_twin == best_is_twin and r < (best_ratio if best_ratio is not None else 1e9)))
+        if better:
+            best, best_ratio, best_is_twin = b, r, is_twin
     if best is not None and current_ratio is not None:
         # 강등 전 선제 전환: 후보가 지금보다 의미 있게 여유로울 때만 옮긴다(스래싱 방지).
         gain = float(d.get("failover_min_gain", 0.1))

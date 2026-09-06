@@ -4002,6 +4002,24 @@ def test_failover_backend_picks_freest_and_respects_limits(tmp_path, monkeypatch
     assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None      # 역할 제외
 
 
+def test_account_twin_failover_works_without_opt_in(tmp_path, monkeypatch):
+    """V-11: 같은 모델의 다른 계정(account_of)은 품질이 안 바뀌므로 failover_enabled 없이도 전환된다."""
+    cfg = Config.load(tmp_path)
+    cfg.yok3x["guard"]["degrade"]["failover_enabled"] = False       # 다른 모델 폴오버는 꺼둔 상태
+    cfg.yok3x["guard"]["degrade"]["offline_enabled"] = False
+    cfg.backends["claude-alt"] = {"type": "cli", "command": ["claude", "-p"], "parser": "raw",
+                                  "account_of": "claude", "env": {"CLAUDE_CONFIG_DIR": "~/alt"}}
+    monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
+    ratios = {"claude": 0.99, "claude-alt": 0.05, "codex": 0.0}
+    monkeypatch.setattr(usage, "check_backend",
+                        lambda c, b: usage.GuardVerdict(b, ratios.get(b, 0.0), "5h", "ok", "d"))
+    # codex가 더 한가해도(0.0) 같은 모델 계정을 우선한다 — 품질이 안 바뀌는 쪽이 언제나 안전.
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) == "claude-alt"
+    # 계정군이 없으면 종전대로 opt-in 없이는 전환 안 함(회귀 방지)
+    del cfg.backends["claude-alt"]
+    assert usage.failover_backend(cfg, "claude-main", "claude", 0) is None
+
+
 def test_failover_preemptive_requires_meaningful_gain(tmp_path, monkeypatch):
     """V-11: current_ratio를 주면 '실질적으로 더 여유로운' 후보일 때만 전환(스래싱 방지)."""
     cfg = Config.load(tmp_path)
