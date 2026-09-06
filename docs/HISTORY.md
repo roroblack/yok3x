@@ -1,5 +1,14 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-09-05 — V-6 MCP 워커도구(a1) 실 서버 스모크 테스트 완료: TeamFlow(별도 저장소
+  `jira_for_me/mcp-server`) MCP 서버를 `yok3x.json`의 `mcp_servers.teamflow`로 등록하고,
+  실제 워커(claude-main)가 `create_issue`→`get_issue`→`update_issue_fields`→`get_issue`를
+  호출해 이슈 생성·수정이 실제 API로 동작함을 확인했다(승인 게이트 `_gate_mcp`는 우회하지
+  않고 매 호출 실시간 승인으로 통과). 이 과정에서 `create_issue`의 `projectId`가 프로젝트
+  key가 아닌 숫자 id여야 한다는 스키마 설명 누락을 발견해 TeamFlow에 실제 이슈([YOK-2])로
+  등록했다. TeamFlow(yok3x 프로젝트, key=YOK)를 이 저장소의 작업 등록·관리 공간으로 쓰기로
+  하고 `docs/RULE.md` §9에 규칙을 추가했다.
+
 - v4.x · 2026-08-30 — V-9 파일럿(실측 라운드 캘리브레이션 힌트): `calibration.py`가 이미
   기대하고 있었지만 한 번도 채워진 적 없던 `bucket` 필드를 매 런마다 자동으로 채우고
   (비용 0), bucket+pattern별 실측 rounds 중앙값·성공률을 `rounds_by_bucket`/`rounds_hint_for`로

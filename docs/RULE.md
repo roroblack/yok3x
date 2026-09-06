@@ -139,3 +139,19 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
 스냅샷 방법: 정본 소스 트리(패키지 `yok3x/`·`gui/`·`tests/`·`docs/`·`pyproject.toml`·`yok3x.py`)를 `backup/yok3x-<버전>-<날짜시간>/`로 복사(`__pycache__`·런타임·`backup/`·`release/` 제외). 버전 zip은 `backup/versions/`(추적됨, GitHub 보존), 폴더 스냅샷은 `backup/`(로컬). 스냅샷 시 HISTORY에 한 줄 남긴다.
 
 > 요지: "일정 이상 쌓이면"(HISTORY 5개/patch 3회/minor 버전/위험작업 전) = 백업 시점. 판단이 애매하면 백업하는 쪽으로.
+
+## 9. TeamFlow 이슈 트래킹 (실무 작업 관리, 2026-09-05 도입)
+
+- **TeamFlow(yok3x 프로젝트, key=YOK, projectId=89)를 이 저장소의 실제 작업 등록·관리 공간으로 쓴다.**
+  지금까지 한 작업과 앞으로 할 작업은 문서(TODO.md 등)뿐 아니라 TeamFlow 이슈로도 등록해 추적한다.
+- 연동은 MCP 워커도구(§3, a1)로 되어 있다: `yok3x.json`의 `mcp_servers.teamflow`(로컬 경로,
+  git 미추적) → `jira_for_me/mcp-server`(별도 저장소) → `mcp-server/.env`의 `TEAMFLOW_API_TOKEN`
+  (git 미추적, yok3x-bot 계정, YOK 프로젝트 admin 권한).
+- 워커가 TeamFlow 도구를 쓰려면 task.json의 `agents.<worker>.mcp_tools`에 `servers`·`allow_tools`를
+  **필요한 도구만 최소로** 명시해야 한다(opt-in, 화이트리스트 — §3 폭주 방지와 동일 원칙). MCP 도구
+  호출은 `_gate_mcp` 승인 게이트를 항상 거친다(자동화 시에도 우회 안 됨 — 사람이 그 순간 승인).
+- `create_issue`의 `projectId`는 **숫자 id**(YOK=89)이며 프로젝트 key("YOK")가 아니다 — 실제 혼동
+  사례가 있었다([YOK-2](https://jira-for-me.vercel.app), mcp-server 쪽 스키마 설명 보강 필요로 등록됨).
+- 이슈 설명(desc) 필드의 실제 파라미터명은 `description`이 아니라 `desc`.
+- 부분 수정은 `update_issue_fields`(배치, 보내지 않은 필드 보존)를 쓴다. `replace_issue`(전체 교체)를
+  쓰면 보내지 않은 필드가 기본값으로 초기화되니 일부 필드만 바꿀 때는 쓰지 않는다.
