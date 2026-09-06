@@ -388,6 +388,10 @@ class Orchestrator:
                  ask: Callable[[str], str] | None = None):
         self.cfg = cfg
         self.auto = cfg.yok3x.get("auto_approve", False) if auto is None else auto
+        # V-12: 무인(unattended) 호출 표시 — OpenClaw/Hermes류 상시구동 에이전트처럼 사람이
+        # 그 순간 지켜보지 않는 발신자를 위한 것. _run_task_file이 실행 전 비용상한을
+        # 강제하고, 여기 기록해 status.json에서 감사 가능하게 한다(fail-closed는 호출부에서).
+        self.unattended = False
         self.ask = ask or (lambda msg: input(msg))
         # 마이크로초까지 포함 — 같은 초에 시작한 동시 런이 같은 run_dir를 공유해
         # 서로의 step 파일을 덮어써 손상시키던 충돌을 방지한다.
@@ -501,6 +505,8 @@ class Orchestrator:
                 data["triage"] = self.triage
             if self.automation_decision is not None:
                 data["automation_decision"] = self.automation_decision
+            if self.unattended:
+                data["unattended"] = True
             if extra:
                 data.update(extra)
             _atomic_write_json(self.run_dir / "status.json", data)
@@ -2983,7 +2989,7 @@ def _load_replay_steps(run_dir: Path) -> tuple[dict[str, dict[str, Any]], str]:
 
 def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                    ask=None, *, resume_dir: Path | None = None,
-                   sink: dict[str, Any] | None = None
+                   sink: dict[str, Any] | None = None, unattended: bool = False
                    ) -> str | dict[str, str]:
     """task.json 실행. 반환: 종료 상태 문자열(실행 생명주기). sink(있으면)에 run_id·gate(산출물 승인
     판정)를 채운다 — 종료 상태(done/aborted)와 게이트 통과(gate.passed)는 별개라, 호출자가 둘을 나눠
@@ -2991,13 +2997,30 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
     task_path = Path(task_file)
     spec_bytes = task_path.read_bytes()
     spec = json.loads(spec_bytes.decode("utf-8-sig"))  # BOM 방어
-    orch = Orchestrator(cfg, auto=auto, ask=ask)
+    orch = Orchestrator(cfg, auto=(True if unattended else auto), ask=ask)
+    orch.unattended = unattended
     spec_error = _task_spec_error(spec, cfg)
     if spec_error:
         orch._log(f"[error] {spec_error}")
         orch._save_status("aborted", {
             "reason": spec_error, "cause": "config_error", "resumable": False})
         return f"aborted: {spec_error}"
+    if unattended:
+        # V-12: OpenClaw/Hermes류 상시구동 에이전트가 사람 확인 없이 이 런을 트리거할 수
+        # 있다는 뜻 — "무인 + 무제한 지출"이라는 위험한 조합을 fail-closed로 막는다.
+        # guard.reservation.max_usd_per_run은 원래 opt-in(기본 0=off)이라, --auto와
+        # 묶이지 않으면 사람이 안 보는 동안 상한 없이 실행될 수 있었다(코드 확인 — 어디에도
+        # 강제하는 곳이 없었음).
+        _cap = float(((cfg.yok3x.get("guard") or {}).get("reservation") or {})
+                     .get("max_usd_per_run", 0) or 0)
+        if _cap <= 0:
+            reason = ("무인(unattended) 실행은 guard.reservation.max_usd_per_run(런당 비용 "
+                      "상한)이 설정돼 있어야 합니다(0=무제한은 거부) — 사람이 지켜보지 않는 "
+                      "호출에 상한 없는 실행을 허용하지 않습니다.")
+            orch._log(f"[error] {reason}")
+            orch._save_status("aborted", {
+                "reason": reason, "cause": "unattended_requires_cost_cap", "resumable": False})
+            return f"aborted: {reason}"
     pace_snapshot = None
     automation_roles = None
     if automation.resolve_effective_mode(spec, cfg) != "off":
@@ -3229,12 +3252,14 @@ def _run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
 
 def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
                   ask=None, resume_run_id: str | None = None,
-                  sink: dict[str, Any] | None = None
+                  sink: dict[str, Any] | None = None, unattended: bool = False
                   ) -> str | dict[str, str]:
     """task.json 실행. G-1 재개는 이전 lineage 잠금을 잡은 순차 pipeline만 허용한다.
-    sink(있으면): run_id·gate를 채워 종료 상태와 산출물 승인(gate.passed)을 분리 소비하게 한다(F2-2)."""
+    sink(있으면): run_id·gate를 채워 종료 상태와 산출물 승인(gate.passed)을 분리 소비하게 한다(F2-2).
+    unattended=True(V-12): 사람이 그 순간 지켜보지 않는 발신자(외부 에이전트 등)의 호출임을
+    표시 — guard.reservation.max_usd_per_run 미설정 시 fail-closed로 거부한다."""
     if resume_run_id is None:
-        return _run_task_file(cfg, task_file, auto=auto, ask=ask, sink=sink)
+        return _run_task_file(cfg, task_file, auto=auto, ask=ask, sink=sink, unattended=unattended)
     if not isinstance(resume_run_id, str) or not resume_run_id.strip():
         return {"error": "재개 거부: resume_run_id가 비어 있습니다"}
     runs_root = cfg.paths.runs.resolve()
@@ -3246,7 +3271,8 @@ def run_task_file(cfg: Config, task_file: str | Path, auto: bool | None = None,
         # 재개 런 전체 동안 lineage를 독점한다. 24시간은 일반 backend timeout보다 충분히 길다.
         with reserve.file_lock(lock_path, ttl=86400, run_id=f"resume-{resume_run_id}"):
             return _run_task_file(
-                cfg, task_file, auto=auto, ask=ask, resume_dir=resume_dir, sink=sink)
+                cfg, task_file, auto=auto, ask=ask, resume_dir=resume_dir, sink=sink,
+                unattended=unattended)
     except FileExistsError:
         return {"error": f"재개 거부: lineage 잠금 사용 중({resume_run_id})"}
 

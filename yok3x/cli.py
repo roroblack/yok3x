@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("run", help="태스크 파일 1회 실행")
     sp.add_argument("task_file")
     sp.add_argument("--auto", action="store_true", help="승인 게이트 자동 통과")
+    sp.add_argument("--unattended", action="store_true",
+                    help="무인 호출 표시(V-12, OpenClaw/Hermes류 상시구동 에이전트용). "
+                         "--auto를 자동 포함하며, guard.reservation.max_usd_per_run 미설정 시 거부")
 
     sp = sub.add_parser("loop", help="에이전트 루프 실행(요금 가드가 스스로 정지)")
     sp.add_argument("task_file")
@@ -300,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "run":
         sink: dict = {}
-        state = run_task_file(cfg, a.task_file, auto=a.auto or None, sink=sink)
+        state = run_task_file(cfg, a.task_file, auto=a.auto or None, sink=sink,
+                              unattended=bool(getattr(a, "unattended", False)))
         print(f"\n종료 상태: {state}")
         gate = sink.get("gate")
         # 종료 상태(실행 생명주기)와 게이트(산출물 승인)를 분리한다(F2-2). done이어도 gate.passed=false

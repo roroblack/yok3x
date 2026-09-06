@@ -1098,6 +1098,62 @@ def test_round_verify_rejects_candidate_touching_verifier(mock_root, monkeypatch
     assert ok is True
     assert scope == "original_tree"          # 후보 스테이징 거부 → 원본에서 검증
     assert seen.get("cwd") is None           # 스테이징 경로가 아니라 기본(workdir)에서 실행
+def test_unattended_without_cost_cap_is_rejected_before_worker(mock_root, monkeypatch):
+    """V-12: 무인 호출은 guard.reservation.max_usd_per_run(0=off 기본값) 그대로면 거부돼야
+    한다 — OpenClaw/Hermes류 상시구동 에이전트가 사람 확인 없이 무제한 지출을 트리거하는
+    걸 fail-closed로 막는다."""
+    cfg = Config.load(mock_root)
+    assert (cfg.yok3x.get("guard", {}).get("reservation", {}).get("max_usd_per_run", 0) or 0) == 0
+    spec = {"pattern": "producer-reviewer", "task": "t",
+            "producer": "claude-main", "reviewer": "codex-critic"}
+    tf = mock_root / "task-unattended.json"
+    tf.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(
+        Orchestrator, "call_worker",
+        lambda *a, **k: pytest.fail("비용상한 없는 무인 호출에서 워커를 부르면 안 됨"))
+
+    result = run_task_file(cfg, tf, unattended=True)
+
+    assert result.startswith("aborted:")
+    run_dir = max(cfg.paths.runs.iterdir(), key=lambda p: p.name)
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "aborted"
+    assert status["cause"] == "unattended_requires_cost_cap"
+    assert status["unattended"] is True
+
+
+def test_unattended_with_cost_cap_set_proceeds_without_interactive_prompt(mock_root):
+    """비용상한이 설정돼 있으면 무인 호출이 진행되고, --auto 없이도 승인 게이트를 자동
+    통과한다(무인 호출은 사람이 y/n을 칠 수 없으므로 auto를 내포)."""
+    cfg = Config.load(mock_root)
+    cfg.yok3x.setdefault("guard", {}).setdefault("reservation", {})["max_usd_per_run"] = 5.0
+    spec = {"pattern": "producer-reviewer", "task": "t",
+            "producer": "claude-main", "reviewer": "codex-critic"}
+    tf = mock_root / "task-unattended-capped.json"
+    tf.write_text(json.dumps(spec), encoding="utf-8")
+
+    result = run_task_file(cfg, tf, unattended=True)
+
+    assert result == "done"
+    run_dir = max(cfg.paths.runs.iterdir(), key=lambda p: p.name)
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["unattended"] is True
+
+
+def test_unattended_flag_absent_from_status_when_not_used(mock_root):
+    """일반(무인 아닌) 호출의 status.json에는 unattended 키 자체가 없어야 한다(회귀 방지)."""
+    cfg = Config.load(mock_root)
+    spec = {"pattern": "producer-reviewer", "task": "t",
+            "producer": "claude-main", "reviewer": "codex-critic"}
+    tf = mock_root / "task-normal.json"
+    tf.write_text(json.dumps(spec), encoding="utf-8")
+
+    assert run_task_file(cfg, tf, auto=True) == "done"
+    run_dir = max(cfg.paths.runs.iterdir(), key=lambda p: p.name)
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert "unattended" not in status
+
+
 @pytest.mark.parametrize("spec", [
     {"pattern": "producer-reviewer", "task": "t", "producer": "claude-main",
      "reviewer": "codex-critic", "max_rounds": 2, "pass_score": 8.0},
@@ -2456,13 +2512,49 @@ def test_window_name_from_duration():
 def test_codex_appserver_labels_windows_by_duration(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)
     # primary에 7일(10080분), secondary에 5h(300분)가 와도 '길이'로 정확히 라벨해야 한다.
-    monkeypatch.setattr(limits, "_appserver_rate_limits", lambda exe, args, to: {
+    monkeypatch.setattr(limits, "_appserver_rate_limits", lambda exe, args, to, env=None: {
         "primary": {"usedPercent": 4, "windowDurationMins": 10080, "resetsAt": 1e9},
         "secondary": {"usedPercent": 2, "windowDurationMins": 300, "resetsAt": 1e9},
         "planType": "plus"})
     r = limits._probe_codex_appserver("codex", cfg.yok3x["limits"]["codex"])
     names = {w.name: w.used_percent for w in r.windows}
     assert names.get("7d") == 4.0 and names.get("5h") == 2.0      # 위치 아닌 길이로 라벨
+
+
+def test_codex_appserver_uses_sessions_dir_as_codex_home_for_alt_account(tmp_path, monkeypatch):
+    """V-11 후속: limits.<alt>.sessions_dir가 있으면 그 계정(CODEX_HOME=부모 디렉터리)으로
+    app-server를 띄운다 — 안 하면 라이브 프로브가 항상 기본 계정만 봐서 전환 판단이 불가능."""
+    cfg = Config.load(tmp_path)
+    alt_home = tmp_path / "codex-alt-home"
+    conf = dict(cfg.yok3x["limits"]["codex"])
+    conf["sessions_dir"] = str(alt_home / "sessions")
+    seen_env: dict = {}
+
+    def fake_rate_limits(exe, args, to, env=None):
+        seen_env["env"] = env
+        return {"primary": {"usedPercent": 1, "windowDurationMins": 10080, "resetsAt": 1e9}}
+
+    monkeypatch.setattr(limits, "_appserver_rate_limits", fake_rate_limits)
+    limits._probe_codex_appserver("codex-alt", conf)
+    assert seen_env["env"] is not None
+    assert seen_env["env"]["CODEX_HOME"] == str(alt_home)
+    # 나머지 환경(PATH 등)은 덮어쓰지 않고 상속한다.
+    import os
+    assert seen_env["env"].get("PATH") == os.environ.get("PATH")
+
+
+def test_codex_appserver_no_sessions_dir_keeps_env_unset(tmp_path, monkeypatch):
+    """sessions_dir 미지정(기본 계정)이면 env=None으로 기존 동작과 바이트 단위로 동일하다."""
+    cfg = Config.load(tmp_path)
+    seen_env: dict = {}
+
+    def fake_rate_limits(exe, args, to, env=None):
+        seen_env["env"] = env
+        return None
+
+    monkeypatch.setattr(limits, "_appserver_rate_limits", fake_rate_limits)
+    limits._probe_codex_appserver("codex", cfg.yok3x["limits"]["codex"])
+    assert seen_env["env"] is None
 
 
 # ------------------------------------ codex JSONL 파서(신형 스키마 호환)

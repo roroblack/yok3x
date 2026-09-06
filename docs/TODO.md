@@ -720,9 +720,22 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 후보는 **opt-in 없이 항상** 폴오버 대상이며, 더 한가한 다른 모델보다 우선 선택된다. 다른
 모델로의 폴오버만 종전대로 `failover_enabled` opt-in.
 
+**codex 쿼터 추적 계정 분리 — 구현 완료(2026-09-06)**: `switch_before_degrade`가 "지금보다
+`failover_min_gain` 이상 여유로운 계정"을 판단하려면 그 계정의 **실측 쿼터**가 필요한데,
+`limits._probe_codex_appserver`(라이브 app-server RPC)는 `env` 주입 없이 항상 기본
+`CODEX_HOME`만 조회해 두 번째 계정을 볼 방법이 없었다(전환 로직 자체는 되는데 판단에 쓸
+실측치가 없는 상태 — 세션 파일 폴백만 `sessions_dir`로 이미 계정 분리가 됐던 것과 비대칭).
+`limits.<alt>.sessions_dir`가 있으면 그 부모 디렉터리를 `CODEX_HOME`으로 삼아 app-server를
+띄우도록 고쳤다(`_appserver_rate_limits`에 `env` 매개변수 추가) — 기존에 쓰던 것과 같은
+설정 키 재사용이라 새 필드 없음. 미지정 시 `env=None`으로 기존 동작과 바이트 단위로 동일.
+테스트 2개 추가(alt 계정 env 주입 확인·미지정 시 회귀 없음), 전체 스위트 699 passed·1 skipped
+(기존 `test_parallel.py` 플레이크, 이번 변경과 무관).
+
 **남은 것**:
-1. 실제 두 번째 계정으로 end-to-end 검증(사용자 계정 준비 필요). 쿼터 **추적**까지 계정별로
-   정확히 하려면 `limits.<alt>.projects_dir`도 그 계정 경로로 지정해야 한다.
+1. 실제 두 번째 계정으로 end-to-end 검증(사용자 계정 준비 필요) — `backends.json`에
+   `account_of: "codex"` + `env.CODEX_HOME`로 가상 backend 등록, `limits.<alt>.sessions_dir`를
+   같은 CODEX_HOME의 `sessions` 하위로 지정하면 실행·쿼터추적 둘 다 분리된다(위 항목으로 준비는
+   끝남 — 남은 건 실제 두 번째 계정 준비뿐).
 2. **설정 화면 UI**(사용자 지시) — `switch_before_degrade`·`failover_min_gain`·계정군 표시를
    GUI에서 조정. RULE상 UI는 codex가 구현하고 Claude가 검토하는데, 2026-09-06 기준 codex가
    쿼터 소진(ratio 1.0, stop)이라 착수 못 함. codex 복구 후 진행.
@@ -752,6 +765,33 @@ backends.json에 per-backend `env` 필드를 지원하도록 추가해야 한다
 계정 스위칭은 **모델 품질을 유지한 채 쿼터만 새로 얻으므로 강등보다 먼저 와야 논리적**이다.
 지금 구조로는 "claude 90% → haiku 강등"이 먼저 터지고 멀쩡한 두 번째 계정이 놀게 된다 —
 사다리 순서 조정은 기존 `degrade_plan()` 로직을 건드리는 별도 판단이 필요.
+
+### V-12. OpenClaw/Hermes 등 외부 개인 에이전트 연동 안전장치 — **구현 완료** (2026-09-06 등록, 사용자 제안) · YOK-99
+
+**출처**: 사용자 제안 — OpenClaw·Hermes 같은 상시구동 개인 에이전트에서 yok3x를 편하게
+쓰도록 최적화하고 싶다. 웹 리서치(2026-09-06 기준)로 확인: 둘 다 **상시 구동 + 메시징/
+cron/webhook 같은 외부 이벤트로 트리거**되는 게 핵심 특성(OpenClaw 38만+ GitHub 스타;
+Hermes는 "smart approvals 기본 켜짐") — yok3x가 전제해온 "사람이 세션에서 직접 명령"과
+질적으로 다르다.
+
+**"기존 방어 장치로 충분한가"에 대한 답 — 코드로 확인한 결과 아니었음**: `--auto`(CLI
+호출 단위)와 `guard.reservation.max_usd_per_run`(런당 비용 상한, 기본 0=무제한)은 이미
+있었지만 **서로 묶여있지 않았다** — `--auto` 쓰면서 상한을 0으로 둬도 막는 코드가 없었다.
+"무인 호출 + 무제한 지출"이라는 위험한 조합이 그대로 가능했다.
+
+**구현 완료**: [`docs/plans/v4.x-plan-agent-integration-safety-2026-09-06.md`](plans/v4.x-plan-agent-integration-safety-2026-09-06.md)
+— 신규 `--unattended` 플래그(기존 `--auto`는 그대로 두고 opt-in 추가): `--auto`를 자동
+내포하고, 비용 상한 미설정 시 워커 호출 전에 `cause=unattended_requires_cost_cap`로
+fail-closed 거부. `status.json`에 `unattended: true` 기록(감사 가능). 그리고
+`.claude/skills/yok3x-usage/SKILL.md` 작성(Agent Skills 형식 — 지난주 DisCo 논문에서 확인한
+사양과 동일, Claude Code뿐 아니라 이 사양을 지원하는 다른 에이전트도 스스로 발견해 읽을 수
+있음) — yok3x 사용법·task.json 스키마·"하지 말아야 할 것"(전역 `auto_approve=true` 금지,
+`--unattended` 대신 `--auto`만 쓰지 말 것, workdir·자격증명 분리)을 문서화. 테스트 3개
+추가, 전체 스위트 702 passed·1 skipped(회귀 없음).
+
+**범위 밖(다음에 필요해지면)**: yok3x 자체를 MCP 서버로 감싸는 것(teamflow-mcp-server
+패턴 재사용) — 실사용 수요 확인되면 재검토. `verify_cmd`·`strict` 게이트를 무인 호출에
+강제하는 것도 이번엔 안 함(재정적 위험만 막음, SKILL.md에 강력 권장으로만 남김).
 
 ### 참고 문서 — P2P 도입 여부 및 "왜 yok3x인가" 평가 (2026-08-30)
 
