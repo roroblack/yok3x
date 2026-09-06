@@ -1,5 +1,32 @@
 # TODO — 대기 중인 점검 항목
 
+## 지금 열린 작업 (2026-09-06 기준 · 상세는 각 항목 참고)
+
+| # | 작업 | 상태 / 막힌 이유 |
+|---|---|---|
+| 1 | **V-11 설정 화면 UI** — `switch_before_degrade`·`failover_min_gain`·계정군 조정 | **codex 쿼터 소진(stop)으로 대기.** RULE상 UI는 codex 구현·Claude 검토라 직접 안 씀. 복구 시 착수 |
+| 2 | **V-11 실계정 e2e 검증** | 사용자의 두 번째 계정 준비 필요. `limits.<alt>.projects_dir`도 함께 지정해야 쿼터 추적까지 분리됨 |
+| 3 | **MCP 토큰 배선 고정**(아래 "운영 위험" 참고) | yok3x `.mcp.json`이 토큰을 안 들고 있어 공유 `.env`에 의존 — 누가 그 파일을 갈면 이쪽도 깨짐 |
+| 4 | **V-6 스모크 테스트 이후 확장** | 사용자가 "나중에"로 보류 |
+| 5 | T-4(a2)·T-6·V-5§4.2·V-8·V-9 확장 | 전부 데이터·실사용·전제조건 대기(각 항목 참고) |
+
+### 운영 위험 — MCP 토큰 배선 (2026-09-06 진단)
+
+[`docs/reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md`](reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md) ·
+TeamFlow [YOK-4]
+
+지금 yok3x의 `.mcp.json`은 `env`에 토큰을 안 들고 있어서, `mcp-server`가 폴백으로 읽는
+**공유 `.env`**(`jira_for_me/mcp-server/.env`)에 의존한다. 그 파일은 TFDEV 세션과 공유하므로
+**누가 거기 토큰을 갈면 이쪽도 조용히 남의 계정으로 붙는다**(2026-09-05에 반대 방향으로
+실제 발생 — TFDEV가 403). 지금은 마침 yok3x 계정 토큰이 들어 있어 정상일 뿐이다.
+
+근본 조치는 `.mcp.json`의 `env`에 **yok3x 계정 토큰을 명시**하는 것인데, `.mcp.json`이 git에
+추적되므로 그대로 넣으면 비밀값이 저장소에 올라간다. 따라서 `.gitignore`로 옮기고
+`.mcp.json.example`(토큰 자리 비움)을 대신 추적하는 형태여야 한다. **비밀값을 파일 간에
+옮기는 작업이라 사용자 확인 후 진행한다.**
+
+---
+
 데이터·시간이 쌓여야 판단 가능한 항목을 여기 모은다.
 점검은 **수동 실행**: `python scripts/todo_check.py` — 맨 아래 '자동 점검 상태'를 갱신한다
 (읽기 전용 계측, 판단은 사람이). 지금은 데이터가 0이라 실제 런이 쌓이기 전엔 결과가 안 바뀐다.
@@ -683,6 +710,9 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 2. **설정 화면 UI**(사용자 지시) — `switch_before_degrade`·`failover_min_gain`·계정군 표시를
    GUI에서 조정. RULE상 UI는 codex가 구현하고 Claude가 검토하는데, 2026-09-06 기준 codex가
    쿼터 소진(ratio 1.0, stop)이라 착수 못 함. codex 복구 후 진행.
+3. gemini 계정 분리는 **아직 안전한 방법이 없다**(위 표 참고 — `~/.gemini` 하드코딩). API 키
+   방식이면 `GEMINI_API_KEY`로 되지만 OAuth 계정은 홈 디렉터리를 통째로 바꾸는 우회뿐이라
+   부작용이 크다. 실제로 gemini 계정을 둘 이상 쓸 일이 생기면 그때 다시 판단.
 
 **실현 가능성 조사 완료(2026-09-06)** — 3개 backend 모두 환경변수로 계정 격리가 가능하다:
 
@@ -690,7 +720,7 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 |---|---|---|
 | claude | `CLAUDE_CONFIG_DIR` | `claude.exe` 바이너리에 해당 문자열 존재 확인 |
 | codex | `CODEX_HOME` | `codex --help`의 `--profile` 설명이 `$CODEX_HOME/<name>.config.toml` 참조 |
-| gemini | `GEMINI_API_KEY` 등 | `limits.gemini.api_key_env`에 이미 목록 존재 |
+| gemini | API 키(`GEMINI_API_KEY`) 또는 `USERPROFILE`/`HOME` | **전용 config 변수 없음** — CLI 번들에 `GEMINI_DIR = ".gemini"`가 **하드코딩**돼 있고 경로가 `path.join(homedir(), GEMINI_DIR)`라 `~/.gemini` 고정. OAuth 계정을 분리하려면 홈 디렉터리 자체를 바꾸는 우회뿐(부작용 있음) |
 
 **핵심 발견 — "가상 백엔드"로 등록하면 기존 기계장치가 그대로 작동한다**: `usage.py:888`의
 `failover_backend`가 `for b in (cfg.backends or {})`로 **모든 backend를 일반적으로 순회**하고,
