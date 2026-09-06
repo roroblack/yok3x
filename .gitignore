@@ -40,3 +40,7 @@ _protorun*/
 # 문제, 매번 새 이름으로 뚫림). "pytest"와 "tmp"/"temp"를 모두 포함하는 디렉터리는 이름이 뭐든 무시.
 *pytest*tmp*/
 *pytest*temp*/
+
+# TeamFlow(YOK) 관련 문서 — 내부 프로젝트 관리용이라 공개 저장소에 올리지 않는다.
+# 이 저장소는 GitHub public이므로 티켓 내용·보드 정보는 전부 여기 둔다(RULE §9).
+docs/private/

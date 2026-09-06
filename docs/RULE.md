@@ -152,7 +152,13 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
   토큰을 갈면 다른 쪽이 조용히 남의 계정으로 붙어 403을 맞는다(2026-09-06 실제 발생).
   토큰엔 프로젝트 범위 필드가 없고 **범위 = 소유 계정의 멤버십**이라, 계정만 분리하면 충돌이
   원천적으로 안 생긴다. 진단은 `list_projects` 한 번 — 반환 목록이 곧 그 계정의 멤버십이다.
-  상세: [`docs/reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md`](reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md).
+  진단 상세는 `docs/private/v4.x-assessment-teamflow-token-scope-2026-09-06.md` — **이 저장소에
+  포함되지 않는다**(아래 노출 금지 규칙).
+- **TeamFlow(YOK) 내용은 이 저장소에 올리지 않는다.** 이 프로젝트는 우리 작업을 관리하려고
+  쓰는 내부 공간이고, 반면 **이 저장소는 GitHub public**(`roroblack/yok3x`)이다. 티켓 본문·보드
+  구성·계정 정보가 들어가는 문서는 전부 `docs/private/`에 두며 이 경로는 `.gitignore`에 있다.
+  공유 문서(HISTORY·TODO·RULE)에는 **이슈 키(YOK-NN)와 한 줄 요약까지만** 남기고 티켓 본문을
+  옮겨 적지 않는다. 토큰은 어떤 추적 파일에도 쓰지 않는다(자리표시자 `tftok_...`만 허용).
 - 워커가 TeamFlow 도구를 쓰려면 task.json의 `agents.<worker>.mcp_tools`에 `servers`·`allow_tools`를
   **필요한 도구만 최소로** 명시해야 한다(opt-in, 화이트리스트 — §3 폭주 방지와 동일 원칙). MCP 도구
   호출은 `_gate_mcp` 승인 게이트를 항상 거친다(자동화 시에도 우회 안 됨 — 사람이 그 순간 승인).
