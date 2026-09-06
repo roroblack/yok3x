@@ -1,5 +1,11 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-09-06 — TeamFlow 토큰 공유 사고(2026-09-05, `v4.x-assessment-teamflow-token-scope-2026-09-06.md`) 후속으로 yok3x 쪽 RULE §9 재발방지 조치 적용: `yok3x.json`(git 미추적)의
+  `mcp_servers.teamflow.env`에 yok3x 계정 토큰을 직접 명시하고, git 추적+push된 `.mcp.json`에
+  토큰 없이 남아있던 `teamflow` 등록은 제거해 대신 개인 전역 설정(`~/.claude.json`)으로
+  옮겼다(시크릿을 공개 저장소에 절대 올리지 않기 위함). 이제 yok3x는 `jira_for_me/mcp-server/.env`
+  공유 폴백에 더 이상 의존하지 않는다.
+
 - v4.x · 2026-09-06 — TeamFlow(프로젝트 YOK) 전체 백필: 그때까지 이슈가 4개뿐이라 작업 이력을
   거기서 확인할 수 없었다. 에픽 6개(쿼터·페이싱 가드 / 심판 캘리브레이션 / MCP·TeamFlow /
   Cognitive Sync Layer·지식 / 비전 V-시리즈 / 안정성 하드닝), 스프린트 3개(2026-07·08·09),
