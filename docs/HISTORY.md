@@ -1,5 +1,11 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-09-06 — V-11 후속: codex 두 번째 계정의 쿼터를 **라이브로 추적**할 수 있게
+  `limits._probe_codex_appserver`가 `limits.<alt>.sessions_dir`(부모 디렉터리=CODEX_HOME)를
+  app-server 서브프로세스의 `env`로 주입하도록 고쳤다. 이전엔 계정 전환 실행 자체는 됐지만
+  "지금 그 계정이 얼마나 남았는지"를 볼 방법이 없어 `switch_before_degrade`의 판단 근거가
+  없는 상태였다. `docs/TODO.md` V-11 참고. 테스트 2개 추가, 전체 스위트 699 passed·1 skipped.
+
 - v4.x · 2026-09-06 — **정정: 토큰 계정 귀속 오진**(TeamFlow YOK-96). 9/6 진단서는 "yok3x는
   자기 계정 토큰을 쓰므로 정상이고 TFDEV 쪽 배선만 빠졌다"고 결론냈는데, 그 계정 귀속을
   확인한 적이 없었다. 확인된 건 `list_projects`가 [내부]만 admin으로 반환한다는 것뿐이고,

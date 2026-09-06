@@ -474,8 +474,17 @@ def _probe_codex_appserver(backend: str, conf: dict[str, Any]) -> LimitReading:
     exe = shutil.which(conf.get("codex_bin", "codex")) or conf.get("codex_bin", "codex")
     args = conf.get("app_server_args", ["-s", "read-only", "-a", "untrusted", "app-server"])
     timeout = float(conf.get("timeout_sec", 15))
+    # V-11 계정 스위칭: 두 번째 codex 계정(가상 backend)의 `limits.<alt>.sessions_dir`가
+    # 지정돼 있으면 그 계정의 CODEX_HOME(=sessions_dir의 부모)으로 app-server를 띄운다.
+    # 안 하면 이 라이브 프로브는 항상 기본 계정만 봐서, 전환 판단에 쓸 실측치가 없다
+    # (세션 파일 폴백만 sessions_dir를 이미 지원 — 이 프로브도 같은 설정을 재사용).
+    child_env = None
+    sessions_dir = conf.get("sessions_dir")
+    if sessions_dir:
+        child_env = os.environ.copy()
+        child_env["CODEX_HOME"] = str(Path(sessions_dir).expanduser().parent)
     try:
-        rl = _appserver_rate_limits(exe, list(args), timeout)
+        rl = _appserver_rate_limits(exe, list(args), timeout, env=child_env)
     except Exception as e:
         rl = None
         live_err = f"{type(e).__name__}: {e}"
@@ -676,11 +685,12 @@ def _win_terminate_job(job: int) -> None:
         logger.exception("Job Object 종료 실패(taskkill 폴백에 맡김)")
 
 
-def _appserver_rate_limits(exe: str, args: list[str], timeout: float) -> dict | None:
+def _appserver_rate_limits(exe: str, args: list[str], timeout: float,
+                           env: dict[str, str] | None = None) -> dict | None:
     proc = subprocess.Popen([exe] + args,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True,
-                            encoding="utf-8", errors="replace")
+                            encoding="utf-8", errors="replace", env=env)
     # BUG-43 후속: 생성 직후 즉시 Job Object에 편입한다(가능한 한 빨리 — 손자 프로세스가
     # 뜨기 전에 트리 전체를 담아야 함).
     job = _win_make_job()
