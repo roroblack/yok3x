@@ -146,7 +146,13 @@ v2.3.0-coding-fit-review-2026-07-04-1340.md
   지금까지 한 작업과 앞으로 할 작업은 문서(TODO.md 등)뿐 아니라 TeamFlow 이슈로도 등록해 추적한다.
 - 연동은 MCP 워커도구(§3, a1)로 되어 있다: `yok3x.json`의 `mcp_servers.teamflow`(로컬 경로,
   git 미추적) → `jira_for_me/mcp-server`(별도 저장소) → `mcp-server/.env`의 `TEAMFLOW_API_TOKEN`
-  (git 미추적, yok3x-bot 계정, YOK 프로젝트 admin 권한).
+  (git 미추적, **`yok3x` 계정**, YOK 프로젝트 admin 권한).
+- **토큰은 반드시 자기 MCP 등록의 `env`에 명시한다.** `env: {}`로 비워두면 `mcp-server`가
+  자기 `.env`를 폴백으로 읽는데, 그 파일은 **다른 프로젝트(TFDEV) 세션과 공유**된다 — 한쪽이
+  토큰을 갈면 다른 쪽이 조용히 남의 계정으로 붙어 403을 맞는다(2026-09-06 실제 발생).
+  토큰엔 프로젝트 범위 필드가 없고 **범위 = 소유 계정의 멤버십**이라, 계정만 분리하면 충돌이
+  원천적으로 안 생긴다. 진단은 `list_projects` 한 번 — 반환 목록이 곧 그 계정의 멤버십이다.
+  상세: [`docs/reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md`](reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md).
 - 워커가 TeamFlow 도구를 쓰려면 task.json의 `agents.<worker>.mcp_tools`에 `servers`·`allow_tools`를
   **필요한 도구만 최소로** 명시해야 한다(opt-in, 화이트리스트 — §3 폭주 방지와 동일 원칙). MCP 도구
   호출은 `_gate_mcp` 승인 게이트를 항상 거친다(자동화 시에도 우회 안 됨 — 사람이 그 순간 승인).

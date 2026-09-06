@@ -671,7 +671,18 @@ pattern별 success_rate/cost 비교 함수를 추가하는 게 자연스러운 �
 전체 스위트 695 passed·1 skipped(실패 1건은 `test_parallel.py`의 기존 타이밍 플레이크 —
 격리 실행 시 18개 전부 통과 확인, 이번 변경과 무관).
 
-**남은 것**: 실제 두 번째 계정으로 end-to-end 검증(사용자 계정 준비 필요).
+**자동화(2026-09-06 사용자 지시 "이런 거는 자동으로 되게 해놔야지")**: `failover_enabled`는
+원래 "다른 모델로 넘기면 품질이 달라진다"는 이유로 기본 off였는데, 같은 모델의 다른 계정은
+그 근거가 적용되지 않는다. `backends.json`에 `account_of: "claude"`로 계정군을 선언하면 그
+후보는 **opt-in 없이 항상** 폴오버 대상이며, 더 한가한 다른 모델보다 우선 선택된다. 다른
+모델로의 폴오버만 종전대로 `failover_enabled` opt-in.
+
+**남은 것**:
+1. 실제 두 번째 계정으로 end-to-end 검증(사용자 계정 준비 필요). 쿼터 **추적**까지 계정별로
+   정확히 하려면 `limits.<alt>.projects_dir`도 그 계정 경로로 지정해야 한다.
+2. **설정 화면 UI**(사용자 지시) — `switch_before_degrade`·`failover_min_gain`·계정군 표시를
+   GUI에서 조정. RULE상 UI는 codex가 구현하고 Claude가 검토하는데, 2026-09-06 기준 codex가
+   쿼터 소진(ratio 1.0, stop)이라 착수 못 함. codex 복구 후 진행.
 
 **실현 가능성 조사 완료(2026-09-06)** — 3개 backend 모두 환경변수로 계정 격리가 가능하다:
 

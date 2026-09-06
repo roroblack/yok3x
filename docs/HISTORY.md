@@ -1,5 +1,25 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-09-06 — TeamFlow MCP 토큰 범위 충돌 진단: TFDEV 쪽 세션이 403을 맞고 [내부]가
+  안 보이던 원인을 추적했다. 양쪽 MCP 등록이 **둘 다 자기 토큰을 안 넘겨**(TFDEV 쪽은
+  `env: {}`) `mcp-server/.env`의 토큰 하나를 공유하고 있었고, 9/5 V-6 스모크 테스트 때 그
+  공유 파일에 yok3x 계정 토큰이 들어가면서 TFDEV용 토큰을 덮어썼다. 토큰엔 프로젝트 범위
+  필드가 없어 **범위 = 소유 계정 멤버십**이므로, 각자 자기 토큰을 `env`에 명시하면 충돌이
+  원천적으로 사라진다. RULE §9에 이 함정과 계정명 오기(`yok3x-bot`→`yok3x`)를 반영했다.
+  상세: `docs/reports/v4.x-assessment-teamflow-token-scope-2026-09-06.md`.
+
+- v4.x · 2026-09-06 — V-11 계정 스위칭: 같은 backend의 **다른 계정**으로 쿼터를 넘기는 기능.
+  `backends.py`가 backend별 `env`를 자식 프로세스에 주입하도록 해(미지정 시 `env=None`으로
+  기존 동작 불변), `claude-alt` 같은 **가상 backend**를 인증 디렉터리만 다르게 등록하면
+  계정이 분리된다(claude=`CLAUDE_CONFIG_DIR`·codex=`CODEX_HOME`·gemini=API 키 / gemini는
+  `~/.gemini` 하드코딩이라 전용 변수 없음). `failover_backend`가 `cfg.backends`를 일반
+  순회하고 limits의 claude 프로브도 backend별 경로 지정이 가능해 쿼터추적·페이싱·원장이
+  자동으로 계정별 분리된다. 폴백 사다리도 바꿨다 — 종전엔 폴오버 97%·강등 90%라 90~97%
+  구간에서 여유 있는 계정을 놔두고 모델만 깎였으나, 이제 강등 임계에서 전환을 먼저 시도한다
+  (`switch_before_degrade`, 후보가 `failover_min_gain`=10%p 이상 여유로울 때만 — 스래싱 방지).
+  같은 모델의 다른 계정(`account_of`)은 산출물 품질이 안 바뀌므로 `failover_enabled` 없이
+  **항상** 후보이며 다른 모델보다 우선한다. 테스트 6개 추가, 696 passed.
+
 - v4.x · 2026-09-05 — V-6 MCP 워커도구(a1) 실 서버 스모크 테스트 완료: TeamFlow(별도 저장소
   `jira_for_me/mcp-server`) MCP 서버를 `yok3x.json`의 `mcp_servers.teamflow`로 등록하고,
   실제 워커(claude-main)가 `create_issue`→`get_issue`→`update_issue_fields`→`get_issue`를
