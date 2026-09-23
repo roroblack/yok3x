@@ -387,6 +387,27 @@ require_plan/require_selfcheck(절차 제어 — 프롬프트 수준), `_new_evi
 참고자료로 주입하는 기능. 단, 원문/민감정보 저장 금지 원칙(S3에서 이미 확립)과 충돌하지 않게
 설계해야 함 — "무엇을 했는지"의 요약만 저장하고 원문은 저장하지 않는 방식 검토.
 
+**참고 논문(2026-09-08, 사용자 공유, 구현 아님 — 향후 재검토 시 참고용)**:
+- [Repo-To-Skill/DisCo](https://huggingface.co/papers/2609.02749): 저장소를 검증된 스킬로
+  증류하는 4단계(범위결정→근거수집→구성→**검증**). "재사용하려는 지식은 실행으로 검증해야
+  신뢰할 수 있다"는 원칙이 V-1의 기존 안전장치(verify_ok+gate 통과 라운드만 저장)와 같은
+  방향임을 독립적으로 확인해줌. 스킬 형식(SKILL.md)이 Claude Code Agent Skills와 동일
+  사양이지만, yok3x 워커는 `--disallowedTools`로 도구 호출 자체가 꺼져 있어(텍스트
+  생산자=안전 원칙) 직접 활용은 안 됨 — `context_globs`로 텍스트만 주입하는 우회는 가능.
+- [DART-SD](https://arxiv.org/abs/2608.18524): "다이아몬드 토폴로지"(순서독립적 하위목표엔
+  유효한 경로가 여러 개인데, 단일 궤적으로 강제하면 "토폴로지 붕괴") — codex가 V-1 설계
+  때 지적한 "탐색 다양성 축소" 우려에 정식 이름과 이론적 근거를 붙여줌. self-distillation
+  자체(파인튜닝 필요)는 yok3x가 모델 가중치를 안 건드리므로 적용 불가.
+- [Bilevel Coordinated Reflection/SRMA](https://arxiv.org/abs/2609.02750): "텍스트만 읽는
+  self-gate로는 reflection의 지속적 개선을 보장 못 한다"는 정보이론적 불가능성 증명 + 실제
+  환경/verifier로 검증해 **위험이 줄어들 때만** 기억을 갱신하는 SRMA. SWE-bench 500건에서
+  ungated reflection(58.4%)이 reflection 자체를 안 한 baseline(70.8%)보다 나빴다는 실측이
+  핵심 — yok3x의 verify_cmd 게이트(리뷰어 SCORE만으로 안 열림)와 T-1(mutation-testing으로
+  심판 신뢰도 검증)이 왜 필요했는지의 이론적 근거. V-1의 다음 개선 방향으로 구체적: 지금은
+  "라운드가 성공했나"만 보는 boolean 게이트인데, SRMA처럼 "이 힌트를 추가하면 위험이
+  실제로 줄어드는가"를 비교하는 방식이 더 원칙 있음. "re-anchoring"(환경 변화 시 기존
+  기억 재평가)도 knot의 수동적 시간 감쇠(`recency_halflife_days`)보다 능동적이라 참고할 만.
+
 ### V-2. Agentic Transaction — 에이전트 작업의 ACID 보장 (arXiv 2608.13900)
 
 **계획서 승격됨(2026-08-24)**: [`docs/plans/v4.x-plan-materialize-transactional-publish-2026-08-24.md`](plans/v4.x-plan-materialize-transactional-publish-2026-08-24.md)
@@ -790,6 +811,143 @@ fail-closed 거부. `status.json`에 `unattended: true` 기록(감사 가능). �
 **범위 밖(다음에 필요해지면)**: yok3x 자체를 MCP 서버로 감싸는 것(teamflow-mcp-server
 패턴 재사용) — 실사용 수요 확인되면 재검토. `verify_cmd`·`strict` 게이트를 무인 호출에
 강제하는 것도 이번엔 안 함(재정적 위험만 막음, SKILL.md에 강력 권장으로만 남김).
+
+### V-13. yok3x를 상시 작업 인터페이스로 — 개입 가능한 실행 → 채팅 → 코딩 에이전트 (2026-09-08 등록, 사용자 지시) · YOK-102
+
+**최종 목표(사용자 지시)**: "최종적으로 나는 이 멀티 에이전트 툴을 그냥 지금 쓰는 클로드나
+코덱스 GUI 대신에 쓰고 싶어. 매번 저것들 호출해서 쓰는 거 너무 빡쳐. 겁나 더럽게 무겁고.
+그냥 단순히 채팅처럼 쓰는 기능도 제공하고 자동완성 코딩툴로서 기능도 제공하고 (…) 그러면서도
+지식그물 잘 구축해 놓고 GUI도 내 마음에 들게 설계하고." — yok3x의 종착점은 배치
+오케스트레이터가 아니라 **Claude Code·Codex GUI를 대체하는 상시 인터페이스**다.
+
+**출처**: 사용자가 Claude Code 세션 사이드바 스크린샷 + `docs/idea/WSO - WSO _ AI 작업
+자동화 Work System Optimizatioin.mhtml`("Conversation OS" 구상)을 제시. 내가 처음에
+"yok3x 워커는 1회성이라 사람이 끼어들 지점이 구조적으로 없다"며 기각했으나 **사용자가
+반박했고, 코드로 확인해보니 내 근거가 틀렸다**.
+
+**계획서**: [`docs/plans/v4.x-plan-interactive-run-and-execution-graph-2026-09-08.md`](plans/v4.x-plan-interactive-run-and-execution-graph-2026-09-08.md)
+
+**정정된 진단(코드 근거)**: 상호작용 이음매는 이미 있다 — `orchestrator.py:395`의 주입
+가능한 `self.ask`, `:532-542`의 단계별 승인 게이트(y/N/q), `:544-554`의 도구 게이트
+(`auto_approve`로도 우회 불가), `config.py:25`의 `auto_approve: False`(CLI 기본은 매 단계
+질의). 진짜 결함은 **개입 방식이 y/N/q 세 글자뿐이고 GUI에서는 그마저 꺼져 있다는 것**
+(`guiserver.py:594,597`이 `auto=True` 하드코딩, 체크포인트 엔드포인트 0개 — `path == "/api/`
+정확일치 13건과 접두 dispatch 0건 양쪽으로 확인).
+
+**채팅 모드 실현 가능성 — CLI 기능 직접 확인(2026-09-08)**: `claude`는 `--input-format
+stream-json`·`--output-format stream-json`·`-r/--resume <세션ID>`·`-c/--continue`를 지원하고,
+`codex`는 `exec resume <id>`·`--last`·`exec fork <id>`·`--json`을 지원한다 → **양방향 다중턴
+세션이 구조적으로 막혀 있지 않다.** 확인 범위: `--help` 출력의 플래그 존재만 봤다. 실제
+왕복 동작은 Phase 2 첫 작업으로 실측한다.
+
+**축(2026-09-21 재정리)**: yok3x는 producer-reviewer 오케스트레이터다. 사용자가 요구한
+것들은 별개 기능 3개가 아니라 **같은 루프의 참가자·입자 크기 변화**다 — 채팅=작은 task
+1런, 런 중 피드백=사람이 reviewer 자리에 앉는 것, 코딩 에이전트=도구 켠 워커, 실행
+그래프=그 루프를 보는 창. ★채팅을 "백엔드 하나와의 다중턴"으로 만들면 claude CLI의 얇은
+프록시가 되어 대체할 이유가 사라진다 — **검수를 통과한 답을 준다는 것**이 유일한 이유다.
+
+**추가 진단(2026-09-21)**: 관측·집계 부품은 있으나 **회로가 꺼져 있고 데이터가 비었다** —
+`automation_mode` 기본·실설정 모두 `off`([config.py:26](../yok3x/config.py:26)), 자동화
+판정은 `display-only`([automation.py:94](../yok3x/automation.py:94)), triage는 "자동 적용
+안 함"([triage.py:7](../yok3x/triage.py:7)), 표본은 메인 저장소 기준
+[.yok3x/calibration.jsonl](../.yok3x/calibration.jsonl) 2줄·리뷰 관측 1줄(작업 디렉터리
+분산분 합산해도 7건, 임계 백엔드당 20건 미달). 결정적 증거는
+[orchestrator.py:1794](../yok3x/orchestrator.py:1794) 주석 — "집계가 이미 이 필드를
+기대하고 있었지만 지금까지 아무도 채운 적이 없었다".
+
+**두 축이 물려 있다**: 런 중 개입(신규) → 사람 판정이 기록으로 쌓임 → 이미 있는 집계가
+처음으로 의미 있는 표본을 가짐 → 걸러내기 → 근거 갖고 자동화를 켬. 그래서 **새로 짓는 게
+아니라 켜고·잇고·쌓는 일**이고, 순서는 개입이 먼저다.
+
+**단계(4축)**:
+- A 개입 — YOK-104(S1 체크포인트)·105(S2 중간보고)·106(S3 GUI 개입)·**114(S10 비동기
+  인바운드+라우터)**·**115(S11 멀티런)**
+- B 관찰 — YOK-107(S4 실행그래프)·108(S5 작업계보)
+- C 근거 — **YOK-116(S12 기록 걸러내기)**·**117(S13 루프 닫기)** — NeoHorse-1
+  ([arXiv 2609.08183](https://arxiv.org/abs/2609.08183)) 구조의 2·3단계를 가중치가 아니라
+  라우팅 정책에 적용. 가중치 학습은 안 가져옴(V-7 로컬 백엔드 실현 시 조건부 재검토)
+- D 표면 — YOK-109(S7 채팅=1턴 1런)·110(S8 코딩에이전트)·111(S9 GUI 재설계)
+- E 지식 — YOK-103(S6 knot 계층정리)
+
+착수 순서: S1→S2→S3→S10→(S11)→S4, 데이터 축적 후 S12→S13→S7→S8. S6·S5·S9는 독립.
+코어는 Claude 직접, GUI(S3·S4·S9·S10 화면)는 RULE §5.6에 따라 codex 구현·Claude 검토.
+
+**설계 제약**: 사용자 불만이 "무겁다"이므로 대체재가 더 무거우면 의미가 없다 —
+**프레임워크·번들러·Electron 도입 금지**, 정적 HTML + 표준 라이브러리 유지.
+
+**확인 필요**: "자동완성 코딩툴"이 (a) Claude Code류 코딩 에이전트인지 (b) 편집기 인라인
+자동완성(Copilot류)인지. (b)면 LSP·편집기 확장이 필요한 별도 트랙. S8 착수 전 확인.
+
+### V-14. knot(지식그물) 메모리 계층 경계 정리 — Working/Episodic/Semantic (2026-09-08 등록, V-13과 함께 논의 중 발견) · YOK-103
+
+**출처**: V-13 논의 중 codex가 "knot에는 확정된 결론만 저장된다"는 기존 설명이 실제
+코드와 다르다고 지적 — Claude가 직접 코드로 재검증해 사실로 확인(`orchestrator.py:2356-2358`
+의 `_finish()`가 모든 성공 run 요점을 `knowledge/`에 `source=orchestrator, type=Run Summary`
+로 **저장**하고, `knot.py:211-216`의 `context_for_prompt`는 프롬프트 **주입만** 제외 —
+저장과 주입을 구분하지 못했던 기존 이해를 정정).
+
+**계획서**: [`docs/plans/v4.x-plan-interactive-run-and-execution-graph-2026-09-08.md`](plans/v4.x-plan-interactive-run-and-execution-graph-2026-09-08.md)
+(V-13과 같은 문서의 S6 절) — 현재 구현이 이미 3계층에 가깝지만 경계가 섞여 있음을 코드로
+확인: 자동 run 요약이 Semantic(`knowledge/`)에 섞여 들어가고(위 근거), `_recency_weight`
+(`knot.py:94-108`)가 `Decision`/`Constraint` 같은 영속 지식에도 type 구분 없이 일괄
+감쇠를 적용하며, `lint()`(`knot.py:182-208`)의 "중복 통합"은 실제로는 병합하지 않고 경고
+문자열만 낸다(`issues.append`뿐, 확인됨). 제안: 자동 run 요약을 Episodic
+(`episode_summary.md`)으로 되돌리고, `yok3x knot promote <run_id>`로 Semantic 승격을
+명시적 동작화, frontmatter에 `status`/`verified_at`/`stale_after`/`derived_from`/
+`supersedes` 추가, type별 감쇠 분기, "중복 통합" 문구를 실제 동작에 맞게 정정하거나 진짜
+merge 명령 추가. 모두 기존 호출부 하위 호환 유지가 원칙.
+
+**남은 것**: 구현 전 상태. GUI가 아니므로 RULE §5.6 제약 없음(Claude 직접 구현 가능).
+V-13의 "지식그물 잘 구축" 축과 맞물리므로 S1~S4 이후 착수 권장(독립 진행도 가능).
+
+### V-15. Agora — Git 커밋 그래프를 공유 기억으로 (2026-09-21 등록, 사용자 공유 논문) — **참고 메모, 구현 없음** · YOK-113
+
+**출처**: [Agora: Git as Shared Memory for Collective AutoResearch](https://arxiv.org/abs/2609.18094) —
+여러 자율 연구 에이전트가 같은 일을 반복하는 문제를 Git 커밋 그래프(추가 전용 DAG, 각 주장 =
+누구나 체크아웃해 재실행할 수 있는 커밋)로 푼 논문.
+
+**확인한 범위**: arXiv 초록 페이지만(본문 전체 아님). 확인된 것 — 약 12일·LM 작업자 13개·기여
+1,703개, 3.39→1.899 bits/byte(논문 표현: 훈련된 GPT-2 124M과의 간격 62% 축소), 독립 재현 165건
+게시·실패 0건, 실행 중 사람 개입 1건("중앙 계획 없이"에 단서). 논문 자체 한계 서술상 공유 상태가
+계산량당 발견을 개선하는지는 통제 비교가 필요 — "협업이 된다"와 "협업이 더 효율적이다"는 별개.
+확인 못 한 것 — 브랜치/머지 구조·검증 주체·악의적 기여 대응(그 페이지에 없었을 뿐, 논문에
+없다는 뜻이 아님).
+
+**yok3x 접점(코드 확인)**: `changes.apply_mode="auto_commit"`(`_ratchet_commit`,
+`yok3x/orchestrator.py`)이 검증 통과 라운드만 격리 브랜치 `yok3x/run_<run_id>`에 커밋한다 —
+T-3에서 opt-in(기본 review). 실사용 흔적은 못 찾음: 이 저장소 로컬+원격 `yok3x/run_*` 브랜치 0개,
+이 저장소 런 21개 중 status.json ratchet 기록 0건, T-2 작업 폴더 4곳 0건(놓칠 수 있는 것: 다른
+저장소에서 돌린 런·삭제된 브랜치). 커밋 메시지는 `yok3x r{N}: verify 통과 체크포인트 (run {id})`
+한 줄 — 점수·verify_cmd가 없어 남이 재검증하기엔 부족.
+
+**평가 — 지금 만들지 않음**:
+1. [P2P 평가](reports/v4.x-assessment-p2p-and-project-rationale-2026-08-30.md)의 보류 근거 중 "새
+   의존성·서버 필요"는 git 기반이면 약해진다(원격 저장소는 필요). "증거 기반 신뢰"는 그대로.
+2. "검증 통과 커밋"은 코드 작업에서 약한 증거 — [T-1 mutation 파일럿](reports/v4.x-result-t1-mutation-testing-pilot-2026-08-30.md)에서
+   주입 결함 4개 중 3개가 기존 pytest를 통과(표본: 작업 2 × mutant 2, 작음). Agora는 점수가 곧
+   검증이라 재실행이 통하지만, 우리는 테스트가 불완전하고 producer 실행이 유료·비결정적.
+3. 최종 목표(GUI 대체 daily driver, V-13)와 다른 제품 방향(집단 자율연구 레이어).
+
+**조건부 후보(수요 확인 후, 미계획)**: (a) 래칫 커밋 메시지에 run_id·점수·verify 결과 트레일러
+추가 — 재검증·감사용, 사설 정보 제외. (b) knot 노트의 git 공유 — 작업 원문이 들어가는
+orchestrator 출처 노트(`Run Summary`)는 제외 필수(V-6 프라이버시 원칙).
+
+### V-16. XConf — 과거 경험으로 확신도 보정 (2026-09-21 등록, 사용자 공유 논문) — **계획서 완료, 구현 보류(트리거 사전 등록)** · YOK-118
+
+**출처**: [Confidence Comes from Experience](https://arxiv.org/abs/2609.17708) — 비슷한 과거 에피소드의
+성공률을 조회해 확신도를 다시 추정하는 추론 시점 기법(가중치·로짓 불필요). 초록 요약만 확인,
+본문·부록 미확인.
+
+**계획서**: [`docs/plans/v4.x-plan-experience-based-confidence-2026-09-21.md`](plans/v4.x-plan-experience-based-confidence-2026-09-21.md)
+
+**지금 구현하지 않는 이유(측정)**: 디스크에 남은 `calibration.jsonl` 18개 파일·27행 중 candidate
+22행이 전부 `verify_ok=True`(False 0건)라 과거 성공률 조회가 구별력을 못 낸다. `bucket`이 채워진
+행은 0/27(V-9 이전 행). 삭제된 2차 수집 #1~7·#10 폴더는 못 셌다.
+
+**재검토 트리거(사전 등록, 임의 값)**: (T1) `verify_ok=False` 독립 run 3건 이상 또는 witness
+확정 통제 관측 12건 이상·작업 4개 이상, (T2) `bucket` 채워진 독립 run 20개 이상·bucket별
+5개 이상, (T3) 논문 본문·부록 완독. 셋 다 충족하면 LLM 호출 없는 순수 조회 함수(로그 전용)부터
+검토 — 게이트·`max_rounds`에는 연결하지 않는다.
 
 ### 참고 문서 — P2P 도입 여부 및 "왜 yok3x인가" 평가 (2026-08-30)
 
