@@ -8,6 +8,7 @@
   yok3x coach                         사용량 코칭 메시지 출력
   yok3x coach guard on|off            요금 가드 on/off
   yok3x sync-calibration               Cognitive Sync Layer 효과 측정·자동 off
+  yok3x observations [--roots ...]    여러 작업폴더의 관측 로그 읽기 전용 집계(YOK-121)
   yok3x sync <run_id>                  Cognitive Sync Layer 이해 자료 표시
   yok3x knot save|ingest|query|lint   지식그물
   yok3x flavor [이름]                 flavor 확인/변경
@@ -97,6 +98,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("calib", help="심판 캘리브레이션 요약(SCORE가 실제 통과를 예측하나)")
     sp.add_argument("--threshold", type=float, default=8.0, help="게이트 임계 SCORE(기본 8.0)")
+
+    sp = sub.add_parser("observations",
+                        help="여러 작업폴더의 runbooks·calibration·review_protocol 관측을 읽기 전용 집계"
+                             "(YOK-121 안 B — 저장 위치는 안 바꿈)")
+    sp.add_argument("--roots", nargs="+", default=None,
+                    help="집계할 루트 경로들(재귀로 .yok3x/ 탐색). 생략 시 현재 config root 하나만")
+    sp.add_argument("--min-samples", type=int, default=5, help="런북 힌트 표본 기준(기본 5)")
+    sp.add_argument("--json", action="store_true", help="기계판독 JSON 출력")
 
     sub.add_parser("sync-calibration", help="Cognitive Sync Layer 효과 측정·무상관 시 자동 off")
 
@@ -354,6 +363,38 @@ def main(argv: list[str] | None = None) -> int:
               f"  (tp={c['tp']} fp={c['fp']} tn={c['tn']} fn={c['fn']})")
         if s["n_labeled"] < 10:
             print("  ※ 표본이 적어(10 미만) 아직 신뢰 불가 — 런이 쌓이면 다시 보라.")
+        return 0
+
+    if a.cmd == "observations":
+        from . import observability
+        roots = a.roots if a.roots else [cfg.paths.root]
+        agg = observability.aggregate_observations(roots, min_samples=a.min_samples)
+        if a.json:
+            print(json.dumps(agg, ensure_ascii=False, indent=2))
+            return 0
+        print(f"관측 집계 — 루트: {', '.join(agg['roots'])}")
+        print(f"  파일 발견: runbooks {agg['files']['runbooks.jsonl']}개 · "
+              f"calibration {agg['files']['calibration.jsonl']}개 · "
+              f"review_protocol {agg['files']['review_protocol_observations.jsonl']}개")
+        rb = agg["runbooks"]
+        print(f"  런북: 레코드 {rb['total']}개(깨진 줄 {rb['malformed']})")
+        if rb["by_bucket_pattern"]:
+            for row in rb["by_bucket_pattern"]:
+                mark = "충분" if row["min_samples_met"] else f"부족(<{agg['min_samples']})"
+                print(f"    bucket={row['bucket']} pattern={row['pattern']}: "
+                      f"{row['count']}건 [{mark}] tags={row['tags']}")
+        else:
+            print("    (기록 없음)")
+        cb = agg["calibration"]
+        print(f"  캘리브레이션: 레코드 {cb['total']}개(깨진/제외 {cb['malformed']})")
+        if cb["summary"]:
+            s = cb["summary"]
+            corr = s["score_verify_corr"]
+            print(f"    판정: {s['verdict']} · SCORE↔통과 상관: "
+                  f"{'%.3f' % corr if corr is not None else '—(표본/분산 부족)'}")
+        rp = agg["review_protocol"]
+        print(f"  리뷰 프로토콜 관측: 레코드 {rp['total']}개(깨진 줄 {rp['malformed']}) "
+              f"reviewer별={rp['by_reviewer']}")
         return 0
 
     if a.cmd == "coach":
