@@ -66,7 +66,7 @@ code,.mono,.rid{font-family:var(--font-code)}
 .panel h2{font-family:var(--font-display);margin:0 0 3px;font-size:19px;display:flex;align-items:center;gap:8px}
 .panel h2 .ic{width:15px;height:15px;background:var(--yellow);border:2.5px solid var(--ink);border-radius:5px;transform:rotate(-8deg)}
 .sub{color:var(--ink2);font-size:12px;margin:0 0 14px}
-.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-items:start}
 @media(max-width:840px){.grid3{grid-template-columns:1fr}}
 
 /* 도구 카드 (lovable식 둥근 파스텔 + 상태색) */
@@ -79,7 +79,8 @@ code,.mono,.rid{font-family:var(--font-code)}
 .badge.live{background:var(--blue);color:#fff}.badge.est{background:var(--yellow)}.badge.ledger{background:#e7e0cc}
 .plan{font-size:11.5px;color:var(--ink2);margin-bottom:8px}
 .win{margin:9px 0}
-.win .l{display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px}
+.win .l{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:2px}
+.win .l>span:first-child{white-space:nowrap}
 .win .l .rst{color:var(--ink2);font-family:var(--font-code);font-size:10.5px}
 /* 네이티브 title 툴팁이 일부 렌더러(프리뷰 등)에서 안 뜨는 문제(사용자 지적) — CSS로 직접 그리는
    호버 툴팁. data-tip 속성값을 ::after content로 표시, 페이지 페인트 레이어라 항상 보인다. */
@@ -133,6 +134,7 @@ code,.mono,.rid{font-family:var(--font-code)}
 label.f{display:block;font-size:12.5px;margin:11px 0 4px;font-weight:600}
 input,select,textarea{font-family:var(--font-body);font-size:13px;width:100%;border:2.5px solid var(--ink);
   border-radius:9px;background:var(--panel);padding:7px 10px;box-shadow:var(--shadow-sm)}
+input[type="checkbox"]{width:auto;box-shadow:none;accent-color:var(--green)}
 textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .row{display:flex;gap:11px;flex-wrap:wrap}.row>*{flex:1;min-width:150px}
 .seg{display:inline-flex;border:3px solid var(--ink);border-radius:11px;overflow:hidden;box-shadow:var(--shadow-sm);flex-wrap:wrap}
@@ -150,6 +152,66 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 #pacestratseg>button,#paceoverseg>button{flex:1 1 78px;white-space:nowrap}
 .note{border:2.5px dashed var(--ink);border-radius:10px;background:var(--cream);padding:9px 12px;font-size:12px;color:var(--ink2);margin-top:11px}
 .note code{font-size:11.5px}
+.acct-wrap{max-width:100%;overflow:hidden;margin-top:10px}
+.acct-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;max-width:100%;align-items:start}
+/* 겉모습(테두리·배경·그림자)은 .tool이 담당한다 — 디자인 기반을 대시보드로 통일(사용자 지시).
+   여기서는 캐러셀이 카드 밖으로 넘치지 않게 하는 레이아웃만 둔다. */
+.acct-card{min-width:0;max-width:100%;overflow:hidden}
+.tool.acct-card{padding:0}
+/* 가로 패딩은 **슬라이드 안쪽**에 준다. 스크롤 컨테이너에 주면 슬라이드의 flex-basis:100%가
+   패딩만큼 어긋나 옆 슬라이드가 비쳐 들어온다(실측). */
+.tool.acct-card .acct-carousel{padding:0}
+.tool.acct-card .acct-slide{padding:14px 15px 0}
+.acct-card-head{display:flex;align-items:center;gap:7px;padding:9px 11px;border-bottom:2px solid var(--ink);
+  background:var(--yellow);font-family:var(--font-display)}
+.acct-card-head b{min-width:0;overflow-wrap:anywhere}.acct-order{display:flex;gap:5px;margin-left:auto}
+.acct-order .btn{padding:3px 7px;font-size:12px;line-height:1.2;background:var(--panel)}
+/* align-items:flex-start — 기본값(stretch)이면 모든 슬라이드가 가장 큰 것(추가 폼) 높이로 늘어나
+   계정 슬라이드 아래가 통째로 빈 공간이 됐다(사용자 지적). 내용 높이로 두고 컨테이너 높이만
+   활성 슬라이드에 맞춘다(syncBackendCarouselDots). */
+.acct-carousel{display:flex;align-items:flex-start;width:100%;max-width:100%;overflow-x:auto;overflow-y:hidden;
+  overscroll-behavior-x:contain;scroll-snap-type:x mandatory;transition:height .18s ease;
+  /* 위치는 하단 점이 이미 알려준다 — 스크롤바까지 그리면 같은 정보가 두 번(사용자 지적).
+     스크롤 자체는 그대로 동작한다(휠·스와이프·키보드·점 클릭). */
+  scrollbar-width:none;-ms-overflow-style:none}
+.acct-carousel::-webkit-scrollbar{display:none}
+.acct-slide{flex:0 0 100%;width:100%;min-width:0;scroll-snap-align:start;scroll-snap-stop:always;
+  padding:11px;background:var(--panel);overflow-wrap:anywhere}
+.acct-slide.original{color:var(--ink2);background:var(--cream)}
+#backend-accounts-card .acct-cards{gap:10px}
+#backend-accounts-card .acct-card-head{padding:6px 9px}
+#backend-accounts-card .tool.acct-card .acct-slide{padding:9px 10px 0}
+#backend-accounts-card .acct-slide .win{margin:6px 0}
+#backend-accounts-card .acct-slide .gauge{height:12px}
+.usagestrip .acct-card-head{padding:6px 9px}
+.usagestrip .tool.acct-card .acct-slide{padding:9px 10px 0}
+.usagestrip .acct-slide .win{margin:6px 0}
+.usagestrip .acct-slide .gauge{height:12px}
+.acct-details{margin:0;font-size:12px}.acct-details>div{display:grid;grid-template-columns:84px minmax(0,1fr);
+  gap:8px;padding:6px 0;border-bottom:2px dashed var(--ink)}
+.acct-details>div:last-child{border-bottom:none}.acct-details dt{font-family:var(--font-display);font-weight:700}
+.acct-details dd{min-width:0;margin:0}.acct-details code,.acct-login code{white-space:normal;overflow-wrap:anywhere}
+.acct-actions{display:flex;gap:5px;flex-wrap:wrap}.acct-actions .btn{padding:4px 8px;font-size:11px}
+.acct-status{white-space:nowrap}.acct-form{height:100%;padding:2px 0}.acct-form label.f{margin-top:8px}
+.acct-form .btn{padding:6px 10px;font-size:12px}.acct-auth-field{display:flex;gap:6px}.acct-auth-field input{min-width:0;flex:1}
+.acct-add-slide.disabled{opacity:.65}
+.acct-mode-toggle .btn{padding:5px 9px;font-size:11.5px}
+.acct-mode-toggle .btn.active{background:var(--yellow)}
+.acct-mode-dir,.acct-mode-api{margin-top:2px}
+.acct-login{display:none;margin-top:10px}.acct-login.show{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.acct-dots{display:flex;align-items:center;justify-content:center;gap:7px;padding:8px 12px;margin-top:10px;
+  border-top:2px dashed var(--ink);position:relative}
+.acct-dots .acct-order{position:absolute;right:10px;top:50%;transform:translateY(-50%);margin:0}
+.acct-dot{width:12px;height:12px;padding:0;border:2px solid var(--ink);border-radius:999px;background:var(--panel);cursor:pointer}
+.acct-dot.active{background:var(--red)}
+/* 추가 슬라이드 점: 다른 점과 **같은 높이**의 알약 + 파선 테두리 + '+'. 종전 22x18 타원에 ⊕(U+2295)를
+   넣었더니 표시 폰트에서 깨진 글리프처럼 보였다(사용자 지적). 굵은 테두리·코믹 제목폰트라는 기존
+   조형 어휘는 그대로 두고 형태만 정리한다. */
+.acct-dot.add{width:24px;height:14px;margin-left:5px;background:var(--yellow);
+  display:grid;place-items:center;font-family:var(--font-body);font-size:11px;font-weight:700;line-height:1;color:var(--ink)}.acct-dot.add.active{background:var(--red);color:#fff}
+.acct-empty{border:2px dashed var(--ink);border-radius:10px;background:var(--cream);padding:10px;color:var(--ink2)}
+.acct-feedback{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:9px}
+@media(max-width:840px){.acct-cards{grid-template-columns:1fr}}
 /* 도움말 탭 */
 .help details{border:2.5px solid var(--ink);border-radius:12px;background:var(--panel);box-shadow:var(--shadow-sm);margin-bottom:10px;overflow:hidden}
 .help summary{font-family:var(--font-display);font-size:15px;cursor:pointer;padding:10px 14px;background:var(--cream);list-style:none;display:flex;align-items:center;gap:8px}
@@ -190,7 +252,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
 .tgl2{display:flex;align-items:center;gap:5px;font-size:11.5px}
 .usagestrip{margin-top:11px;border:3px solid var(--ink);border-radius:14px;background:var(--tint-ok);padding:9px 11px;box-shadow:var(--shadow-sm)}
 .usagestrip .t{font-size:11px;color:var(--ink2);margin-bottom:6px}
-.us-row{display:flex;gap:8px;flex-wrap:wrap}
+.us-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;align-items:start}
 .us-tool{flex:1;min-width:145px;border:2.5px solid var(--ink);border-radius:10px;background:var(--panel);padding:6px 8px;box-shadow:2px 2px 0 var(--ink)}
 .us-tool .nm{font-family:var(--font-display);font-size:12px;display:flex;justify-content:space-between;align-items:center;margin-bottom:2px}
 .us-win{display:flex;align-items:center;gap:5px;font-family:var(--font-code);font-size:10px;margin:2px 0}
@@ -240,6 +302,11 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
        background:rgba(220,70,70,.14);border:1px solid rgba(220,70,70,.5);font-size:12px">
     <b>서버 연결 끊김</b> — <span id="disconn-detail"></span>
     아래 수치는 <b>마지막으로 받은 값</b>이며 갱신되지 않는다. <code>yok3x gui</code>가 살아있는지 확인하라.
+  </div>
+  <div id="warming" style="display:none;margin:8px 0;padding:9px 12px;border-radius:6px;
+       background:rgba(244,192,46,.18);border:1px solid rgba(244,192,46,.65);font-size:12px">
+    <b>상태 수집 중</b> — 서버가 첫 사용량 스냅샷을 만들고 있다(트랜스크립트 최초 스캔, 보통 10~20초).
+    끝나면 자동으로 채워진다.
   </div>
 
   <div class="tabs">
@@ -342,7 +409,7 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
         </div>
 
         <div class="usagestrip">
-          <div class="t">📊 실시간 사용량 — 작업 돌수록 증가 · 한도 도달 시 큐 자동 정지</div>
+          <div class="t">실시간 사용량 — 작업 돌수록 증가 · 한도 도달 시 큐 자동 정지</div>
           <div class="us-row" id="c-usage"></div>
         </div>
       </div>
@@ -428,6 +495,24 @@ textarea{font-family:var(--font-code);min-height:64px;resize:vertical}
       <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="claude-login-btn" class="btn" onclick="startClaudeLogin()">재로그인</button>
         <span id="claude-login-flow" class="sub"></span>
+      </div>
+    </div>
+    <div class="panel" id="backend-accounts-card">
+      <h2><span class="ic"></span> 백엔드 계정 <span class="sub" style="font-weight:400">— 쿼터가 찬 계정 대신 자동 전환</span></h2>
+      <p class="sub">GUI는 자격증명을 받거나 로그인을 대신하지 않습니다. 인증 디렉터리 경로만 저장합니다.</p>
+      <div class="acct-wrap">
+        <div class="acct-cards" id="backend-account-cards"><div class="acct-empty">불러오는 중…</div></div>
+      </div>
+      <div class="acct-feedback">
+        <span class="sub" id="ba-msg" style="margin:0"></span>
+        <span class="sub" id="backend-card-order-msg" style="margin:0"></span>
+      </div>
+      <div style="margin-top:13px;display:flex;gap:16px;align-items:end;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12px"><input type="checkbox" id="ba-switch-before" onchange="saveBackendFailoverOptions()"> 모델을 낮추기 전에 여유 있는 계정으로 먼저 전환</label>
+        <label class="f" style="margin:0;max-width:260px">최소 여유 차이(%p)
+          <input type="number" id="ba-min-gain" min="0" max="100" step="1" value="10" onchange="saveBackendFailoverOptions()">
+        </label>
+        <span class="sub" id="ba-options-msg" style="margin:0">이만큼 더 여유로운 계정으로만 전환(스래싱 방지)</span>
       </div>
     </div>
     <div class="panel">
@@ -573,6 +658,17 @@ python yok3x.py run task-producer-reviewer.json --auto</pre>
         </ul>
         <div class="tip">상단 <b>● LIVE</b>면 실데이터 연동, <b>○ MOCK</b>이면 파일을 직접 연 것 — <span class="k">yok3x gui</span>로 실행하면 실데이터가 뜬다.</div>
       </div></details>
+
+      <details><summary>8. 계정 복제를 다른 프로젝트·세션에서 쓰기</summary><div class="bd">
+        <ul>
+          <li><b>원리</b>: codex CLI는 <span class="k">CODEX_HOME</span> 환경변수로 어느 계정 폴더를 쓸지 정한다(claude는 <span class="k">CLAUDE_CONFIG_DIR</span>). 지정하지 않으면 기본값(<span class="k">~/.codex</span>, <span class="k">~/.claude</span>)을 쓴다. 설정·한도 탭에서 추가한 계정 복제(예: <span class="k">codex-alt</span>)는 그 환경변수가 가리키는 디렉터리 이름일 뿐이다.</li>
+          <li><b>다른 세션에서도 적용되려면</b>: yok3x를 거치지 않고 그 세션이 codex/claude CLI를 직접 실행할 때는 자동으로 반영되지 않는다 — 그 세션에서 직접 환경변수를 지정해야 한다. 예: <span class="k">codex-alt</span> 계정을 쓰려면
+            <pre style="margin:4px 0;white-space:pre-wrap">bash/git-bash:  CODEX_HOME="$HOME/.codex-alt" codex exec "..."
+PowerShell:     $env:CODEX_HOME="$HOME\.codex-alt"; codex exec "..."</pre>
+            다른 Claude Code 세션에는 그냥 "codex CLI 쓸 때는 CODEX_HOME을 ~/.codex-alt로 지정하고 실행해줘"라고 말해도 된다.</li>
+          <li><b>주의</b>: 설정·한도 탭의 "메인으로" 스왑은 이름은 그대로 두고 그 디렉터리의 <i>내용</i>을 맞바꾼다 — 그래서 <span class="k">codex-alt</span>가 실제로 어느 계정인지는 스왑 이력에 따라 바뀔 수 있다. 다른 세션에서 쓰기 전에 <span class="k">CODEX_HOME=~/.codex-alt codex --version</span> 등으로 로그인 상태를 먼저 확인하는 게 안전하다.</li>
+        </ul>
+      </div></details>
     </div>
   </section>
 
@@ -580,7 +676,7 @@ python yok3x.py run task-producer-reviewer.json --auto</pre>
 </div>
 
 <script>
-const MOCK = {version:"3.0(mock)",flavor:"claude-orchestrator",guard:{enabled:true,soft:.8,hard:1},
+const MOCK = {version:"3.0(mock)",flavor:"claude-orchestrator",guard:{enabled:true,soft:.8,hard:1,switch_before_degrade:true,failover_min_gain:.1},
  tools:[
   {backend:"claude",level:"ok",ratio:.31,source:"claude_transcripts",real:false,windows:[{name:"5h",used_percent:31,reset:"5시간 롤링"},{name:"7d",used_percent:30,reset:"캘리브레이트됨"}],calls:12,tokens:50400000,usd:0},
   {backend:"codex",level:"ok",ratio:.24,source:"codex_appserver",real:true,windows:[{name:"5h",used_percent:1,reset:"4시간 59분 후"},{name:"7d",used_percent:24,reset:"2일 13시간 후"}],calls:8,tokens:0,usd:0},
@@ -593,6 +689,10 @@ const MOCK = {version:"3.0(mock)",flavor:"claude-orchestrator",guard:{enabled:tr
  flavors:["claude-orchestrator","codex-orchestrator","gemini-orchestrator"],
  workers:{"claude-main":{backend:"claude"},"codex-main":{backend:"codex"},"codex-critic":{backend:"codex"},"gemini":{backend:"gemini"}},
  routing:{build:"claude",refactor:"codex",review:"codex",test:"claude",design_review:"gemini"},
+ backend_accounts:[
+  {name:"claude",account_of:"",family:"claude",auth_mode:"dir",auth_dir:"~/.claude",connected:true,login_command:"CLAUDE_CONFIG_DIR=~/.claude claude auth login --claudeai",can_clone:true,clone_disabled_reason:""},
+  {name:"codex",account_of:"",family:"codex",auth_mode:"dir",auth_dir:"~/.codex",connected:true,login_command:"CODEX_HOME=~/.codex codex login",can_clone:true,clone_disabled_reason:""},
+  {name:"gemini",account_of:"",family:"gemini",auth_mode:"dir",auth_dir:"",connected:null,login_command:"",can_clone:false,clone_disabled_reason:"Gemini CLI는 인증 디렉터리를 안전하게 격리할 수 없습니다."}],
  queue:["task-pipeline.json"], running:{active:false,task:null,last:"task-producer-reviewer.json → done"},
  tasks:["task-producer-reviewer.json","task-pipeline.json","task-fanout.json"]};
 
@@ -605,6 +705,70 @@ function fcls(l){return l==="stop"?"f-stop":l==="warn"?"f-warn":"f-ok"}
 // HTML 이스케이프 — 에이전트 산출물(summary·task 등)에 <태그>가 있으면 innerHTML DOM이 깨져
 // 콘솔이 가로로 붕괴되는 버그(계산기 HTML 생성 등). 모든 동적 텍스트는 esc() 통과 필수.
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function suggestBackendAccount(accountOf,existingNames=[]){
+  const source=String(accountOf||"").trim();
+  if(!source)return {name:"",authDir:""};
+  const used=new Set(existingNames||[]);let n=(source+"-alt").slice(0,32),i=2;
+  while(used.has(n)){const suffix="-alt"+i++;n=source.slice(0,32-suffix.length)+suffix;}
+  return {name:n,authDir:(source==="claude"||source==="codex")?`~/.${n}`:""};
+}
+function validateBackendAccountForm(accountOf,name,authDir,existingNames=[],replaceName="",authMode="dir",apiKey=""){
+  const source=String(accountOf||"").trim(),n=String(name||"").trim(),dir=String(authDir||"").trim();
+  if(!source)return "원본 backend를 선택하세요.";
+  if(source==="gemini")return "gemini는 인증 디렉터리를 안전하게 격리할 수 없습니다.";
+  if(!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(n))return "이름은 소문자·숫자로 시작하는 1~32자의 소문자/숫자/_/-만 허용합니다.";
+  if((existingNames||[]).includes(n)&&n!==replaceName)return "이미 존재하는 backend 이름입니다.";
+  if(authMode==="api_key"){
+    if(!String(apiKey||"").trim())return "API 키를 입력하세요.";
+    return "";
+  }
+  if(!dir)return "인증 디렉터리를 입력하세요.";
+  return "";
+}
+function groupBackendAccounts(accounts=[]){
+  const rows=Array.isArray(accounts)?accounts.filter(a=>a&&typeof a==="object"):[];
+  const groups=[],byFamily=new Map();
+  const ensure=family=>{
+    const name=String(family||"").trim();if(!name)return null;
+    if(!byFamily.has(name)){const group={family:name,accounts:[]};byFamily.set(name,group);groups.push(group);}
+    return byFamily.get(name);
+  };
+  rows.filter(a=>!a.account_of).forEach(a=>{const group=ensure(a.family||a.name);if(group)group.accounts.push(a);});
+  rows.filter(a=>!!a.account_of).forEach(a=>{const group=ensure(a.account_of||a.family);if(group)group.accounts.push(a);});
+  return groups;
+}
+function applyBackendCardOrder(groups=[],order=[]){
+  const source=Array.isArray(groups)?groups:[],byFamily=new Map(source.map(g=>[g.family,g]));
+  const result=[],seen=new Set();
+  (Array.isArray(order)?order:[]).forEach(family=>{
+    if(byFamily.has(family)&&!seen.has(family)){seen.add(family);result.push(byFamily.get(family));}
+  });
+  source.forEach(group=>{if(!seen.has(group.family)){seen.add(group.family);result.push(group);}});
+  return result;
+}
+function buildBackendAccountCarousels(accounts=[],order=[]){
+  return applyBackendCardOrder(groupBackendAccounts(accounts),order).map(group=>{
+    const original=group.accounts.find(a=>!a.account_of)||null;
+    const slides=group.accounts.map(account=>({kind:"account",account}));
+    slides.push({kind:"add",family:group.family,disabled:!(original&&original.can_clone),
+      reason:String((original&&original.clone_disabled_reason)||"")});
+    return {...group,slides,dots:slides.map((slide,index)=>({index,kind:slide.kind}))};
+  });
+}
+function mergeBackendCarouselScroll(previous,readings=[]){
+  const next={...(previous&&typeof previous==="object"?previous:{})};
+  (Array.isArray(readings)?readings:[]).forEach(reading=>{
+    const family=String((reading&&reading.family)||"");
+    const left=Number(reading&&reading.scrollLeft);
+    if(family&&reading.visible!==false&&Number.isFinite(left)&&left>=0)next[family]=left;
+  });
+  return next;
+}
+function moveBackendCardOrder(order=[],family,direction=0){
+  const next=Array.isArray(order)?order.slice():[],from=next.indexOf(family),to=from+Number(direction);
+  if(from<0||to<0||to>=next.length)return next;
+  [next[from],next[to]]=[next[to],next[from]];return next;
+}
 function fclsPct(p,g){const h=((g&&g.hard)||1)*100,s=((g&&g.soft)||.8)*100;return p>=h?"f-stop":p>=s?"f-warn":"f-ok"}
 // 설정한 warn(soft)·stop(hard) % 위치에 세로 임계선. hard=100%면 테두리와 겹쳐 생략
 function marks(g){if(!g)return"";const s=Math.round(((g.soft)||.8)*100),h=Math.round(((g.hard)||1)*100);
@@ -706,49 +870,9 @@ function render(s){
   if(sr && document.activeElement!==sr){sr.value=Math.round((s.guard.soft||.8)*100);document.getElementById("softval").textContent=sr.value;}
   if(hr && document.activeElement!==hr){hr.value=Math.round((s.guard.hard||1)*100);document.getElementById("hardval").textContent=hr.value;}
   document.querySelectorAll('#planseg button').forEach(b=>b.classList.toggle('on',b.dataset.plan===(s.plan||"")));
+  renderBackendAccounts(s);
   // tools
-  document.getElementById("tools").innerHTML=s.tools.map(t=>{
-    const wins=t.windows.length?t.windows.map(w=>{
-      const isWk=w.name==="7d", pm=isWk?(paceMarks(t.pace)||budgetRuler(s,w.name)):"";
-      const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
-      // 페이싱이 있어도 리셋 시간을 덮어쓰지 않는다 — 오늘 소비/상한 + 리셋까지 + 토큰을 모두 보여준다.
-      const rstTxt=w.reset?`리셋 ${w.reset}`:"";
-      const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
-      // 초과 상태(오늘 사용≥catch_up 상한)면 catch_up 상한은 0이라 '오늘 얼마 더 쓸 수 있나'로는 무의미.
-      // → 상한 칸에 0 대신 '초과분 반영해 남은 기간 균등 배분한 지속가능 하루율(forward_daily)'을 보여준다
-      // (사용자 요청: "0% / 상한 8.2%로 나와야"). 비초과면 기존 catch_up/균등 상한 그대로(claude 등 불변).
-      const fd=t.pace?t.pace.forward_daily:null;
-      const over=fd!=null;
-      const ec=t.pace?t.pace.even_cap:null;   // 엄격 균등선 기준 오늘 여유(쓴 만큼 줄어듦) — 오버레이 전용
-      // 상한값: 비초과면 catch_up/균등 상한, 초과면 0 대신 '초과분 반영 지속가능 하루율(forward_daily)'.
-      // 어느 쪽이든 균등 기준선(base)이 다르면 '(균등 14%p)'를 같이 보여 형식을 통일한다(사용자 요청:
-      // 초과도 '(초과)' 대신 '(균등 14%)'처럼). 초과 여부는 warn 색상·툴팁이 알린다.
-      const capVal=over?fd:cap;
-      const capTxt=(t.pace&&base!=null&&Math.round(capVal)!==Math.round(base))
-        ?`상한 ${capVal}%(균등 ${base}%)` : `상한 ${capVal}%`;
-      const fdTxt="";   // forward_daily는 초과 시 상한 칸으로 흡수(중복 표기 제거)
-      // 툴팁(오버레이): 안내문구가 아니라 **실제 값** — 이번주 소비%·오늘 소비·(초과 시)리셋까지 하루
-      // 지속가능%·토큰 소모량(있을 때만; live % 모드는 토큰 없음). data-tip(네이티브 title 아님) — 일부
-      // 렌더러(프리뷰 등)가 OS title 툴팁을 안 그려서 CSS ::after로 직접 그린다(사용자 지적).
-      const paceTip=paceTipText(t.pace,w.used_percent,over,fd,cap,ec,tok);
-      const estTxt=(!t.pace&&w.used_tokens!=null&&w.limit_tokens!=null)
-        ?`사용 ${w.used_percent}% / 가용 ${(100-w.used_percent).toFixed(1)}%(추정)` : "";
-      const pl=(isWk&&t.pace)
-        ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}% / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
-        :`<span class="rst"${tok?` data-tip="${esc(tok)}"`:""}>${estTxt}${estTxt&&rstTxt?" · ":""}${rstTxt}</span>`;
-      return `
-      <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
-      <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>
-      <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`;}).join("")
-      : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fclsPct(t.ratio*100,s.guard)}" style="width:${Math.round(t.ratio*100)}%"></i>${marks(s.guard)}</div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
-    const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
-    // 상단 요약도 %로 통일(42자 잘림으로 토큰 숫자가 흉하게 끊기던 문제) — 원본 detail(토큰량 등)은
-    // title(호버)로만. 창 없는 백엔드(ratio만 있는 경우)는 그 비율%로 대체(사용자 요청).
-    const pctSummary=t.windows.length?t.windows.map(w=>`${w.name} ${w.used_percent}%`).join(" · ")
-      :`${Math.round((t.ratio||0)*100)}%`;
-    return `<div class="tool ${t.level}"><div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
-      <div class="plan mono"${t.detail?` data-tip="${esc(t.detail)}"`:""}>${pctSummary}</div>${wins}<div class="stat">${stat.join("")}</div></div>`;
-  }).join("");
+  renderBackendUsageCards(s);
   // coach
   document.getElementById("coach").innerHTML=s.coach.map(m=>{
     const cls=m.includes("[정지")?"stop":m.includes("[경고")?"warn":"ok";
@@ -1046,22 +1170,22 @@ function toast(msg){
 async function paceApprove(b){
   try{await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pace_approve:b})});load();}catch(e){console.warn(e);toast("서버 연결 실패 — 반영되지 않음");}
 }
+// 2026-09-14 정리(사용자 지적: "이 내용들은 이제 중복"): 계정 카드(#c-usage·설정 탭 계정 카드)가
+// 이미 도구별 사용률·창별 %·소스 배지를 다 보여준다. 여기서 같은 정보(used/cap%, 게이지,
+// "왜 페이싱 대상 아님" 같은 이유 문구)를 또 보여주는 게 중복이라 그 부분은 지웠다.
+// 남긴 건 "오늘 재개 승인" 버튼뿐이다 — 하루 페이싱이 막혔을 때(blocked && !approved) 재개하는
+// 유일한 GUI 진입점이라(계정 카드엔 이 버튼이 없음) 정보 표시와 분리해서 그대로 유지한다.
+// (백업: gui/index.html의 이전 버전 — 이 함수가 used/cap%·게이지·이유 문구까지 그리던 버전 —
+// 은 docs/private/ 밖에 세션 스크래치패드로 따로 보관돼 있음, 필요하면 git 이력에도 남아 있다.)
 function renderPaceStatus(s){
   const el=document.getElementById("pace-status"); if(!el) return;
   const pc=(s.guard&&s.guard.pace)||{};
-  if(!pc.enabled){el.innerHTML='<span class="sub" style="opacity:.55">off — 켜면 도구별 오늘 소비/캡이 여기 표시됩니다</span>';return;}
-  const rows=(s.tools||[]).map(t=>{
-    if(!t.pace){
-      const why = t.backend==="gemini" ? "주간 사용량 API 없음 — 페이싱 대상 아님(원장 일일예산으로 관리)"
-                : "실측 7d 대기 중 — 이 도구를 한 번 쓰면 갱신됨(예: 토큰 만료/rate-limit)";
-      return `<div class="sub" style="opacity:.6">${EMOJI[t.backend]||"⬤"} ${t.backend}: ${why}</div>`;}
-    const p=t.pace, pct=Math.min(100,Math.round(p.used/(p.cap||1)*100));
-    const col=p.level==="stop"?"var(--red)":p.level==="warn"?"var(--yellow)":"var(--green)";
-    const btn=(p.blocked&&!p.approved)?` <button onclick="paceApprove('${t.backend}')" style="font-size:11px;padding:2px 8px">오늘 재개 승인</button>`:"";
-    const tag=p.approved?" <span class='sub'>(오늘 승인됨)</span>":p.blocked?" <span class='sub' style='color:var(--red)'>(정지)</span>":"";
-    return `<div style="margin:3px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}${tag}</span><span class="mono">${p.used}/${p.cap}%</span></div>
-      <div style="height:7px;border:2px solid var(--ink);border-radius:6px;overflow:hidden;background:var(--panel)"><div style="height:100%;width:${pct}%;background:${col}"></div></div>${btn}</div>`;
-  }).join("");
+  if(!pc.enabled){el.innerHTML='';return;}
+  const rows=(s.tools||[]).filter(t=>t.pace&&t.pace.blocked&&!t.pace.approved).map(t=>
+    `<div style="margin:3px 0;display:flex;justify-content:space-between;align-items:center;font-size:12px">`
+    +`<span>${EMOJI[t.backend]||"⬤"} ${t.backend} <span class="sub" style="color:var(--red)">(정지)</span></span>`
+    +`<button onclick="paceApprove('${t.backend}')" style="font-size:11px;padding:2px 8px">오늘 재개 승인</button></div>`
+  ).join("");
   el.innerHTML=rows;
 }
 async function savePlan(p){
@@ -1091,13 +1215,9 @@ function renderConsole(s,rn){
     pf.onchange=renderProfileRoutes;
   }
   renderProfileRoutes();
-  // 실시간 사용량 스트립
-  const us=document.getElementById("c-usage");
-  if(us) us.innerHTML=(s.tools||[]).map(t=>{
-    const wins=(t.windows||[]).map(w=>`<div class="us-win ${wlvl(w.used_percent,s.guard)}"><span>${w.name}</span><div class="g"><i style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${budgetRuler(s,w.name)}</div><b>${w.used_percent}%</b></div>`).join("")
-      || `<div class="us-win"><span>use</span><div class="g"><i style="width:${Math.round(t.ratio*100)}%"></i></div><b>${Math.round(t.ratio*100)}%</b></div>`;
-    return `<div class="us-tool"><div class="nm"><span>${EMOJI[t.backend]||"⬤"} ${t.backend}</span>${badge(t)}</div>${wins}</div>`;
-  }).join("");
+  // 실시간 사용량 스트립 — 대시보드와 **같은 베이스**를 호출한다(사용자 지시: "이것도 사실상 같은 것").
+  // 종전엔 .us-tool/.us-win으로 같은 개념을 네 번째로 또 그렸다.
+  renderBackendUsageCards(s,"c-usage","console");
   // 설정 탭은 전역 기본, 콘솔 탭은 현재 작업의 부분 override를 각각 렌더한다.
   window._globalWorkers=s.workers||{};
   renderGlobalBoard(s);
@@ -1368,6 +1488,413 @@ async function postRun(payload,msgId){
     load();
   }catch(e){document.getElementById(msgId).textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
 }
+// 백엔드 사용량 카드 **본문**(헤더·요약·게이지·stat). 겉껍데기(카드 테두리·캐러셀·점)는
+// renderCarouselCards가 담당한다 — 대시보드와 설정 계정관리가 같은 것을 호출하게 하기 위함.
+// 종전엔 두 렌더러가 같은 개념(.win/.gauge/badge)을 **각자 그려**, 한쪽을 고쳐도 다른 쪽은
+// 그대로였다(사용자 지적: "같은 베이스를 호출하게 놔뒀으면 지금 내가 보는 창도 바뀌었을 것").
+function renderToolCardInner(t,s){
+    const wins=t.windows.length?t.windows.map(w=>{
+      const isWk=w.name==="7d", pm=isWk?(paceMarks(t.pace)||budgetRuler(s,w.name)):"";
+      const tok=(w.used_tokens!=null&&w.limit_tokens!=null)?`사용 ${fmtTok(w.used_tokens)} / 남은 ${fmtTok(Math.max(0,w.limit_tokens-w.used_tokens))}`:"";
+      // 페이싱이 있어도 리셋 시간을 덮어쓰지 않는다 — 오늘 소비/상한 + 리셋까지 + 토큰을 모두 보여준다.
+      const rstTxt=w.reset?`리셋 ${w.reset}`:"";
+      const cap=t.pace?t.pace.cap:0, base=t.pace?t.pace.base_cap:0;
+      // 초과 상태(오늘 사용≥catch_up 상한)면 catch_up 상한은 0이라 '오늘 얼마 더 쓸 수 있나'로는 무의미.
+      // → 상한 칸에 0 대신 '초과분 반영해 남은 기간 균등 배분한 지속가능 하루율(forward_daily)'을 보여준다
+      // (사용자 요청: "0% / 상한 8.2%로 나와야"). 비초과면 기존 catch_up/균등 상한 그대로(claude 등 불변).
+      const fd=t.pace?t.pace.forward_daily:null;
+      const over=fd!=null;
+      const ec=t.pace?t.pace.even_cap:null;   // 엄격 균등선 기준 오늘 여유(쓴 만큼 줄어듦) — 오버레이 전용
+      // 상한값: 비초과면 catch_up/균등 상한, 초과면 0 대신 '초과분 반영 지속가능 하루율(forward_daily)'.
+      // 어느 쪽이든 균등 기준선(base)이 다르면 '(균등 14%p)'를 같이 보여 형식을 통일한다(사용자 요청:
+      // 초과도 '(초과)' 대신 '(균등 14%)'처럼). 초과 여부는 warn 색상·툴팁이 알린다.
+      const capVal=over?fd:cap;
+      const capTxt=(t.pace&&base!=null&&Math.round(capVal)!==Math.round(base))
+        ?`상한 ${capVal}%(균등 ${base}%)` : `상한 ${capVal}%`;
+      const fdTxt="";   // forward_daily는 초과 시 상한 칸으로 흡수(중복 표기 제거)
+      // 툴팁(오버레이): 안내문구가 아니라 **실제 값** — 이번주 소비%·오늘 소비·(초과 시)리셋까지 하루
+      // 지속가능%·토큰 소모량(있을 때만; live % 모드는 토큰 없음). data-tip(네이티브 title 아님) — 일부
+      // 렌더러(프리뷰 등)가 OS title 툴팁을 안 그려서 CSS ::after로 직접 그린다(사용자 지적).
+      const paceTip=paceTipText(t.pace,w.used_percent,over,fd,cap,ec,tok);
+      const estTxt=(!t.pace&&w.used_tokens!=null&&w.limit_tokens!=null)
+        ?`사용 ${w.used_percent}% / 가용 ${(100-w.used_percent).toFixed(1)}%(추정)` : "";
+      const pl=(isWk&&t.pace)
+        ?`<span class="rst" data-tip="${esc(paceTip)}">오늘 ${t.pace.used}% / ${capTxt}${fdTxt}${rstTxt?` · ${rstTxt}`:""}</span>`
+        :`<span class="rst"${tok?` data-tip="${esc(tok)}"`:""}>${estTxt}${estTxt&&rstTxt?" · ":""}${rstTxt}</span>`;
+      return `
+      <div class="win"><div class="l"><span>${w.name==="5h"?"5시간":isWk?"7일":w.name}</span>${pl}</div>
+      <div class="gauge"><i class="${fclsPct(w.used_percent,s.guard)}" style="width:${Math.min(100,w.used_percent)}%"></i>${marks(s.guard)}${pm}</div>
+      <div class="l"><span></span><b>${w.used_percent}%</b></div></div>`;}).join("")
+      : `<div class="win"><div class="l"><span>사용률</span></div><div class="gauge"><i class="${fclsPct(t.ratio*100,s.guard)}" style="width:${Math.round(t.ratio*100)}%"></i>${marks(s.guard)}</div><div class="l"><span></span><b>${Math.round(t.ratio*100)}%</b></div></div>`;
+    const stat=[`calls <b>${t.calls}</b>`]; if(t.tokens)stat.push(`tok <b>${fmtTok(t.tokens)}</b>`); if(t.usd)stat.push(`<b>$${t.usd}</b>`);
+    // 상단 요약도 %로 통일(42자 잘림으로 토큰 숫자가 흉하게 끊기던 문제) — 원본 detail(토큰량 등)은
+    // title(호버)로만. 창 없는 백엔드(ratio만 있는 경우)는 그 비율%로 대체(사용자 요청).
+    const pctSummary=t.windows.length?t.windows.map(w=>`${w.name} ${w.used_percent}%`).join(" · ")
+      :`${Math.round((t.ratio||0)*100)}%`;
+    return `<div class="h"><span class="nm"><span class="emoji">${EMOJI[t.backend]||"⬤"}</span>${t.backend}</span>${badge(t)}</div>
+      <div class="plan mono"${t.detail?` data-tip="${esc(t.detail)}"`:""}>${pctSummary}</div>${wins}<div class="stat">${stat.join("")}</div>`;
+}
+
+// 공용 캐러셀 껍데기 — 계정군 하나를 '카드 + 횡스크롤 + 하단 점'으로 그린다.
+// **디자인 기반은 대시보드 .tool 카드**(사용자 지시). 설정 계정관리도 이걸 쓴다.
+// scrollKey를 패널별로 네임스페이스해야 같은 계정군이 두 패널에 떠도 스크롤이 서로 안 튄다.
+function renderCarouselCard(model,cardIndex,cardCount,slidesHtml,level,panel){
+  const key=`${panel}:${model.family}`;
+  const dots=model.dots.map((dot,index)=>
+    `<button type="button" class="acct-dot ${dot.kind==='add'?'add':''} ${index===0?'active':''}" data-slide-index="${index}"`
+    +` onclick="scrollBackendCarousel(this)" aria-label="${dot.kind==='add'?`${esc(model.family)} 계정 추가`:`${index+1}번 계정`}">`
+    +`${dot.kind==='add'?'+':''}</button>`).join('');
+  const order=`<div class="acct-order">`
+    +`<button class="btn" type="button" onclick="moveBackendCard(this,-1)" ${cardIndex===0?'disabled':''} aria-label="${esc(model.family)} 앞으로">↑</button>`
+    +`<button class="btn" type="button" onclick="moveBackendCard(this,1)" ${cardIndex===cardCount-1?'disabled':''} aria-label="${esc(model.family)} 뒤로">↓</button></div>`;
+  return `<article class="tool ${level||'ok'} acct-card" data-family="${esc(model.family)}" data-panel="${panel}">`
+    +`<div class="acct-carousel" data-key="${esc(key)}" data-family="${esc(model.family)}" onscroll="syncBackendCarouselDots(this)">${slidesHtml}</div>`
+    +`<nav class="acct-dots" aria-label="${esc(model.family)} 계정">${dots}${order}</nav></article>`;
+}
+// 대시보드 '오늘 사용량' — 계정군별로 묶어 캐러셀로 그린다. 슬라이드 본문은 renderToolCardInner.
+function renderBackendUsageCards(s,rootId="tools",panel="dash"){
+  const root=document.getElementById(rootId);if(!root)return;
+  const accounts=s.backend_accounts||[],tools=new Map((s.tools||[]).map(t=>[t.backend,t]));
+  if(!accounts.length){   // 구버전 상태(계정 메타 없음)면 종전대로 평면 나열 — 조용히 비우지 않는다
+    root.innerHTML=(s.tools||[]).map(t=>`<div class="tool ${t.level}">${renderToolCardInner(t,s)}</div>`).join("");
+    return;
+  }
+  captureBackendCarouselScroll(root);
+  const models=buildBackendAccountCarousels(accounts,window._backendCardOrder||(s.gui&&s.gui.backend_card_order)||[]);
+  root.innerHTML=models.map((model,cardIndex)=>{
+    const slides=model.slides.map((slide,slideIndex)=>{
+      if(slide.kind==="add"){
+        const reason=slide.disabled?`<div class="note">${esc(slide.reason||"이 backend는 계정을 추가할 수 없습니다.")}</div>`:"";
+        const hint=slide.disabled?"":`<div class="note">계정 추가는 설정·한도 탭에서 합니다. `
+          +`<button class="btn" type="button" style="margin-left:4px;padding:3px 8px;font-size:11px" `
+          +`onclick="goToBackendSettings('${esc(model.family)}')">설정으로 이동</button></div>`;
+        return `<section class="acct-slide acct-add-slide ${slide.disabled?'disabled':''}" data-slide-index="${slideIndex}" data-level="ok">`
+          +`<div class="h"><span class="nm"><span class="emoji">+</span>${esc(model.family)} 계정 추가</span></div>${reason}${hint}</section>`;
+      }
+      const t=tools.get(slide.account.name);
+      const lv=t?t.level:"ok";
+      return `<section class="acct-slide" data-slide-index="${slideIndex}" data-level="${esc(lv)}">`
+        +(t?renderToolCardInner(t,s):`<div class="h"><span class="nm">${esc(slide.account.name)}</span></div><div class="note">사용량 정보 없음</div>`)
+        +`</section>`;
+    }).join("");
+    const first=model.slides[0],ft=first&&first.account?tools.get(first.account.name):null;
+    return renderCarouselCard(model,cardIndex,models.length,slides,ft?ft.level:"ok",panel);
+  }).join("");
+  restoreBackendCarouselScroll(root);
+}
+function renderBackendAccounts(s){
+  const accounts=s.backend_accounts||[], tools=new Map((s.tools||[]).map(t=>[t.backend,t]));
+  window._backendAccounts=accounts;window._backendAccountState=s;
+  const root=document.getElementById("backend-account-cards");
+  if(root){
+    const readings=[...root.querySelectorAll(".acct-carousel")].map(el=>({
+      family:el.dataset.family,scrollLeft:el.scrollLeft,visible:el.clientWidth>0}));
+    window._backendCarouselScroll=mergeBackendCarouselScroll(window._backendCarouselScroll,readings);
+    window._backendAccountDrafts=window._backendAccountDrafts||{};
+    root.querySelectorAll(".acct-add-slide:not(.disabled)").forEach(slide=>{
+      if(slide.dataset.discardDraft==="1")return;
+      const name=slide.querySelector('[data-field="name"]'),authDir=slide.querySelector('[data-field="auth-dir"]'),
+            apiKey=slide.querySelector('[data-field="api-key"]');
+      // 5~7초 폴링마다 이 폼을 통째로 다시 그리므로(아래 innerHTML), 입력 중이던 값을 여기서
+      // 캡처해뒀다가 재렌더 직후 복원한다 — 안 하면 계정 추가 중이던 스왑 메시지가 사라지던 것과
+      // 같은 이유로 API 키를 입력하다 폴링에 지워지는 버그가 된다.
+      if(name&&authDir)window._backendAccountDrafts[slide.dataset.family]={
+        name:name.value,authDir:authDir.value,
+        authMode:slide.dataset.authMode||"dir",apiKey:apiKey?apiKey.value:""};
+    });
+    if(window._backendEdit&&!accounts.some(a=>a.name===window._backendEdit))window._backendEdit="";
+    const configured=s.gui&&s.gui.backend_card_order;
+    if(!Array.isArray(window._backendCardOrder))window._backendCardOrder=Array.isArray(configured)?configured.slice():[];
+    const models=buildBackendAccountCarousels(accounts,window._backendCardOrder);
+    window._backendCardOrder=models.map(model=>model.family);
+    root.innerHTML=models.length?models.map((model,cardIndex)=>{
+      const slides=model.slides.map((slide,slideIndex)=>{
+        if(slide.kind==="add"){
+          const suggested=suggestBackendAccount(model.family,accounts.map(a=>a.name));
+          const editing=model.accounts.find(a=>a.name===window._backendEdit&&a.account_of===model.family);
+          const draft=window._backendAccountDrafts[model.family]||{};
+          const formName=draft.name??(editing?editing.name:suggested.name),formAuthDir=draft.authDir??(editing?(editing.auth_dir||""):suggested.authDir);
+          // API 키 값은 서버가 절대 돌려주지 않는다(비밀 보호) — 편집 진입 시 항상 빈칸으로 시작한다.
+          const formAuthMode=draft.authMode??(editing?(editing.auth_mode||"dir"):"dir"),formApiKey=draft.apiKey??"";
+          const disabled=slide.disabled?'disabled':'';
+          return `<section class="acct-slide acct-add-slide ${slide.disabled?'disabled':''}" data-family="${esc(model.family)}" data-slide-index="${slideIndex}" data-auth-mode="${esc(formAuthMode)}" aria-label="${esc(model.family)} 계정 추가">
+            <div class="acct-form"><b>⊕ ${esc(model.family)} 계정 추가</b>
+              <label class="f">이름</label><input data-field="name" maxlength="32" value="${esc(formName)}" ${disabled}>
+              <label class="f">인증 방식</label>
+              <div class="acct-mode-toggle" style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn ${formAuthMode==='dir'?'active':''}" data-mode-btn="dir" onclick="setBackendAccountAuthMode(this,'dir')" ${disabled}>디렉터리(계정 로그인)</button>
+                <button type="button" class="btn ${formAuthMode==='api_key'?'active':''}" data-mode-btn="api_key" onclick="setBackendAccountAuthMode(this,'api_key')" ${disabled}>API 키</button>
+              </div>
+              <div class="acct-mode-dir" style="display:${formAuthMode==='api_key'?'none':'block'}">
+                <label class="f">인증 디렉터리</label><div class="acct-auth-field"><input data-field="auth-dir" value="${esc(formAuthDir)}" ${disabled}><button class="btn" type="button" onclick="pickBackendAuthDir(this)" ${disabled}>📁 찾기</button></div>
+              </div>
+              <div class="acct-mode-api" style="display:${formAuthMode==='api_key'?'block':'none'}">
+                <label class="f">API 키</label><input type="password" data-field="api-key" value="${esc(formApiKey)}" placeholder="${editing&&editing.auth_mode==='api_key'?'편집 시 다시 입력해야 합니다':'sk-...'}" ${disabled}>
+                <div class="note">claude=ANTHROPIC_API_KEY, codex=OPENAI_API_KEY로 저장됩니다. 구독 로그인 대신 API 과금으로 동작합니다.</div>
+              </div>
+              ${slide.reason?`<div class="note">${esc(slide.reason)}</div>`:''}
+              <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+                <button class="btn acct-save" style="background:var(--red);color:#fff" onclick="saveBackendAccount(this)" ${disabled}>${editing?'편집 저장':'계정 추가'}</button>
+                <button class="btn plain acct-cancel" onclick="cancelBackendAccountEdit(this)" style="display:${editing?'inline-block':'none'}">편집 취소</button>
+              </div>
+              <div class="note acct-login"><code></code><button class="btn" onclick="copyBackendLoginCommand(this)">복사</button><span>터미널에서 직접 로그인하세요.</span><span class="acct-copy-msg"></span></div>
+            </div></section>`;
+        }
+        const a=slide.account,t=tools.get(a.name),windows=(t&&t.windows)||[];
+        // 사용률 표기를 대시보드 tool 카드와 **동일한 어휘**로 통일한다(.win/.gauge + 소스 배지).
+        // 종전엔 "7d 49%" 한 줄이었고, 창이 없으면 ratio를 그대로 "0%"로 찍어 **미측정을 '여유 많음'**
+        // 으로 오해하게 만들었다(사용자 지적: codex가 프로브 실패 중인데 0%). 배지가 실측/추정/원장을
+        // 구분해주므로 같은 0%라도 의미가 읽힌다 — 대시보드가 이미 쓰는 방식이다.
+        // 사용량 블록은 **대시보드 카드 본문을 그대로** 쓴다(renderToolCardInner) — 같은 개념을
+        // 두 번 적지 않는다. 여기서 복사해 쓰던 .win/.gauge 조각이 바로 "고쳐도 안 바뀐다"의 원인이었다.
+        const usage=t?renderToolCardInner(t,s)
+          :`<div class="h"><span class="nm"><span class="emoji">⬤</span>${esc(a.name)}</span></div><div class="note">사용량 정보 없음</div>`;
+        const connected=a.connected===true?'✅ 연결됨':a.connected===false?'⚠ 아직 로그인 안 됨':'';
+        const family=a.account_of?`<span class="chip">${esc(a.account_of)} 복제</span>`:'원본';
+        const swap=a.account_of==='codex'?`<span class="swap-wrap" style="display:inline-flex;flex-direction:column;gap:4px;align-items:flex-start">`+
+          `<button class="btn" data-account="${esc(a.name)}" data-family="${esc(a.account_of)}" onclick="swapBackendAccountToMain(this)" title="이 계정을 ${esc(a.account_of)}(메인)으로, 지금 메인은 이 이름으로 — 실제 인증 폴더를 맞바꿔서 다른 세션·터미널에도 적용됩니다">메인으로</button>`+
+          `<span class="swap-msg" style="display:none;font-size:11px;font-weight:700;padding:4px 7px;border-radius:7px;border:2px solid var(--ink)"></span></span>`:'';
+        const actions=a.account_of?`<div class="acct-actions">${swap}<button class="btn" data-account="${esc(a.name)}" onclick="editBackendAccount(this.dataset.account)">편집</button><button class="btn" data-account="${esc(a.name)}" onclick="removeBackendAccount(this.dataset.account)">삭제</button></div>`:'';
+        const login=a.connected===false&&a.login_command?`<div class="note acct-login show"><code>${esc(a.login_command)}</code><button class="btn" onclick="copyBackendLoginCommand(this)">복사</button><span>터미널에서 직접 로그인하세요.</span><span class="acct-copy-msg"></span></div>`:'';
+        return `<section class="acct-slide ${a.account_of?'clone':'original'}" data-account="${esc(a.name)}" data-slide-index="${slideIndex}" aria-label="${esc(a.name)} 계정">
+          ${usage}
+          <dl class="acct-details"><div><dt>계정군</dt><dd>${family}</dd></div>
+          <div><dt>인증 경로</dt><dd><code>${a.auth_mode==='api_key'?'API 키로 등록됨':esc(a.auth_dir||'—')}</code>${connected?`<br><span class="acct-status">${connected}</span>`:''}</dd></div>
+          ${actions?`<div><dt>관리</dt><dd>${actions}</dd></div>`:""}</dl>${login}</section>`;
+      }).join('');
+      // 껍데기는 대시보드와 **같은 것**을 쓴다(renderCarouselCard). 카드 색은 활성 계정의 level.
+      const firstAcct=model.slides[0]&&model.slides[0].account;
+      const ft=firstAcct?tools.get(firstAcct.name):null;
+      return renderCarouselCard(model,cardIndex,models.length,slides,ft?ft.level:"ok","acct");
+    }).join(''):'<div class="acct-empty">등록된 backend가 없습니다.</div>';
+    restoreBackendCarouselScroll(root);
+    restoreSwapMsgs(root);
+  }
+  const before=document.getElementById("ba-switch-before"), gain=document.getElementById("ba-min-gain");
+  if(before&&document.activeElement!==before)before.checked=!!(s.guard&&s.guard.switch_before_degrade);
+  if(gain&&document.activeElement!==gain)gain.value=Math.round(Number((s.guard&&s.guard.failover_min_gain)??.1)*100);
+}
+function syncBackendCarouselDots(scroller){
+  if(!scroller)return;
+  if(scroller.clientWidth>0)window._backendCarouselScroll=mergeBackendCarouselScroll(window._backendCarouselScroll,
+    [{family:scroller.dataset.key||scroller.dataset.family,scrollLeft:scroller.scrollLeft,visible:true}]);
+  const slides=[...scroller.querySelectorAll(".acct-slide")],card=scroller.closest(".acct-card");if(!slides.length||!card)return;
+  const left=scroller.getBoundingClientRect().left;
+  let active=0,distance=Infinity;
+  slides.forEach((slide,index)=>{const d=Math.abs(slide.getBoundingClientRect().left-left);if(d<distance){distance=d;active=index;}});
+  card.querySelectorAll(".acct-dot").forEach((dot,index)=>dot.classList.toggle("active",index===active));
+  // 컨테이너 높이를 활성 슬라이드에 맞춘다. 숨은 탭(clientWidth 0)에서는 0으로 눌러버리므로 건너뛴다.
+  if(scroller.clientWidth>0){const h=slides[active].offsetHeight;if(h>0)scroller.style.height=h+"px";}
+  const lv=slides[active].dataset.level;
+  if(lv)card.classList.remove("ok","warn","stop"),card.classList.add(lv);
+}
+// 재렌더 직전 현재 스크롤 위치를 기록한다(폴링 7초마다 위치가 처음으로 튀지 않게).
+function captureBackendCarouselScroll(root){
+  if(!root)return;
+  window._backendCarouselScroll=mergeBackendCarouselScroll(window._backendCarouselScroll,
+    [...root.querySelectorAll(".acct-carousel")].map(el=>({
+      family:el.dataset.key||el.dataset.family,scrollLeft:el.scrollLeft,visible:el.clientWidth>0})));
+}
+function restoreBackendCarouselScroll(root){
+  if(!root){                       // 인자 없으면 두 패널(대시보드·설정)을 모두 복원한다
+    ["tools","c-usage","backend-account-cards"].forEach(id=>{
+      const el=document.getElementById(id);if(el)restoreBackendCarouselScroll(el);});
+    return;
+  }
+  const apply=()=>root.querySelectorAll(".acct-carousel").forEach(scroller=>{
+    if(scroller.clientWidth<=0)return;
+    const left=Number((window._backendCarouselScroll||{})[scroller.dataset.key||scroller.dataset.family]);
+    if(Number.isFinite(left))scroller.scrollLeft=left;
+    syncBackendCarouselDots(scroller);
+  });
+  apply();if(typeof requestAnimationFrame==="function")requestAnimationFrame(apply);
+}
+function scrollBackendCarousel(dot){
+  const card=dot&&dot.closest(".acct-card"),scroller=card&&card.querySelector(".acct-carousel");if(!scroller)return;
+  const slide=scroller.querySelector(`.acct-slide[data-slide-index="${dot.dataset.slideIndex}"]`);if(!slide)return;
+  const left=scroller.scrollLeft+slide.getBoundingClientRect().left-scroller.getBoundingClientRect().left;
+  scroller.scrollTo({left,behavior:"smooth"});
+}
+async function moveBackendCard(button,direction){
+  const card=button&&button.closest(".acct-card"),family=card&&card.dataset.family;if(!family)return;
+  const current=[...document.querySelectorAll("#backend-account-cards .acct-card")].map(el=>el.dataset.family);
+  const next=moveBackendCardOrder(current,family,direction);if(next.join("\0")===current.join("\0"))return;
+  window._backendCardOrder=next;renderBackendAccounts(window._backendAccountState||{});
+  const msg=document.getElementById("backend-card-order-msg");if(msg)msg.textContent="카드 순서 저장 중…";
+  try{
+    const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({backend_card_order:next})});
+    let j={};try{j=await r.json();}catch(e){j={};}
+    const echoed=Array.isArray(j.backend_card_order)?j.backend_card_order:(j.gui&&Array.isArray(j.gui.backend_card_order)?j.gui.backend_card_order:null);
+    const saved=echoed&&echoed.length===next.length&&echoed.every((name,index)=>name===next[index]);
+    if(msg)msg.textContent=!r.ok||j.error?`순서 저장 실패: ${j.error||r.status}`:saved?'카드 순서 저장됨 ✓':'순서 저장 실패: 서버가 backend_card_order를 아직 지원하지 않습니다. 현재 화면에만 반영됨.';
+  }catch(e){if(msg)msg.textContent="순서 저장 요청 실패 — 현재 화면에만 반영됨.";}
+}
+function setBackendAccountAuthMode(button,mode){
+  const slide=button&&button.closest(".acct-add-slide");if(!slide)return;
+  slide.dataset.authMode=mode;
+  slide.querySelectorAll('[data-mode-btn]').forEach(b=>b.classList.toggle('active',b.dataset.modeBtn===mode));
+  const dirBox=slide.querySelector('.acct-mode-dir'),apiBox=slide.querySelector('.acct-mode-api');
+  if(dirBox)dirBox.style.display=mode==='api_key'?'none':'block';
+  if(apiBox)apiBox.style.display=mode==='api_key'?'block':'none';
+}
+function editBackendAccount(name){
+  const a=(window._backendAccounts||[]).find(x=>x.name===name);if(!a||!a.account_of)return;
+  const slide=[...document.querySelectorAll(".acct-add-slide")].find(el=>el.dataset.family===a.account_of);if(!slide)return;
+  const mode=a.auth_mode==='api_key'?'api_key':'dir';
+  window._backendEdit=name;slide.querySelector('[data-field="name"]').value=a.name;slide.querySelector('[data-field="auth-dir"]').value=a.auth_dir||"";
+  const apiKeyInput=slide.querySelector('[data-field="api-key"]');if(apiKeyInput)apiKeyInput.value="";   // 서버가 키를 돌려주지 않으므로 항상 빈칸
+  setBackendAccountAuthMode(slide.querySelector(`[data-mode-btn="${mode}"]`)||slide.querySelector('.acct-save'),mode);
+  window._backendAccountDrafts=window._backendAccountDrafts||{};window._backendAccountDrafts[a.account_of]={name:a.name,authDir:a.auth_dir||"",authMode:mode,apiKey:""};
+  slide.querySelector(".acct-save").textContent="편집 저장";slide.querySelector(".acct-cancel").style.display="inline-block";
+  document.getElementById("ba-msg").textContent=mode==='api_key'?`${name} 편집 중 — API 키를 다시 입력해야 합니다`:`${name} 편집 중`;
+  const dot=slide.closest(".acct-card").querySelector(".acct-dot.add");if(dot)scrollBackendCarousel(dot);
+}
+function cancelBackendAccountEdit(button){
+  const slide=button&&button.closest(".acct-add-slide");if(!slide)return;
+  const v=suggestBackendAccount(slide.dataset.family,(window._backendAccounts||[]).map(a=>a.name));window._backendEdit="";
+  if(window._backendAccountDrafts)delete window._backendAccountDrafts[slide.dataset.family];
+  slide.querySelector('[data-field="name"]').value=v.name;slide.querySelector('[data-field="auth-dir"]').value=v.authDir;
+  const apiKeyInput=slide.querySelector('[data-field="api-key"]');if(apiKeyInput)apiKeyInput.value="";
+  setBackendAccountAuthMode(slide.querySelector('[data-mode-btn="dir"]')||slide.querySelector('.acct-save'),'dir');
+  slide.querySelector(".acct-save").textContent="계정 추가";slide.querySelector(".acct-cancel").style.display="none";
+  document.getElementById("ba-msg").textContent="";
+}
+async function pickBackendAuthDir(button){
+  const slide=button&&button.closest(".acct-add-slide");if(!slide)return;
+  try{const r=await fetch("/api/pickdir",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});const j=await r.json();if(j.path)slide.querySelector('[data-field="auth-dir"]').value=j.path;}
+  catch(e){document.getElementById("ba-msg").textContent="폴더 선택 실패";}
+}
+async function saveBackendAccount(button){
+  const slide=button&&button.closest(".acct-add-slide");if(!slide)return;
+  const account_of=slide.dataset.family,name=slide.querySelector('[data-field="name"]').value.trim(),auth_dir=slide.querySelector('[data-field="auth-dir"]').value.trim();
+  const auth_mode=slide.dataset.authMode==='api_key'?'api_key':'dir';
+  const apiKeyInput=slide.querySelector('[data-field="api-key"]'),api_key=apiKeyInput?apiKeyInput.value.trim():"";
+  const replace_name=window._backendEdit||"", msg=document.getElementById("ba-msg");
+  const error=validateBackendAccountForm(account_of,name,auth_dir,(window._backendAccounts||[]).map(a=>a.name),replace_name,auth_mode,api_key);
+  if(error){msg.textContent="실패: "+error;return;}
+  const body=auth_mode==='api_key'
+    ?{account_of,name,auth_mode,api_key,...(replace_name?{replace_name}:{})}
+    :{account_of,name,auth_dir,...(replace_name?{replace_name}:{})};
+  try{const r=await fetch("/api/backends/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const j=await r.json();
+    if(!r.ok||!j.ok){msg.textContent="실패: "+(j.error||r.status);return;}
+    msg.textContent="저장됨 ✓";window._backendEdit="";slide.dataset.discardDraft="1";if(window._backendAccountDrafts)delete window._backendAccountDrafts[account_of];
+    if(apiKeyInput)apiKeyInput.value="";   // 저장 후 화면에 키 값을 남겨두지 않는다
+    if(j.login_command){const login=slide.querySelector(".acct-login");login.querySelector("code").textContent=j.login_command;login.classList.add("show");}
+    load();
+  }catch(e){msg.textContent="요청 실패(`yok3x gui`로 실행해야 함)";}
+}
+async function removeBackendAccount(name){
+  if(!confirm(`${name} 계정을 삭제할까요?`))return;
+  const msg=document.getElementById("ba-msg");
+  try{const r=await fetch("/api/backends/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});const j=await r.json();
+    msg.textContent=(r.ok&&j.ok)?"삭제됨 ✓":("실패: "+(j.error||r.status));if(r.ok&&j.ok)load();
+  }catch(e){msg.textContent="삭제 요청 실패";}
+}
+// 네이티브 confirm()은 이 GUI가 iframe(예: 데스크톱 앱의 미리보기 패널) 안에서 뜰 때 조용히
+// 막힐 수 있다(사용자 실측: 팝업도 안 뜨고 요청도 서버에 전혀 안 감 — 아무 표시 없이 그냥
+// 아무 일도 안 일어난 것처럼 보임). 그래서 confirm() 대신 화면 안에서 두 번 눌러야 실행되는
+// 방식으로 바꾼다 — 환경에 상관없이 항상 동작한다.
+function swapBackendAccountToMain(btn){
+  const name=btn.dataset.account,family=btn.dataset.family;
+  if(btn.dataset.armed!=="1"){
+    btn.dataset.armed="1";
+    btn._origText=btn.textContent;
+    btn.textContent="다시 누르면 실행";
+    btn.style.background="var(--red)";btn.style.color="#fff";
+    btn._armTimer=setTimeout(()=>{swapBackendAccountResetButton(btn);},5000);
+    return;
+  }
+  clearTimeout(btn._armTimer);
+  swapBackendAccountResetButton(btn);
+  swapBackendAccountToMainConfirmed(name,family);
+}
+function swapBackendAccountResetButton(btn){
+  btn.dataset.armed="0";
+  if(btn._origText)btn.textContent=btn._origText;
+  btn.style.background="";btn.style.color="";
+}
+// 스왑 결과는 아까 재현했던 대로(사용자 지적: "메시지 안 보임") 멀리 떨어진 #ba-msg 대신
+// **버튼 바로 밑**에 눈에 띄는 색으로 띄운다. 근데 GUI는 5~7초마다 카드 전체를 통째로 다시
+// 그려서(renderBackendAccounts의 root.innerHTML=...) DOM에 직접 넣은 메시지는 다음 폴링에서
+// 그냥 사라진다 — 재현해보니 이게 "메시지가 안 보인다"던 원인이었다(정확히는: 보긴 봤는데
+// 다음 폴링이 이미 지워버려서 확인할 새가 없었을 것). window._swapMsgState에 계정별로 저장해
+// 두고, 매 재렌더 뒤 restoreSwapMsgs()가 다시 심어준다(사라지지 않음).
+window._swapMsgState=window._swapMsgState||{};
+function showSwapMsg(name,text,kind,retry){
+  window._swapMsgState[name]={text,kind,retry:retry||null};
+  applySwapMsgToDom(name);
+}
+function applySwapMsgToDom(name){
+  const state=window._swapMsgState[name];
+  const slide=document.querySelector(`.acct-slide[data-account="${CSS.escape(name)}"]`);
+  const el=slide&&slide.querySelector(".swap-msg");
+  if(!el||!state)return;
+  el.textContent=state.text;el.style.display="block";
+  el.style.background=state.kind==="error"?"var(--red)":state.kind==="ok"?"var(--green)":"var(--cream)";
+  el.style.color=(state.kind==="error"||state.kind==="ok")?"#fff":"var(--ink)";
+  el.querySelectorAll(".swap-kill-retry").forEach(b=>b.remove());
+  if(state.retry){
+    el.appendChild(document.createElement("br"));
+    const kb=document.createElement("button");
+    kb.className="btn swap-kill-retry";kb.type="button";
+    kb.style.cssText="margin-top:5px;display:block;background:var(--yellow)";
+    kb.textContent="codex 종료하고 재시도";
+    kb.onclick=()=>killCodexAndRetrySwap(state.retry.name,state.retry.family);
+    el.appendChild(kb);
+  }
+}
+function restoreSwapMsgs(root){
+  Object.keys(window._swapMsgState).forEach(applySwapMsgToDom);
+}
+async function swapBackendAccountToMainConfirmed(name,family){
+  showSwapMsg(name,"스왑 중…","busy");
+  try{
+    const r=await fetch("/api/backends/swap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const j=await r.json();
+    if(r.ok&&j.ok){showSwapMsg(name,"스왑됨 ✓","ok");load();return"ok";}
+    if(j.locked){
+      showSwapMsg(name,(j.error||"실패")+" — 아래 버튼으로 강제종료 후 재시도할 수 있습니다.","error",{name,family});
+      return"locked";
+    }
+    showSwapMsg(name,"실패: "+(j.error||r.status),"error");
+    return"error";
+  }catch(e){showSwapMsg(name,"스왑 요청 실패: "+e,"error");return"error";}
+}
+// codex.exe 등을 강제종료하는 건 스왑 버튼 자체엔 절대 자동으로 안 묶는다 — 사용자가 스왑
+// 실패를 보고 "종료하고 재시도"를 **직접, 별도로** 눌러야만 실행된다(다른 codex 작업을
+// 모르는 새 끊어버릴 수 있는 동작이라 항상 그 자체로 명시적이어야 함, 사용자 요청 2026-09-10).
+// 실측: Codex 데스크톱 앱 자체가 죽여도 바로 다시 띄우는 것으로 보여, 한 번 종료+재시도로
+// 안 끝나고 3번째에야 성공한 적이 있었다(사용자 지적: "안 먹어" — 실은 한 번만 눌러서
+// 그랬던 것) — 그래서 여기서 최대 3번까지는 자동으로 이어서 시도한다(그래도 안 되면 사용자가
+// Codex 앱 자체를 완전히 꺼야 한다는 뜻이므로 거기서 멈추고 알린다).
+async function killCodexAndRetrySwap(name,family){
+  for(let attempt=1;attempt<=3;attempt++){
+    showSwapMsg(name,`codex 프로세스 종료 중… (${attempt}/3)`,"busy");
+    try{
+      const r=await fetch("/api/backends/kill_codex",{method:"POST"});
+      const j=await r.json();
+      if(!(r.ok&&j.ok)){showSwapMsg(name,"종료 실패: "+(j.error||r.status),"error");return;}
+      await new Promise(res=>setTimeout(res,500));   // 프로세스 완전히 정리될 시간
+      const status=await swapBackendAccountToMainConfirmed(name,family);
+      if(status!=="locked")return;   // ok 또는 다른 종류의 실패 — 더 재시도해도 의미 없음
+    }catch(e){showSwapMsg(name,"종료 요청 실패: "+e,"error");return;}
+  }
+  showSwapMsg(name,"3번 시도해도 codex가 계속 다시 뜹니다 — Codex 데스크톱 앱을 완전히 종료(트레이 아이콘 포함)한 뒤 다시 눌러주세요.","error",{name,family});
+}
+async function copyBackendLoginCommand(button){
+  const login=button&&button.closest(".acct-login"),value=login&&login.querySelector("code").textContent;if(!value)return;
+  const msg=login.querySelector(".acct-copy-msg");
+  try{await navigator.clipboard.writeText(value);msg.textContent="복사됨 ✓";}
+  catch(e){msg.textContent="복사 실패 — 명령을 직접 선택해 복사하세요.";}
+}
+async function saveBackendFailoverOptions(){
+  const switch_before_degrade=document.getElementById("ba-switch-before").checked;
+  const percent=Number(document.getElementById("ba-min-gain").value),msg=document.getElementById("ba-options-msg");
+  if(!Number.isFinite(percent)||percent<0||percent>100){msg.textContent="최소 여유 차이는 0~100 사이여야 합니다.";return;}
+  try{const r=await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({switch_before_degrade,failover_min_gain:percent/100})});const j=await r.json();
+    msg.textContent=(!j.error&&r.ok)?"저장됨 ✓":("실패: "+(j.error||r.status));
+  }catch(e){msg.textContent="저장 요청 실패";}
+}
 async function saveConfig(){
   const bd=document.getElementById("global-board");
   const workers={}; bd.querySelectorAll("select[data-w]").forEach(s=>workers[s.dataset.w]=s.value);
@@ -1402,12 +1929,21 @@ function setLive(on){const b=document.getElementById("livebadge");
 //  (A) 처음부터 서버 없음(html 파일 직접 열기) = 정상적인 mock 시연 모드
 //  (B) 쓰던 중 서버가 죽음 = 사고. 이때 MOCK을 덮어 그리면 가짜 사용량(claude 31% 등)이
 //      진짜처럼 보인다. 마지막 실데이터를 유지하고 배너로 갱신 중단을 알린다.
-let everLive=false, fails=0;
+let everLive=false, fails=0, statePollTimer;
 async function load(){
+  let nextPollDelay=7000;               // warming이면 1000ms로 짧게, 아니면 평소대로 7000ms
   try{const r=await fetch("/api/state",{cache:"no-store"});if(!r.ok)throw 0;
     const s=await r.json();everLive=true;fails=0;
     document.getElementById("disconnected").style.display="none";
-    setLive(true);render(s);}
+    setLive(true);
+    // 서버가 아직 첫 스냅샷을 못 만든 구간(state_status="warming")은 guard·coach 같은 키가 없다.
+    // 그대로 render()에 넘기면 예외 → catch → '연결 끊김' 오표시가 된다. 서버는 멀쩡하므로
+    // 전용 배너만 띄우고 기다린다 — 근데 보통 1초 안에 준비되므로(실측) 다음 폴링도 7초가
+    // 아니라 1초 뒤로 당긴다(사용자 지적: 첫 스냅샷이 너무 오래 걸려 보임).
+    const warming=s&&s.state_status==="warming";
+    document.getElementById("warming").style.display=warming?"block":"none";
+    if(warming){nextPollDelay=1000;return;}
+    render(s);}
   catch(e){
     fails++;
     if(everLive){                       // (B) 연결이 끊겼다 — 마지막 값 유지, 덮어쓰지 않는다
@@ -1415,16 +1951,35 @@ async function load(){
       document.getElementById("disconn-detail").textContent=
         `/api/state 응답 없음(연속 ${fails}회, 약 ${Math.round(fails*7)}초).`;
       el.style.display="block";
+      document.getElementById("warming").style.display="none";
       setLive(false);
     }else{                              // (A) 처음부터 서버 없음 — 기존 mock 시연 유지
       setLive(false);render(MOCK);
     }
+  }finally{
+    clearTimeout(statePollTimer);
+    statePollTimer=setTimeout(load,nextPollDelay);
   }
 }
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
   document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
-  t.classList.add("active");document.getElementById(t.dataset.v).classList.add("active");});
+  t.classList.add("active");document.getElementById(t.dataset.v).classList.add("active");
+  if(t.dataset.v==="settings")restoreBackendCarouselScroll();});
+// 대시보드의 "계정 추가는 설정 탭에서" 안내가 그냥 텍스트였다(사용자 지적: 탭으로 못 넘어감) —
+// 눌러서 바로 설정 탭으로 이동 + 해당 계정군 카드까지 스크롤해준다.
+function goToBackendSettings(family){
+  document.querySelector('.tab[data-v="settings"]')?.click();
+  setTimeout(()=>{
+    const card=document.getElementById("backend-accounts-card");
+    if(!card)return;
+    card.scrollIntoView({behavior:"smooth",block:"start"});
+    if(family){
+      const carousel=card.querySelector(`.acct-carousel[data-family="${CSS.escape(family)}"]`);
+      if(carousel)carousel.scrollIntoView({behavior:"smooth",block:"center"});
+    }
+  },150);
+}
 // BUG-45: 예전에는 ".seg" 전체 버튼에 b.onclick을 무조건 덮어썼다 — pacemodeseg/pacestratseg/
 // planseg는 onclick="savePace(...)/savePaceStrategy(...)/savePlan(...)" 속성 핸들러로 서버에 저장까지
 // 하는데, 그 핸들러가 통째로 가려져(클릭해도 시각적 토글만 되고 저장은 전혀 안 됨) 세 곳 모두 먹통이었다.
@@ -1434,7 +1989,7 @@ document.querySelectorAll("#c-pattern button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#c-pattern button").forEach(x=>x.classList.remove("on"));b.classList.add("on");});
 function clk(){document.getElementById("clock").textContent=new Date().toLocaleTimeString("ko-KR");}
 setInterval(clk,1000);clk();
-load();setInterval(load,7000);
+load();
 </script>
 </body>
 </html>

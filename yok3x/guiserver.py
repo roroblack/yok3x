@@ -12,6 +12,7 @@ import http.server
 import copy
 import json
 import logging
+import re
 import signal
 import shutil
 import socketserver
@@ -24,11 +25,20 @@ from pathlib import Path
 
 from . import backends, limits, sync_layer, usage
 from ._version import __version__
-from .config import Config
+from .config import Config, atomic_write_text
 from .automation import validate_automation_config, validate_automation_mode, validate_task_automation_mode
 
 EFFORTS_OK = ("minimal", "low", "medium", "high", "xhigh", "max")
 APPLY_MODES = ("review", "auto_commit")
+BACKEND_ACCOUNT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# 단일 출처는 usage.py — 표시(여기)와 폴오버 판정(usage.backend_available)이 어긋나면
+# 화면엔 "⚠ 미로그인"인데 폴오버는 그 계정을 고르는 상태가 난다.
+BACKEND_ACCOUNT_ENV = usage.ACCOUNT_ENV_KEYS
+# API 키 방식 계정 추가(2026-09-14, 사용자 요청): claude/codex CLI 모두 구독 로그인(OAuth) 대신
+# API 키로도 돌아간다 — gemini가 이미 그렇게 쓰던 것과 같은 패턴. 디렉터리 격리(BACKEND_ACCOUNT_ENV)
+# 대신 이 env 변수 하나만 주입하면 해당 계정은 API 과금으로 동작하고, 실측 프로브가 없으니
+# limits.type="ledger"(원장) 폴백으로 표시된다 — 이미 있는 gemini 카드와 같은 배지/모양.
+API_KEY_ENV = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY"}
 
 # 실행 상태 + 큐. 단일 실행 락으로 동시 실행 방지, 나머지는 큐 대기.
 # last: 직전 실행 결과/오류를 보존해 GUI에 노출(조용한 실패 금지).
@@ -150,11 +160,338 @@ def pick_directory() -> str | None:
         return None
 
 
+def _backend_auth_mode(spec: dict) -> str:
+    """'dir'(계정 로그인 디렉터리 격리) 또는 'api_key'(API 키 과금) — env에 실린 변수 이름으로 판정.
+    둘 다 없는 원본 backend(claude/codex 자체)는 'dir'로 취급(기존 화면과 동일하게 표시)."""
+    env = spec.get("env") or {}
+    if any(k in env for k in API_KEY_ENV.values()):
+        return "api_key"
+    return "dir"
+
+
+def _backend_auth_dir(name: str, spec: dict) -> str:
+    """Return the configured credential directory without reading credentials."""
+    if _backend_auth_mode(spec) == "api_key":
+        return ""
+    family = str(spec.get("account_of") or name)
+    env_key = BACKEND_ACCOUNT_ENV.get(family)
+    if env_key:
+        configured = (spec.get("env") or {}).get(env_key)
+        if configured:
+            return str(configured)
+        return f"~/.{family}"
+    return ""
+
+
+def _backend_auth_connected(name: str, spec: dict) -> bool | None:
+    """Check only whether the CLI's local credential file exists (dir 방식) 또는 키가
+    저장돼 있는지(api_key 방식) — 어느 쪽도 실제 키 값을 반환하지 않는다."""
+    family = str(spec.get("account_of") or name)
+    if _backend_auth_mode(spec) == "api_key":
+        env_key = API_KEY_ENV.get(family)
+        return bool(env_key and (spec.get("env") or {}).get(env_key))
+    auth_dir = _backend_auth_dir(name, spec)
+    if not auth_dir:
+        return None
+    filename = usage.ACCOUNT_CRED_FILE.get(family, "auth.json")
+    return (Path(auth_dir).expanduser() / filename).is_file()
+
+
+def _backend_login_command(name: str, spec: dict) -> str:
+    family = str(spec.get("account_of") or name)
+    if _backend_auth_mode(spec) == "api_key":
+        return ""   # API 키 방식은 터미널 로그인이 필요 없다.
+    auth_dir = _backend_auth_dir(name, spec)
+    env_key = BACKEND_ACCOUNT_ENV.get(family)
+    if not env_key or not auth_dir:
+        return ""
+    login = "claude auth login --claudeai" if family == "claude" else "codex login"
+    return f"{env_key}={auth_dir} {login}"
+
+
+def _backend_account_rows(cfg: Config) -> list[dict]:
+    # 계정 카드도 사용량 패널과 **같은 목록**을 써야 한다. cfg.backends 전체를 돌면 `mock`(드라이런
+    # 스텁)·`local`(자체 호스팅 서버)까지 카드가 생기는데, 둘 다 로그인할 계정이 없어 복제도 못 하는
+    # 빈 카드다(사용자 지적: "모크랑 이런 것도 보이고").
+    visible = set(usage.limits_backend_names(cfg))
+    rows = []
+    for name, raw_spec in cfg.backends.items():
+        if name not in visible:
+            continue
+        spec = raw_spec if isinstance(raw_spec, dict) else {}
+        family = str(spec.get("account_of") or name)
+        rows.append({
+            "name": name,
+            "account_of": str(spec.get("account_of") or ""),
+            "family": family,
+            "auth_mode": _backend_auth_mode(spec),
+            "auth_dir": _backend_auth_dir(name, spec),
+            "connected": _backend_auth_connected(name, spec),
+            "login_command": _backend_login_command(name, spec),
+            "can_clone": not spec.get("account_of") and family in BACKEND_ACCOUNT_ENV,
+            "clone_disabled_reason": (
+                "Gemini CLI는 인증 디렉터리를 안전하게 격리할 수 없습니다."
+                if family == "gemini" else
+                ("Claude/Codex CLI 계정만 복제할 수 있습니다." if family not in BACKEND_ACCOUNT_ENV else "")
+            ),
+        })
+    return rows
+
+
+def _backend_reference_error(cfg: Config, name: str) -> str:
+    workers = [w for w, spec in (cfg.yok3x.get("workers") or {}).items()
+               if isinstance(spec, dict) and spec.get("backend") == name]
+    routes = [route for route, backend in (cfg.yok3x.get("routing") or {}).items()
+              if backend == name]
+    refs = []
+    if workers:
+        refs.append("워커 " + ", ".join(workers))
+    if routes:
+        refs.append("routing " + ", ".join(routes))
+    return "; ".join(refs)
+
+
+def _write_account_files(cfg: Config, new_backends: dict, new_yok3x: dict) -> dict:
+    """Persist both account files as one logical change, restoring either on failure."""
+    targets = (cfg.paths.backends_json, cfg.paths.yok3x_json)
+    originals: dict[Path, str | None] = {}
+    try:
+        for path in targets:
+            originals[path] = path.read_text(encoding="utf-8-sig") if path.exists() else None
+        for path, original in originals.items():
+            if original is not None:
+                atomic_write_text(path.parent / (path.name + ".bak"), original)
+    except OSError as exc:
+        return {"error": f"백업 실패 — 저장하지 않음: {exc}"}
+
+    written: list[Path] = []
+    try:
+        atomic_write_text(cfg.paths.backends_json,
+                          json.dumps(new_backends, ensure_ascii=False, indent=2) + "\n")
+        written.append(cfg.paths.backends_json)
+        atomic_write_text(cfg.paths.yok3x_json,
+                          json.dumps(new_yok3x, ensure_ascii=False, indent=2) + "\n")
+        written.append(cfg.paths.yok3x_json)
+    except OSError as exc:
+        rollback_errors = []
+        for path in reversed(written):
+            original = originals[path]
+            try:
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write_text(path, original)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{path.name}: {rollback_exc}")
+        detail = f"저장 실패 — 롤백됨: {exc}"
+        if rollback_errors:
+            detail += " (롤백 오류: " + "; ".join(rollback_errors) + ")"
+        return {"error": detail}
+
+    cfg.backends = new_backends
+    cfg.yok3x = new_yok3x
+    limits.clear_cache()
+    _refresh_gui_state_sync(cfg)
+    return {"ok": True}
+
+
+def _add_backend_account(cfg: Config, body: dict) -> dict:
+    account_of = str(body.get("account_of") or "").strip()
+    name = str(body.get("name") or "").strip()
+    auth_mode = str(body.get("auth_mode") or "dir").strip()
+    auth_dir = str(body.get("auth_dir") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    replace_name = str(body.get("replace_name") or "").strip()
+    if not BACKEND_ACCOUNT_NAME_RE.fullmatch(name):
+        return {"error": "이름은 소문자·숫자로 시작하는 1~32자의 소문자/숫자/_/-만 허용합니다."}
+    if auth_mode not in ("dir", "api_key"):
+        return {"error": f"알 수 없는 인증 방식: {auth_mode}"}
+    if auth_mode == "dir" and not auth_dir:
+        return {"error": "인증 디렉터리를 입력하세요."}
+    if auth_mode == "api_key" and not api_key:
+        return {"error": "API 키를 입력하세요."}
+    source = cfg.backends.get(account_of)
+    if not isinstance(source, dict):
+        return {"error": f"없는 원본 backend: {account_of}"}
+    if source.get("account_of"):
+        return {"error": "계정 복제 backend를 다시 복제할 수 없습니다."}
+    if account_of == "gemini":
+        return {"error": "gemini는 인증 디렉터리를 안전하게 격리할 수 없어 계정 추가를 지원하지 않습니다."}
+    if auth_mode == "dir":
+        env_key = BACKEND_ACCOUNT_ENV.get(account_of)
+        if not env_key:
+            return {"error": f"계정 복제를 지원하지 않는 backend: {account_of}"}
+    else:
+        env_key = API_KEY_ENV.get(account_of)
+        if not env_key:
+            return {"error": f"API 키 방식을 지원하지 않는 backend: {account_of}"}
+    if name in cfg.backends and name != replace_name:
+        return {"error": f"이미 존재하는 backend 이름: {name}"}
+    if replace_name:
+        replaced = cfg.backends.get(replace_name)
+        if not isinstance(replaced, dict) or not replaced.get("account_of"):
+            return {"error": "편집 대상은 등록된 계정 복제 backend여야 합니다."}
+        if name != replace_name:
+            refs = _backend_reference_error(cfg, replace_name)
+            if refs:
+                return {"error": f"참조 중인 backend 이름은 바꿀 수 없습니다: {refs}"}
+
+    new_backends = copy.deepcopy(cfg.backends)
+    new_yok3x = copy.deepcopy(cfg.yok3x)
+    if replace_name and replace_name != name:
+        new_backends.pop(replace_name, None)
+        (new_yok3x.get("limits") or {}).pop(replace_name, None)
+    clone = copy.deepcopy(source)
+    clone["account_of"] = account_of
+    limits_map = new_yok3x.setdefault("limits", {})
+
+    if auth_mode == "api_key":
+        # gemini와 같은 패턴: 디렉터리 격리 대신 API 키 하나만 env로 주입한다. 실측 프로브가
+        # 없으니 limits.type을 명시적으로 "ledger"(원장)로 둔다 — claude_oauth/codex_appserver를
+        # 그대로 물려받으면(아래 dir 분기처럼) 원본의 자격증명 파일을 읽어 **API 키 계정인데
+        # OAuth 구독 사용률을 자기 것으로 잘못 보고**할 수 있다.
+        clone["env"] = {env_key: api_key}
+        limits_map[name] = {"type": "ledger", "api_key_env": env_key}
+    else:
+        clone["env"] = {env_key: auth_dir}
+        limit_conf = copy.deepcopy(limits_map.get(account_of) or {})
+        base = auth_dir.rstrip("/\\")
+        if account_of == "claude":
+            # 트랜스크립트 **추정** 폴백이 보는 경로.
+            limit_conf["projects_dir"] = base + "/projects"
+            # 라이브 실측(type=claude_oauth)이 보는 경로. 이걸 빼면 복제본이 원본의
+            # `~/.claude/.credentials.json`을 읽어 **원본 계정의 사용률을 자기 것인 양 real=True로
+            # 보고한다**(실측: claude와 claude-alt가 `5h 35% · 7d 14%`로 완전히 동일). 폴오버가
+            # 여유 있다고 오판할 수 있어 조용한 오보다 — 파일이 없으면 폴백해 '미측정'으로 정직하게
+            # 표시되는 쪽이 맞다.
+            limit_conf["credentials_path"] = base + "/.credentials.json"
+        else:
+            limit_conf["sessions_dir"] = base + "/sessions"
+        limits_map[name] = limit_conf
+
+    new_backends[name] = clone
+    result = _write_account_files(cfg, new_backends, new_yok3x)
+    if result.get("ok"):
+        result.update({"name": name, "login_command": _backend_login_command(name, clone)})
+    return result
+
+
+def _remove_backend_account(cfg: Config, body: dict) -> dict:
+    name = str(body.get("name") or "").strip()
+    spec = cfg.backends.get(name)
+    if not isinstance(spec, dict):
+        return {"error": f"없는 backend: {name}"}
+    if not spec.get("account_of"):
+        return {"error": f"원본 backend는 삭제할 수 없습니다: {name}"}
+    refs = _backend_reference_error(cfg, name)
+    if refs:
+        return {"error": f"참조 중인 backend는 삭제할 수 없습니다: {refs}"}
+    new_backends = copy.deepcopy(cfg.backends)
+    new_yok3x = copy.deepcopy(cfg.yok3x)
+    new_backends.pop(name, None)
+    (new_yok3x.get("limits") or {}).pop(name, None)
+    return _write_account_files(cfg, new_backends, new_yok3x)
+
+
+# 계정 스왑(2026-09-10, 사용자 요청): "이 복제를 메인으로" — yok3x 설정만 바꾸는 게 아니라
+# **실제 인증 디렉터리 내용을 통째로 맞바꾼다**. yok3x.json/backends.json 안에서만 이름-경로
+# 매핑을 바꾸면 이 저장소를 통해 실행하는 워커만 바뀌고, 사용자가 터미널에서 직접 치는 `codex`나
+# 다른 세션·데스크톱 앱은 여전히 옛 계정을 본다(사용자 지적: "다른 세션에서도 반영이 돼야
+# 의미가 있다") — 그래서 이름은 그대로 두고 그 이름이 가리키는 **디렉터리의 내용**을 바꾼다.
+# gemini는 지원 안 함(원래도 계정 복제 자체가 안 됨). claude도 지금은 막는다 — `~/.claude`는
+# 이 세션 자신이 지금 쓰고 있는 폴더라, 실행 중에 통째로 바꿔치기하면 이 세션 자체가 깨질 위험이
+# 있다(codex는 yok3x가 그때그때 서브프로세스로만 띄우므로 상대적으로 안전).
+_SWAPPABLE_FAMILIES = {"codex"}
+
+
+# 스왑이 파일 잠금(codex.exe 등 실행 중)으로 막혔을 때 쓰는 **별도의, 명시적** 종료 동작
+# (2026-09-10, 사용자 요청 "저거 누르면 그냥 프로세스 다 종료하게 하면 안됨?"). 스왑 버튼 자체에
+# 자동으로 끼워넣지 않는다 — 사용자가 모르는 사이에 다른 codex 작업(예: 다른 세션이 지금
+# 쓰고 있는 것)을 끊어버릴 수 있어서, 항상 그 자체로 별도 확인을 거치는 동작이어야 한다.
+# 순서 중요: codex 본인한테 직접 물어본 결과(2026-09-14) — codex-code-mode-host.exe가 데스크톱
+# 앱의 감시자(watchdog)라 codex.exe를 죽여도 이게 살아있으면 곧 다시 띄운다. 감시자를 먼저
+# 죽여야 codex.exe가 재실행 안 된다(반대 순서였던 게 "3번 시도해도 계속 다시 뜬다"의 원인 중
+# 하나였을 것 — 매번 codex.exe를 먼저 죽이고 나서 감시자를 죽이니 그 사이 틈에 재실행됐을 수 있음).
+_CODEX_PROCESS_NAMES = ("codex-code-mode-host.exe", "codex.exe")
+
+
+def _kill_codex_processes() -> dict:
+    if shutil.which("taskkill") is None:
+        return {"error": "taskkill을 찾을 수 없습니다(Windows 전용 기능)."}
+    results = []
+    for proc_name in _CODEX_PROCESS_NAMES:
+        try:
+            r = subprocess.run(["taskkill", "/IM", proc_name, "/F"],
+                               capture_output=True, text=True, timeout=10)
+            # taskkill은 대상이 아예 없어도 실패 종료코드를 내는데, 그건 "이미 안 떠 있음"이라
+            # 스왑 관점에서는 성공과 같다 — 메시지로 구분해 보여주되 전체를 실패로 취급 안 한다.
+            detail = (r.stdout or r.stderr or "").strip().splitlines()[-1:] or [""]
+            results.append({"name": proc_name, "ok": True, "detail": detail[0][:200]})
+        except Exception as e:
+            results.append({"name": proc_name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
+    return {"ok": True, "results": results}
+
+
+def _swap_backend_account_dirs(cfg: Config, body: dict) -> dict:
+    name = str(body.get("name") or "").strip()
+    clone_spec = cfg.backends.get(name)
+    if not isinstance(clone_spec, dict) or not clone_spec.get("account_of"):
+        return {"error": "계정 복제(alt) backend만 메인과 스왑할 수 있습니다."}
+    family = str(clone_spec["account_of"])
+    if family not in _SWAPPABLE_FAMILIES:
+        return {"error": f"'{family}' 계정 스왑은 아직 지원하지 않습니다(codex만 가능)."}
+    original_spec = cfg.backends.get(family)
+    if not isinstance(original_spec, dict):
+        return {"error": f"원본 backend를 찾을 수 없습니다: {family}"}
+
+    original_dir = Path(_backend_auth_dir(family, original_spec)).expanduser()
+    clone_dir = Path(_backend_auth_dir(name, clone_spec)).expanduser()
+    if not clone_dir.is_dir():
+        return {"error": f"복제 계정 디렉터리가 없습니다: {clone_dir}"}
+    if not original_dir.is_dir():
+        return {"error": f"원본 계정 디렉터리가 없습니다: {original_dir}"}
+
+    tmp_dir = original_dir.parent / f"{original_dir.name}.yok3x-swap-tmp"
+    if tmp_dir.exists():
+        return {"error": f"이전 스왑이 남긴 임시 폴더가 있습니다: {tmp_dir} — 수동으로 정리 후 다시 시도하세요."}
+
+    # 3단계 이름바꾸기. Windows는 파일이 열려 있으면(예: codex.exe가 떠 있음) OSError로 거부한다
+    # — 프로세스를 찾아 죽이는 대신 그 신호를 그대로 사용자에게 보여준다(무엇을 얼마나 확신
+    # 못 하고 껐는지 짐작하지 않는다 — 종료는 사용자 몫).
+    try:
+        original_dir.rename(tmp_dir)
+    except OSError as e:
+        return {"error": f"1단계(원본→임시) 실패 — codex.exe/관련 프로세스를 모두 종료한 뒤 다시 시도하세요: {e}",
+               "locked": True}      # GUI가 이 신호로 "종료하고 재시도" 버튼을 보여준다
+    try:
+        clone_dir.rename(original_dir)
+    except OSError as e:
+        try:
+            tmp_dir.rename(original_dir)      # 롤백
+        except OSError:
+            return {"error": f"2단계 실패했고 롤백도 실패했습니다 — 수동 확인 필요"
+                             f"({tmp_dir} ↔ {original_dir}): {e}"}
+        return {"error": f"2단계(복제→원본) 실패, 롤백함(원상복구됨): {e}"}
+    try:
+        tmp_dir.rename(clone_dir)
+    except OSError as e:
+        return {"error": f"3단계(임시→복제) 실패 — 1·2단계는 이미 적용됐습니다. "
+                         f"{tmp_dir}를 수동으로 {clone_dir}로 옮기세요: {e}"}
+
+    limits.clear_cache()
+    usage.clear_cache()
+    _refresh_gui_state_sync(cfg)
+    return {"ok": True, "original_dir": str(original_dir), "clone_dir": str(clone_dir)}
+
+
 def build_state(cfg: Config) -> dict:
     state_started = time.perf_counter()
     totals = usage.today_totals(cfg)
     tools = []
-    for b in usage.BACKEND_KEYS:
+    # 사용량 패널도 계정 카드·코치와 **같은 목록**을 써야 한다. cfg.backends 전체를 돌면
+    # `mock`(드라이런 스텁)·`local`(자체 호스팅)이 0%로 상주하고(사용자 지적), 무엇보다
+    # 쓸모없는 프로브를 2개 더 돌려 build_state를 느리게 만든다.
+    for b in usage.limits_backend_names(cfg):
         probe_started = time.perf_counter()
         v = usage.check_backend(cfg, b, probe_fn=limits.probe_gui)
         probe_ms = (time.perf_counter() - probe_started) * 1000
@@ -224,6 +561,8 @@ def build_state(cfg: Config) -> dict:
         "guard": {"enabled": g.get("enabled", True),
                   "soft": g.get("soft_ratio", 0.8), "hard": g.get("hard_ratio", 1.0),
                   "failover": bool((g.get("degrade") or {}).get("failover_enabled", False)),
+                  "switch_before_degrade": bool((g.get("degrade") or {}).get("switch_before_degrade", True)),
+                  "failover_min_gain": float((g.get("degrade") or {}).get("failover_min_gain", 0.1)),
                   "offline": bool((g.get("degrade") or {}).get("offline_enabled", True)),
                   "pace": {"enabled": bool((g.get("daily_pace") or {}).get("enabled", False)),
                            "cap_pct": round(float((g.get("daily_pace") or {}).get("pct_of_weekly", 0.14)) * 100),
@@ -240,6 +579,10 @@ def build_state(cfg: Config) -> dict:
         "saved_tasks": _saved_tasks(cfg),   # [{name,label}] — 작업별 보기와 통합용
         "workers": workers,
         "backends": list(cfg.backends),
+        "backend_accounts": _backend_account_rows(cfg),
+        # 화면 배치 설정(계정 카드 순서 등). 이걸 안 내려주면 GUI가 저장한 순서를 새로고침 때
+        # 되읽지 못해 매번 기본 순서로 돌아간다.
+        "gui": dict(cfg.yok3x.get("gui", {})),
         "routing": dict(cfg.yok3x.get("routing", {})),
     }
     state_ms = (time.perf_counter() - state_started) * 1000
@@ -714,6 +1057,15 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         if e and str(e) not in EFFORTS_OK:
             return {"error": f"effort 값 오류: {e} (minimal/low/medium/high/xhigh/max)"}
     failover_enabled = body.get("failover_enabled")   # P2 폴오버 on/off
+    switch_before_degrade = body.get("switch_before_degrade")
+    failover_min_gain = body.get("failover_min_gain")
+    if failover_min_gain is not None:
+        try:
+            failover_min_gain = float(failover_min_gain)
+        except (TypeError, ValueError):
+            return {"error": f"failover_min_gain 숫자 아님: {failover_min_gain}"}
+        if not 0 <= failover_min_gain <= 1:
+            return {"error": f"failover_min_gain 범위(0~1) 벗어남: {failover_min_gain}"}
     offline_enabled = body.get("offline_enabled")     # P3 오프라인(로컬) 폴백 on/off
     auto_refresh = body.get("auto_refresh")           # claude 토큰 자체갱신 on/off
     autocalibrate = body.get("autocalibrate")
@@ -774,6 +1126,10 @@ def _apply_config(cfg: Config, body: dict) -> dict:
         cfg.yok3x["workers"][w]["effort"] = str(e or "").strip()
     if failover_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_enabled"] = bool(failover_enabled)
+    if switch_before_degrade is not None:
+        cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["switch_before_degrade"] = bool(switch_before_degrade)
+    if failover_min_gain is not None:
+        cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["failover_min_gain"] = failover_min_gain
     if offline_enabled is not None:
         cfg.yok3x.setdefault("guard", {}).setdefault("degrade", {})["offline_enabled"] = bool(offline_enabled)
     if auto_refresh is not None:
@@ -827,12 +1183,34 @@ def _apply_config(cfg: Config, body: dict) -> dict:
     # 하루 페이싱 정지 승인(오늘 재개)
     pace_approve = body.get("pace_approve")
     if pace_approve:
-        if pace_approve not in cfg.yok3x.get("workers", {}) and pace_approve not in usage.BACKEND_KEYS:
+        if (pace_approve not in cfg.yok3x.get("workers", {})
+                and pace_approve not in usage.limits_backend_names(cfg)):
             return {"error": f"알 수 없는 backend(pace_approve): {pace_approve}"}
         usage.pace_approve(cfg, pace_approve)
+    # 백엔드 계정 카드가 나열되는 순서(계정군 이름 배열). 화면 배치라 gui.* 아래 둔다.
+    # 목록에 없는 계정군은 GUI가 뒤에 원래 순서로 붙이므로, 여기서 '전부 나열'을 요구하지 않는다
+    # — 새 backend가 생겨도 순서 설정 때문에 화면에서 사라지지 않게 하기 위함.
+    card_order = body.get("backend_card_order")
+    if card_order is not None:
+        if not isinstance(card_order, list):
+            return {"error": "backend_card_order는 배열이어야 합니다"}
+        families = {str((spec or {}).get("account_of") or name)
+                    for name, spec in (cfg.backends or {}).items()}
+        cleaned: list[str] = []
+        for fam in card_order:
+            fam = str(fam)
+            if fam not in families:
+                return {"error": f"알 수 없는 계정군(backend_card_order): {fam}"}
+            if fam in cleaned:
+                return {"error": f"중복된 계정군(backend_card_order): {fam}"}
+            cleaned.append(fam)
+        cfg.yok3x.setdefault("gui", {})["backend_card_order"] = cleaned
     cfg.save_yok3x()
     _refresh_gui_state_sync(cfg)
-    return {"ok": True}
+    out = {"ok": True}
+    if card_order is not None:                       # GUI가 저장 성공을 실제로 확인할 수 있게 에코
+        out["backend_card_order"] = cfg.yok3x["gui"]["backend_card_order"]
+    return out
 
 
 # ---------------------------------------------------------------- 서버
@@ -989,6 +1367,26 @@ def serve(cfg: Config, port: int = 8760, open_browser: bool = True) -> None:
 
             if path == "/api/config":
                 self._json(200, _apply_config(cfg, body))
+                return
+
+            if path == "/api/backends/add":
+                r = _add_backend_account(cfg, body)
+                self._json(200 if r.get("ok") else 400, r)
+                return
+
+            if path == "/api/backends/remove":
+                r = _remove_backend_account(cfg, body)
+                self._json(200 if r.get("ok") else 400, r)
+                return
+
+            if path == "/api/backends/swap":
+                r = _swap_backend_account_dirs(cfg, body)
+                self._json(200 if r.get("ok") else 400, r)
+                return
+
+            if path == "/api/backends/kill_codex":
+                r = _kill_codex_processes()
+                self._json(200 if r.get("ok") else 400, r)
                 return
 
             if path == "/api/sync/claim_action":      # v4.6.0 S6a: 온디맨드 claim 클릭 explain/quiz

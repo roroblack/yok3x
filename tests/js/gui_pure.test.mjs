@@ -95,6 +95,102 @@ test("fmtTok()/fmtDur(): 사람이 읽는 축약 — 측정불가는 —", () =>
   assert.equal(fmtDur(125_000), "2m5s");
 });
 
+test("suggestBackendAccount(): 계정 이름과 인증 경로 기본값을 제안하고 중복을 피한다", () => {
+  const { suggestBackendAccount } = load("suggestBackendAccount");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(suggestBackendAccount("codex", []))),
+    { name: "codex-alt", authDir: "~/.codex-alt" });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(suggestBackendAccount("claude", ["claude-alt", "claude-alt2"]))),
+    { name: "claude-alt3", authDir: "~/.claude-alt3" });
+});
+
+test("validateBackendAccountForm(): 필수값·이름·중복·gemini를 검증한다", () => {
+  const { validateBackendAccountForm } = load("validateBackendAccountForm");
+  assert.equal(validateBackendAccountForm("codex", "codex-alt", "~/.codex-alt", []), "");
+  assert.match(validateBackendAccountForm("", "codex-alt", "x", []), /선택/);
+  assert.match(validateBackendAccountForm("codex", "Bad Name", "x", []), /소문자/);
+  assert.match(validateBackendAccountForm("codex", "codex-alt", "x", ["codex-alt"]), /이미 존재/);
+  assert.equal(validateBackendAccountForm("codex", "codex-alt", "x", ["codex-alt"], "codex-alt"), "");
+  assert.match(validateBackendAccountForm("gemini", "gemini-alt", "x", []), /격리/);
+  assert.match(validateBackendAccountForm("claude", "claude-alt", "", []), /인증 디렉터리/);
+});
+
+test("validateBackendAccountForm(): API 키 모드는 디렉터리 대신 키를 요구한다", () => {
+  const { validateBackendAccountForm } = load("validateBackendAccountForm");
+  assert.match(
+    validateBackendAccountForm("claude", "claude-api", "", [], "", "api_key", ""),
+    /API 키/);
+  assert.equal(
+    validateBackendAccountForm("claude", "claude-api", "", [], "", "api_key", "sk-test"),
+    "");
+  // api_key 모드에서는 auth_dir가 비어 있어도 통과해야 한다(디렉터리 필수 체크를 건너뜀).
+  assert.equal(
+    validateBackendAccountForm("codex", "codex-api", "", [], "", "api_key", "sk-oai-test"),
+    "");
+  assert.match(
+    validateBackendAccountForm("gemini", "gemini-api", "", [], "", "api_key", "sk-test"),
+    /격리/);
+  // authMode를 생략한 기존 호출(dir 모드)은 예전과 동일하게 동작해야 한다(회귀 없음).
+  assert.equal(validateBackendAccountForm("codex", "codex-alt", "~/.codex-alt", []), "");
+  assert.match(validateBackendAccountForm("claude", "claude-alt", "", []), /인증 디렉터리/);
+});
+
+const backendAccounts = [
+  { name: "claude-alt2", account_of: "claude", family: "claude", auth_dir: "~/.claude-alt2" },
+  { name: "codex", account_of: "", family: "codex", can_clone: true },
+  { name: "claude", account_of: "", family: "claude", can_clone: true },
+  { name: "gemini", account_of: "", family: "gemini", can_clone: false,
+    clone_disabled_reason: "인증 디렉터리 격리 불가" },
+  { name: "claude-alt", account_of: "claude", family: "claude", auth_dir: "~/.claude-alt" },
+  { name: "codex-alt", account_of: "codex", family: "codex", auth_dir: "~/.codex-alt" },
+];
+
+test("groupBackendAccounts(): 계정군별로 원본 뒤에 복제를 원래 순서대로 묶는다", () => {
+  const { groupBackendAccounts } = load("groupBackendAccounts");
+  const groups = JSON.parse(JSON.stringify(groupBackendAccounts(backendAccounts)));
+  assert.deepEqual(groups.map((group) => group.family), ["codex", "claude", "gemini"]);
+  assert.deepEqual(groups.find((group) => group.family === "claude").accounts.map((a) => a.name),
+    ["claude", "claude-alt2", "claude-alt"]);
+  assert.deepEqual(groups.find((group) => group.family === "codex").accounts.map((a) => a.name),
+    ["codex", "codex-alt"]);
+});
+
+test("buildBackendAccountCarousels(): 계정군마다 마지막 ⊕ 하나, 점 하나씩을 만든다", () => {
+  const { groupBackendAccounts, applyBackendCardOrder, buildBackendAccountCarousels } = load(
+    "groupBackendAccounts", "applyBackendCardOrder", "buildBackendAccountCarousels");
+  const cards = JSON.parse(JSON.stringify(buildBackendAccountCarousels(backendAccounts, [])));
+  for (const card of cards) {
+    assert.equal(card.slides.filter((slide) => slide.kind === "add").length, 1);
+    assert.equal(card.slides.at(-1).kind, "add");
+    assert.equal(card.dots.length, card.slides.length);
+    assert.equal(card.dots.at(-1).kind, "add");
+  }
+  const gemini = cards.find((card) => card.family === "gemini");
+  assert.equal(gemini.slides.length, 2, "복제가 없어도 원본 + ⊕ 슬라이드");
+  assert.equal(gemini.slides.at(-1).disabled, true);
+  assert.match(gemini.slides.at(-1).reason, /격리 불가/);
+});
+
+test("mergeBackendCarouselScroll(): 폴링 재렌더에도 카드별 위치를 독립 보존한다", () => {
+  const { mergeBackendCarouselScroll } = load("mergeBackendCarouselScroll");
+  const first = JSON.parse(JSON.stringify(mergeBackendCarouselScroll(
+    { claude: 120, codex: 40, gemini: 15 },
+    [{ family: "claude", scrollLeft: 260, visible: true },
+      { family: "gemini", scrollLeft: 0, visible: false }])));
+  assert.deepEqual(first, { claude: 260, codex: 40, gemini: 15 });
+  const second = JSON.parse(JSON.stringify(mergeBackendCarouselScroll(first,
+    [{ family: "codex", scrollLeft: 180, visible: true }])));
+  assert.deepEqual(second, { claude: 260, codex: 180, gemini: 15 });
+});
+
+test("applyBackendCardOrder(): 저장 순서를 적용하고 누락 계정군은 원래 순서로 뒤에 붙인다", () => {
+  const { groupBackendAccounts, applyBackendCardOrder } = load("groupBackendAccounts", "applyBackendCardOrder");
+  const groups = groupBackendAccounts(backendAccounts);
+  const ordered = applyBackendCardOrder(groups, ["gemini", "unknown", "claude", "gemini"]);
+  assert.deepEqual(Array.from(ordered, (group) => group.family), ["gemini", "claude", "codex"]);
+});
+
 test("paceTipText(): pace가 null이면 빈 문자열(BUG-44 회귀 방지 — 예전엔 render() 전체가 죽었음)", () => {
   const { paceTipText } = load("paceTipText");
   assert.equal(paceTipText(null, 50, false, null, 14, null, ""), "");
