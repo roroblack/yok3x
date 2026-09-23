@@ -1,5 +1,14 @@
 # HISTORY.md — 변경 이력
 
+- v4.x · 2026-09-10 — GUI 첫 스냅샷 체감 지연 수정, **1차 시도는 정정함**(사용자 지적으로
+  재현 테스트하다 발견): claude 로컬 transcript(2GB·395파일) 무캐시 재스캔이 병목이라 캐시를
+  추가했는데, 처음엔 `window_sec`(호출마다 실시간으로 자라는 경과시간)를 캐시 키에 넣는
+  실수를 해서 실질적으로 거의 항상 미스나는 죽은 코드였다(호출 간격 거의 0인 테스트라 우연히
+  통과해 보였을 뿐). `usage.weekly_used_since_reset`/`today_used_pct` 레벨로 옮겨 **안정값**
+  (`reset_at`)과 60초 버켓으로 다시 캐시. 6초 간격 재현 테스트(14.6초→0.3초)와 라이브 서버
+  2.5분 관찰(`slow build_state` 0회, 이전엔 절반가량 발생)로 검증. 곁들여 `gui/index.html`
+  warming 중 폴링도 고정 7초→1초로 개선. 테스트 719 passed. TeamFlow [YOK-112].
+
 - v4.x · 2026-09-06 — V-11 후속: codex 두 번째 계정의 쿼터를 **라이브로 추적**할 수 있게
   `limits._probe_codex_appserver`가 `limits.<alt>.sessions_dir`(부모 디렉터리=CODEX_HOME)를
   app-server 서브프로세스의 `env`로 주입하도록 고쳤다. 이전엔 계정 전환 실행 자체는 됐지만

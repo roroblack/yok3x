@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import shutil
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -31,6 +32,49 @@ _STRATEGY_POLICIES = {
     "spread": ("carry_smooth", "cut_smooth"),
     "grace_band": ("flat", "grace_band"), "debt_amortize": ("flat", "debt_amortize"),
 }
+
+
+# 계정군별 인증 격리 수단과 자격증명 파일명. 복제 계정이 '실제로 로그인돼 있는지'를 판정하는
+# 단일 출처 — guiserver(표시용)와 backend_available(폴오버 판정용)이 같은 값을 본다.
+ACCOUNT_ENV_KEYS = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+ACCOUNT_CRED_FILE = {"claude": ".credentials.json", "codex": "auth.json"}
+
+
+def account_logged_in(cfg: Config, backend: str) -> bool | None:
+    """복제 계정에 자격증명 파일이 실제로 있는가. 판정 불가·원본이면 None.
+
+    **복제(`account_of`)만 판정한다.** 원본은 자격증명을 다른 경로/키체인에 둘 수 있어
+    파일 부재를 '미로그인'으로 단정하면 멀쩡한 기본 backend를 막아버린다 — 그쪽이 훨씬 위험하다.
+    """
+    spec = (cfg.backends or {}).get(backend) or {}
+    family = str(spec.get("account_of") or "")
+    if not family:
+        return None                                   # 원본은 판정 대상 아님
+    env_key = ACCOUNT_ENV_KEYS.get(family)
+    fname = ACCOUNT_CRED_FILE.get(family)
+    auth_dir = (spec.get("env") or {}).get(env_key or "")
+    if not env_key or not fname or not auth_dir:
+        return None                                   # 규약을 모르면 막지 않는다
+    try:
+        return (Path(str(auth_dir)).expanduser() / fname).is_file()
+    except OSError:
+        return None
+
+
+def limits_backend_names(cfg: Config) -> tuple[str, ...]:
+    """쿼터를 재고 표시해야 하는 backend — 계정 복제 포함, **쿼터 개념이 없는 스텁은 제외**.
+
+    옛 고정 튜플 `("claude","codex","gemini")`는 `mock`(드라이런 스텁)과 `local`(자체 호스팅
+    서버)을 **일부러 뺀** 목록이었다. 계정 복제를 보이게 하려고 전체 키 반환으로 바꾸면서 그
+    제외 규칙이 같이 사라져, '구독 한도 대비 사용량' 표와 코치에 구독이 없는 둘이 0%로 상주하는
+    회귀가 났다(사용자 지적: "모크랑 이런 것도 보이고"). 계정 복제는 유지하고 스텁만 다시 뺀다.
+
+    제외 대상: `mock`(limits 설정 자체가 없는 테스트 스텁) · `offline_backend`(기본 `local`,
+    구독 쿼터가 아니라 자체 서버라 한도 비교 대상이 아니다).
+    """
+    offline = ((cfg.yok3x.get("guard") or {}).get("degrade") or {}).get("offline_backend", "local")
+    skip = {"mock", str(offline)}
+    return tuple(b for b in (cfg.backends or {}) if b not in skip)
 
 
 def record(cfg: Config, worker: str, task_kind: str, res: BackendResult,
@@ -69,7 +113,8 @@ _TOTALS_CACHE: dict[str, tuple] = {}
 
 def today_totals(cfg: Config) -> dict[str, dict[str, float]]:
     """백엔드별 오늘 누적 {usd, tokens, calls}. mock은 워커명으로 원 백엔드에 귀속."""
-    totals = {k: {"usd": 0.0, "tokens": 0, "calls": 0} for k in BACKEND_KEYS}
+    totals = {k: {"usd": 0.0, "tokens": 0, "calls": 0}
+              for k in limits_backend_names(cfg)}
     f = cfg.paths.usage_file
     if not f.exists():
         return totals
@@ -116,7 +161,7 @@ def _worker_backend_name(cfg: Config, worker: str) -> str | None:
             if worker.startswith(k):
                 return k
         return None  # 유추 불가 — 폴백으로 지어내지 않음(호출부가 보수적으로 처리)
-    return name if name in BACKEND_KEYS else None
+    return name if name in (cfg.backends or {}) else None
 
 
 # ---------------------------------------------------------------- guard
@@ -218,6 +263,43 @@ def _pacing_day_key(reset_at: float | None, now: float | None = None) -> str:
     return f"pd{int(_pacing_day_start(reset_at, now) // 60)}"
 
 
+# F2-11: today_used_pct/weekly_used_since_reset는 claude의 로컬 transcript(수백 MB~수 GB, 수백
+# 파일)를 root.rglob()으로 매번 훑는다. 파일별 파싱 자체는 이미 mtime·size로 캐시되지만
+# (limits._file_usage_events_detailed), 이 두 함수는 _pace_inputs를 통해 GUI 자동 새로고침
+# (5초)마다 호출돼 실측 최대 ~20초/회의 병목이었다(직접 계측). window_sec(=now-anchor)를 캐시
+# 키로 쓰면 안 된다 — 호출마다 실시간으로 자라는 값이라 거의 매번 다른 키가 되어 캐시가 사실상
+# 항상 미스난다(1차 시도에서 실제로 이 실수를 했다가 재현 테스트로 발견). 대신 **안정적인 값**
+# (reset_at은 실제 리셋 전까지 안 바뀜)과, now는 이 파일 다른 곳(limits._PCT_TTL_SEC 등)과 같은
+# 관례로 TTL 단위로만 버켓팅한다.
+_ROLLING_PCT_CACHE: dict[tuple, tuple[float, float | None]] = {}
+_ROLLING_PCT_CACHE_LOCK = threading.Lock()
+_ROLLING_PCT_TTL_SEC = 60.0
+
+
+def clear_cache() -> None:
+    """계정 스왑처럼 CODEX_HOME/claude 홈 디렉터리의 실제 내용이 바뀌면 반드시 같이 비워야
+    한다 — 경로 문자열은 그대로인데 그 밑 내용만 바뀌므로 안 비우면 옛 계정 값을 계속 낸다."""
+    _ROLLING_PCT_CACHE.clear()
+
+
+def _rolling_pct_cached(kind: str, root: Path, backend: str, reset_at: float | None,
+                        compute) -> float | None:
+    now = time.time()
+    key = (kind, str(root), backend,
+          round(reset_at, 1) if reset_at is not None and math.isfinite(reset_at) else None,
+          round(now / _ROLLING_PCT_TTL_SEC))
+    hit = _ROLLING_PCT_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _ROLLING_PCT_TTL_SEC:
+        return hit[1]
+    with _ROLLING_PCT_CACHE_LOCK:
+        hit = _ROLLING_PCT_CACHE.get(key)        # 대기 중 다른 스레드가 이미 채웠을 수 있다
+        if hit and (time.time() - hit[0]) < _ROLLING_PCT_TTL_SEC:
+            return hit[1]
+        result = compute(now)
+        _ROLLING_PCT_CACHE[key] = (time.time(), result)
+        return result
+
+
 def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> float | None:
     """**오늘(리셋 정렬 하루 시작 이후) 실제 사용률**. 7d 롤링% 델타는 롤오프에 상쇄돼 오늘 사용을
     0으로 뭉갠다(사용자 지적). claude는 하루 시작 이후 실제 소비 토큰으로 정확히 계산한다(예: 6.4%).
@@ -226,13 +308,21 @@ def today_used_pct(cfg: Config, backend: str, reset_at: float | None = None) -> 
         return None
     try:
         conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
-        now = time.time()
-        day_start = _pacing_day_start(reset_at, now)
-        secs = max(0.0, now - day_start)
-        tok = limits._rolling_claude_tokens(limits._claude_root(conf), now, secs)
-        _, cap7 = limits._resolve_claude_caps(conf)
-        if cap7 and cap7 > 0 and tok >= 0:
-            return round(100.0 * tok / cap7, 1)
+        root = limits._claude_root(conf)
+
+        def compute(now: float) -> float | None:
+            try:
+                day_start = _pacing_day_start(reset_at, now)
+                secs = max(0.0, now - day_start)
+                tok = limits._rolling_claude_tokens(root, now, secs)
+                _, cap7 = limits._resolve_claude_caps(conf)
+                if cap7 and cap7 > 0 and tok >= 0:
+                    return round(100.0 * tok / cap7, 1)
+            except Exception:
+                pass
+            return None
+
+        return _rolling_pct_cached("today", root, backend, reset_at, compute)
     except Exception:
         pass
     return None
@@ -303,13 +393,21 @@ def weekly_used_since_reset(cfg: Config, backend: str, reset_at: float | None) -
         return None
     try:
         conf = (cfg.yok3x.get("limits") or {}).get("claude") or {}
-        now = time.time()
-        last_reset = reset_at - 7 * 86400.0
-        secs = max(0.0, now - last_reset)
-        tok = limits._rolling_claude_tokens(limits._claude_root(conf), now, secs)
-        _, cap7 = limits._resolve_claude_caps(conf)
-        if cap7 and cap7 > 0 and tok >= 0:
-            return round(100.0 * tok / cap7, 1)
+        root = limits._claude_root(conf)
+
+        def compute(now: float) -> float | None:
+            try:
+                last_reset = reset_at - 7 * 86400.0
+                secs = max(0.0, now - last_reset)
+                tok = limits._rolling_claude_tokens(root, now, secs)
+                _, cap7 = limits._resolve_claude_caps(conf)
+                if cap7 and cap7 > 0 and tok >= 0:
+                    return round(100.0 * tok / cap7, 1)
+            except Exception:
+                pass
+            return None
+
+        return _rolling_pct_cached("weekly", root, backend, reset_at, compute)
     except Exception:
         pass
     return None
@@ -860,6 +958,12 @@ def backend_available(cfg: Config, backend: str, probe_fn=None) -> bool:
     if btype == "cli":
         if not cmd or shutil.which(str(cmd[0])) is None:
             return False        # CLI 미설치
+    # 아직 로그인하지 않은 복제 계정은 쓸 수 없다. 실측이 없으면 원장 폴백이 level=ok·ratio=0으로
+    # 나와 **가장 여유로운 후보처럼 보이고**, 폴오버가 이걸 골라 CLI 인증 오류로 런이 죽는다
+    # (사용자 지적: claude warn 0.98 상태에서 미로그인 claude-alt가 폴오버 대상으로 선택됨).
+    # 원본은 판정하지 않으므로(account_logged_in 참고) 기본 backend를 막을 위험은 없다.
+    if account_logged_in(cfg, backend) is False:
+        return False
     try:
         verdict = (check_backend(cfg, backend, probe_fn=probe_fn)
                    if probe_fn is not None else check_backend(cfg, backend))
@@ -1004,14 +1108,14 @@ def coach_messages(cfg: Config, probe_fn=None) -> list[str]:
     verdicts = {
         b: (check_backend(cfg, b, probe_fn=probe_fn)
             if probe_fn is not None else check_backend(cfg, b))
-        for b in BACKEND_KEYS
+        for b in limits_backend_names(cfg)
     }
     routing = cfg.yok3x.get("routing", {})
     msgs: list[str] = []
     ordered = sorted(verdicts.values(), key=lambda v: v.ratio)
     freest = ordered[0].backend
 
-    for b in BACKEND_KEYS:
+    for b in limits_backend_names(cfg):
         v = verdicts[b]
         tasks_here = "/".join(t for t, bk in routing.items() if bk == b) or "해당"
         alt = freest if freest != b else ordered[1].backend

@@ -166,6 +166,7 @@ def probe(cfg: Config, backend: str, use_cache: bool = True) -> LimitReading:
 
 def clear_cache() -> None:
     _CACHE.clear()
+    _PCT_CACHE.clear()      # codex_percent_at — 계정 스왑처럼 CODEX_HOME 내용이 바뀌면 같이 비워야 함
 
 
 def probe_gui(cfg: Config, backend: str) -> LimitReading:
@@ -472,7 +473,13 @@ def _probe_codex_appserver(backend: str, conf: dict[str, Any]) -> LimitReading:
     CodexBar 가 쓰는 것과 같은 경로: initialize → account/rateLimits/read.
     """
     exe = shutil.which(conf.get("codex_bin", "codex")) or conf.get("codex_bin", "codex")
-    args = conf.get("app_server_args", ["-s", "read-only", "-a", "untrusted", "app-server"])
+    # `-a untrusted`는 codex CLI가 더 이상 받지 않는다(0.153.4 실측: `invalid value 'untrusted'
+    # for '--ask-for-approval', possible values: on-request, never`). 인자를 거부당하면 프로세스가
+    # 즉시 죽고, 죽은 stdin에 쓰다가 `OSError: [Errno 22] Invalid argument`로 터져 **원인이 전혀
+    # 안 보이는 실패**가 됐다(codex/codex-alt 둘 다 라이브 실측 소실). 읽기 전용 조회라 승인 요청이
+    # 나올 일이 없으므로 `never`가 맞다. 상위 CLI 인자는 언제든 또 바뀔 수 있으니 실패 시
+    # stderr를 그대로 노출한다(아래 _appserver_rate_limits).
+    args = conf.get("app_server_args", ["-s", "read-only", "-a", "never", "app-server"])
     timeout = float(conf.get("timeout_sec", 15))
     # V-11 계정 스위칭: 두 번째 codex 계정(가상 backend)의 `limits.<alt>.sessions_dir`가
     # 지정돼 있으면 그 계정의 CODEX_HOME(=sessions_dir의 부모)으로 app-server를 띄운다.
@@ -1739,36 +1746,47 @@ def _file_usage_events_detailed(f: Path) -> list[tuple[float, int, str, str]]:
     if hit and hit[0] == stt.st_mtime and hit[1] == stt.st_size:
         return hit[2]
     events: list[tuple[float, int, str, str]] = []
+    # F2-12: 예전엔 f.read_text()로 파일 전체를 문자열로, 다시 .splitlines()로 리스트로
+    # 한 번에 메모리에 올렸다 — 이 세션처럼 오래 가는 대화의 JSONL이 100MB를 넘어가자(실측:
+    # 91MB·101MB 파일 확인) MemoryError로 프로브 자체가 죽었다(claude_oauth 폴백 경로가 이
+    # 함수를 탄다 — 페이싱뿐 아니라 자격증명 없음 같은 흔한 경로까지 함께 죽는 게 문제였다).
+    # 한 줄씩 스트리밍으로 읽으면(파일 핸들만 열어두고 순회) 피크 메모리가 파일 크기와
+    # 무관하게 낮게 유지된다 — 추출하는 이벤트는 완전히 동일하다.
     try:
-        text = f.read_text(encoding="utf-8-sig", errors="replace")
+        fh = f.open(encoding="utf-8-sig", errors="replace")
     except OSError:
         return []
-    for line in text.splitlines():
-        if '"usage"' not in line:
-            continue
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(d, dict):
-            continue
-        ts = _parse_iso(d.get("timestamp"))
-        if ts is None:
-            continue
-        msg = d.get("message") if isinstance(d.get("message"), dict) else {}
-        if not isinstance(msg, dict):
-            msg = {}
-        u = msg.get("usage") or d.get("usage") or {}
-        if not isinstance(u, dict):
-            continue
-        tok = (_int(u.get("input_tokens")) + _int(u.get("output_tokens"))
-              + _int(u.get("cache_creation_input_tokens"))
-              + _int(u.get("cache_read_input_tokens")))
-        sid = d.get("sessionId")
-        session_id = sid if isinstance(sid, str) else ""
-        m = msg.get("model")
-        model = m if isinstance(m, str) else ""
-        events.append((ts, tok, session_id, model))
+    try:
+        for line in fh:
+            if '"usage"' not in line:
+                continue
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(d, dict):
+                continue
+            ts = _parse_iso(d.get("timestamp"))
+            if ts is None:
+                continue
+            msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+            if not isinstance(msg, dict):
+                msg = {}
+            u = msg.get("usage") or d.get("usage") or {}
+            if not isinstance(u, dict):
+                continue
+            tok = (_int(u.get("input_tokens")) + _int(u.get("output_tokens"))
+                  + _int(u.get("cache_creation_input_tokens"))
+                  + _int(u.get("cache_read_input_tokens")))
+            sid = d.get("sessionId")
+            session_id = sid if isinstance(sid, str) else ""
+            m = msg.get("model")
+            model = m if isinstance(m, str) else ""
+            events.append((ts, tok, session_id, model))
+    except OSError:
+        return []
+    finally:
+        fh.close()
     _TRANSCRIPT_EVENT_CACHE[key] = (stt.st_mtime, stt.st_size, events)
     return events
 

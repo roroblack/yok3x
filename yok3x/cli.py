@@ -412,7 +412,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "limits":
         from . import limits
-        readings = {b: limits.probe(cfg, b, use_cache=False) for b in usage.BACKEND_KEYS}
+        readings = {b: limits.probe(cfg, b, use_cache=False)
+                    for b in usage.limits_backend_names(cfg)}
         levels = []
         if a.json:
             # R-4 기계판독 스냅샷: 사람용 문구(detail) 파싱 없이 소비할 수 있게 provenance enum과
@@ -547,7 +548,7 @@ def main(argv: list[str] | None = None) -> int:
         dp = cfg.yok3x.get("guard", {}).get("daily_pace", {})
         states: dict[str, dict | None] = {}
         provenances: dict[str, str] = {}
-        for b in usage.BACKEND_KEYS:
+        for b in usage.limits_backend_names(cfg):
             r = limits.probe(cfg, b)
             _ra = usage.effective_reset_at(cfg, b, r)
             wk, _known, _tu = usage._pace_inputs(cfg, b, r, _ra)

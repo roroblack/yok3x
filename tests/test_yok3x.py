@@ -2557,6 +2557,31 @@ def test_codex_appserver_no_sessions_dir_keeps_env_unset(tmp_path, monkeypatch):
     assert seen_env["env"] is None
 
 
+def test_codex_appserver_default_args_use_valid_approval_policy(tmp_path, monkeypatch):
+    """codex CLI가 받는 승인 정책 값만 기본 인자로 쓴다.
+
+    실측(codex 0.153.4): `-a untrusted`는 거부된다 —
+    `invalid value 'untrusted' for '--ask-for-approval', possible values: on-request, never`.
+    인자가 거부되면 프로세스가 즉시 죽고, 죽은 stdin에 쓰다가 `OSError: [Errno 22]`로 터져
+    **원인이 안 보이는 실패**가 된다(codex·codex-alt 라이브 실측이 통째로 소실, 프로브 1건당 15초 소모).
+    읽기 전용 조회라 승인 요청 자체가 없으므로 `never`가 맞다.
+    """
+    cfg = Config.load(tmp_path)
+    seen: dict = {}
+    def record(exe, args, to, env=None):
+        seen["args"] = args
+        return None                       # rateLimits 없음 → 폴백 경로(인자만 확인하면 된다)
+
+    monkeypatch.setattr(limits, "_appserver_rate_limits", record)
+
+    limits._probe_codex_appserver("codex", cfg.yok3x["limits"]["codex"])
+
+    args = seen["args"]
+    assert "untrusted" not in args, args
+    assert args[args.index("-a") + 1] in ("never", "on-request"), args
+    assert "app-server" in args
+
+
 # ------------------------------------ codex JSONL 파서(신형 스키마 호환)
 def test_parse_codex_new_item_completed_schema():
     # codex 0.144: agent 메시지가 item.completed 이벤트의 item.type=="agent_message".
@@ -4099,8 +4124,14 @@ def test_account_twin_failover_works_without_opt_in(tmp_path, monkeypatch):
     cfg = Config.load(tmp_path)
     cfg.yok3x["guard"]["degrade"]["failover_enabled"] = False       # 다른 모델 폴오버는 꺼둔 상태
     cfg.yok3x["guard"]["degrade"]["offline_enabled"] = False
+    # 이 테스트는 폴오버 **정책**(계정 트윈 우선)을 보는 것이라 로그인은 갖춰진 전제다.
+    # 미로그인 복제는 별도로 후보에서 제외된다(test_unauthenticated_clone_is_not_a_failover_candidate).
+    alt_home = tmp_path / "claude-alt-home"
+    alt_home.mkdir()
+    (alt_home / ".credentials.json").write_text("{}", encoding="utf-8")
     cfg.backends["claude-alt"] = {"type": "cli", "command": ["claude", "-p"], "parser": "raw",
-                                  "account_of": "claude", "env": {"CLAUDE_CONFIG_DIR": "~/alt"}}
+                                  "account_of": "claude",
+                                  "env": {"CLAUDE_CONFIG_DIR": str(alt_home)}}
     monkeypatch.setattr(usage.shutil, "which", lambda x: "/bin/" + x)
     ratios = {"claude": 0.99, "claude-alt": 0.05, "codex": 0.0}
     monkeypatch.setattr(usage, "check_backend",
