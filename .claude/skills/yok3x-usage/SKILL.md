@@ -5,6 +5,13 @@ description: How to invoke yok3x (a producer-reviewer multi-agent coding orchest
 
 # Using yok3x from another agent
 
+> **This is the canonical copy** (edit this one). A mirrored copy lives at the user-level skills
+> folder (`~/.claude/skills/yok3x-usage/SKILL.md`, outside this repo) so that sessions working in
+> *other* projects — the actual audience for this skill — have it loaded too; project-scoped
+> skills only load for sessions working inside the project that defines them. If you change this
+> file, copy the change to the mirror too (and fix any repo-relative paths to absolute ones there,
+> since the mirror can't assume it's running from inside this repo).
+
 yok3x is a CLI tool (`python yok3x.py ...`, repo at the path this file lives under). It runs a
 producer LLM (writes code) and a reviewer LLM (scores it), optionally gated by an objective
 `verify_cmd` (e.g. `pytest -q`) that actually runs the candidate's tests — it is not just "ask a
